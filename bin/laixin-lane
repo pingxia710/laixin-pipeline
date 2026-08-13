@@ -315,7 +315,7 @@ cmd_uptime() {  # 三件套连续运行时长与今日事件计数(持续运行�
     if [ "$name" = watchdog ] && ! win_exists "$WATCHDOG_WIN"; then echo "watchdog: 未运行"; continue; fi
     if [ "$name" = events ]   && ! win_exists "$EV_WIN";       then echo "events:   未运行"; continue; fi
     local start
-    start="$(grep -E '启动' "$f" 2>/dev/null | tail -1 | sed -E 's/^\[([^]]+)\].*/\1/')"
+    start="$(grep -E '启动' "$f" 2>/dev/null | tail -1 | sed -E 's/^\[([^]]+)\].*/\1/' || true)"  # 日志无"启动"行时 grep 返 1,不兜底会在 set -e 下把整个 uptime 中途击穿(只打印第一行)
     if [ -n "$start" ]; then
       local st; st="$(date -j -f '%Y-%m-%d %H:%M:%S' "$start" +%s 2>/dev/null || echo "$now")"
       printf '%-9s 连续运行 %s 小时 %s 分\n' "$name:" "$(( (now-st)/3600 ))" "$(( ((now-st)%3600)/60 ))"
@@ -490,23 +490,29 @@ if mf:
 m=re.search(r'##\s*排队.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
 buckets={'✅ 可立即发车(prompt ready 且未发)':[], '✏️ 派工窗口可自写(裁定齐/prompt 待写)':[],
          '🚧 缺设计,要方案窗口补':[], '✔️ 已发车或已合入':[]}
-stale=[]
+stale=[]; unparsed=[]
 if m:
     for line in m.group(1).split('\n'):
         if not line.startswith('|') or '---' in line: continue
         cells=[c.strip() for c in line.strip('|').split('|')]
         if len(cells)<4 or cells[0].startswith('片'): continue
-        name=re.sub(r'[*~\[\]]','',cells[0])[:34]; st=cells[-1]
+        # 分桶只认状态格**首段**(首个<br>前)——整格子串匹配会把解释文字里的"已发车"当状态,
+        # 把在排片误报成已跑掉(2026-08-13 实撞:速率限制铺开被报燃料 0,假停摆族)
+        name=re.sub(r'[*~\[\]]','',cells[0])[:34]; st=cells[-1].split('<br>')[0]
         if '已完成合入' in st or '已发车' in st or '已并入' in st: buckets['✔️ 已发车或已合入'].append(name)
         elif ('发不了' in st or '设计缺口' in st or '退回方案窗口' in st) and '已补' not in st and '已齐' not in st:
             buckets['🚧 缺设计,要方案窗口补'].append(name)
         elif any(name.startswith(f[:12]) or f.startswith(name[:12]) for f in flying):
             stale.append(name)
-        elif 'ready' in st.lower(): buckets['✅ 可立即发车(prompt ready 且未发)'].append(name)
+        elif 'ready' in st.lower() or 'prompt 已写' in st: buckets['✅ 可立即发车(prompt ready 且未发)'].append(name)
         elif '待写' in st: buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'].append(name)
+        else: unparsed.append(name)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
     for n in v[:6]: print(f"      · {n}")
+if unparsed:
+    print(f"  ❓ 状态未识别 {len(unparsed)} 行(状态格首段无已知标记;分桶只认首个<br>前的片段,解释文字请放 <br> 之后):")
+    for n in unparsed: print(f"      · {n}")
 if stale:
     print(f"  ⚠️ 排队节状态滞后 {len(stale)} 行(实际已在'进行中'节飞着,排队节还写着待写/ready):")
     for n in stale: print(f"      · {n}")
@@ -1133,17 +1139,17 @@ commit:$commit
 2. 全量测试自己跑,判据是"全部 passed 且 zero failed",不是测试数相等;
 3. 验收隔离:主树可能被 Codex 占用,一律用独立验收 worktree 或 ref 级操作,禁止在共享工作树 checkout/merge;
 4. **最后一步必须**:rebase 到当时 main,并在 rebase 后的状态上复跑全量——"验的就是合的";
-5. **证据必须落盘**:凡结论要引用的输出,一律 `2>&1 | tee $evid/<名字>.log` 落到该目录再引用——
+5. **证据必须落盘**:凡结论要引用的输出,一律加 "2>&1 | tee $evid/<片名>.log" 落到该目录再引用——
    全量两次 → pytest-1.log / pytest-2.log;迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
    证据目录:$evid
    结论里每个数字、每处代码引用,必须能在这些文件里逐字 grep 到;记不起的重新跑工具,**不得凭印象写**。
-   派工窗口会用 `laixin-lane evidence $slice` 复查,对不上即退回重验;
+   派工窗口会用 laixin-lane evidence $slice 复查,对不上即退回重验;
 6. 写完验收记录(追加"验收方独立验收结论"节)后,用 SendMessage 回派工窗口 ${to:-(未指定:先 ListAgents,派工窗口是本机另一个 interactive 会话;首次发送需带它的 [ref])}:
    - 通过 → verify 分支名 · 其 commit · **所基于的 main commit** · 全量结果
    - 打回 → 逐条可复现的问题清单 + 是否需升级创始人
 7. 你不合并、不 push、不碰 lane(工具层已禁);打回也由派工窗口转发给 Codex。
 
-看板事件用 LAIXIN_WINDOW=验收窗口 laixin-lane log "..." 记。回执发出后你的活就结束了。
+看板事件用 laixin-lane vlog "..." 记(带 env 前缀的命令不匹配工具白名单)。回执发出后你的活就结束了。
 EOF
 )"
   printf '%s' "$msg" | tmux load-buffer -b laixin-vmsg -
@@ -1165,6 +1171,12 @@ cmd_vdown() {
   tmux kill-window -t "$SESSION:$w"
   board "派工窗口" "回收验收窗口 $w"
   echo "$w 已回收"
+  local wt
+  for wt in "$HOME"/来信平台-verify*; do
+    [ -d "$wt" ] || continue
+    echo "提示:验收树 $wt 仍在磁盘上——空闲树会占住分支、卡下一片发车;确认无独有产物后回收:"
+    echo "      git -C \$HOME/来信平台 worktree remove --force $wt   (验收树带 .venv 等未跟踪文件,不加 --force 必被拒)"
+  done
 }
 
 cmd_peekv() {

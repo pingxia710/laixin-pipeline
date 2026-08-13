@@ -41,6 +41,9 @@ laixin-lane next-migration / next-worktree # 发车前占号校准(未合并分�
 laixin-lane events status                  # 事件总线(dispatch 自动带起;交付+卡住事件投递)
 laixin-lane handoff                        # 交班:客观半部机器生成,判断人写
 laixin-lane claim                          # 接管派工角色的第一件事:认领派工权(send 会自动续期)
+# 模型已显式钉死(2026-08-13 创始人裁定):验收/派工窗口 = claude-opus-5(agentic 主力档,验收要的是可靠核查
+# 不是极限推理);方案窗口 = 创始人自选(Fable 5);lane Codex = gpt-5.6-terra。**不继承任何人的 /model 副作用**
+# ——有人在方案窗口切模型存为默认,流水线成本不该因此翻倍。改档:LAIXIN_VERIFY_MODEL / LAIXIN_DISPATCH_MODEL。
 laixin-lane whoholds                       # 谁当前持有派工权
 laixin-lane doctor                         # 接班第二件事:体检 skill落位/命令/知识库/拓扑/发车位/工程债
 laixin-lane ctx                            # 上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)

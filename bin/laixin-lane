@@ -175,7 +175,7 @@ cmd_down() {
 }
 
 # ============ 证据落盘(2026-08-13 补:把"铁律三"从靠自觉变成可机器复查) ============
-EVID_ROOT="$HOME/.laixin-evidence"
+EVID_ROOT="${LAIXIN_EVID_ROOT:-$HOME/.laixin-evidence}"   # 可覆盖:测试用 fixture 目录
 
 # 上下文占比:从 Claude Code 本地 transcript 精确读(零依赖;判据是**占比**不是 token 绝对数)
 # 依据 pingxia-e6 的实测:自我感知会低估 15-25 个百分点(感觉"30-40%",实际 54.9%)⇒ 不能靠窗口自己估
@@ -235,6 +235,7 @@ PY
 
 cmd_evidence() {
   local slice="${1:-}"
+  local pat="${2:-}"
   if [ -z "$slice" ]; then
     [ -d "$EVID_ROOT" ] || { echo "还没有任何证据目录"; return 0; }
     echo "== 已留证的片 =="
@@ -249,6 +250,26 @@ cmd_evidence() {
   local slug; slug="$(echo "$slice" | tr ' /' '--' | cut -c1-24)"
   local dir="$EVID_ROOT/$slug"
   [ -d "$dir" ] || die "无该片证据目录:$dir(验收窗口没落盘,或片名不符)"
+  # 模式搜索:evidence <片名> <数字或词> —— 复查回执数字的机器化通道,自带 -a。
+  # ⛔ 为什么必须走这里而不是裸 grep(2026-08-14 实撞):repro.log 含 NEL(U+0085)行终止符,
+  #   file 判 Non-ISO extended-ASCII,裸 grep 判非文本静默零命中 ⇒ 按"零命中=编造"的纪律
+  #   差点冤枉一份完全合格的验收——防编造的防线自己被文本判定骗过。
+  if [ -n "$pat" ]; then
+    echo "== 在 $slug 的证据里搜「${pat}」(grep -aF,穿透 NEL/控制字符) =="   # ${pat} 花括号不能省:CJK 紧跟变量的老坑
+    local hits=0 f
+    for f in "$dir"/*; do
+      [ -f "$f" ] || continue
+      if grep -aFn -- "$pat" "$f" >/dev/null 2>&1; then
+        hits=1
+        grep -aFn -- "$pat" "$f" | head -8 | sed "s|^|  $(basename "$f"):|"
+      fi
+    done
+    if [ "$hits" -eq 0 ]; then
+      echo "  ⛔ 全部文件零命中。先别下「编造」结论:上面已自带 -a,仍零命中才值得怀疑;可再 wc -c / file 核文件本身,然后人工比对原文。"
+      return 1
+    fi
+    return 0
+  fi
   echo "== $slug 的证据($dir) =="
   local n=0
   for f in "$dir"/*; do
@@ -261,7 +282,7 @@ cmd_evidence() {
   done
   [ "$n" -eq 0 ] && echo "  ⚠️ 目录是空的——回执里的数字没有任何落盘证据支撑"
   echo
-  echo "复查用法:回执里出现的每个数字,都应能在上面 grep 到;对不上就是编造或口误,退回重验。"
+  echo "复查用法:回执里出现的每个数字,用 laixin-lane evidence <片名> <数字或词> 搜(自带 -a,防 NEL 假零命中);搜不到才是编造或口误,退回重验。⛔ 别用裸 grep 复查——含控制字符的证据文件会被判非文本而静默零命中。"
   return 0
 }
 

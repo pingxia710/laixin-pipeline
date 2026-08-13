@@ -14,16 +14,20 @@ tout(){ # tout <名字> <期望子串> <命令...> —— 输出含子串即过
   local want="$2"
   shift 2
   local out; out="$("$@" 2>&1)"
-  if echo "$out" | grep -q "$want"; then PASS=$((PASS+1)); echo "  ✅ $name";
-  else FAIL=$((FAIL+1)); echo "  ❌ $name  (未见「${want}」,实际:$(echo "$out"|head -1))"; fi
+  # ⛔ 判定不许用 `echo "$out" | grep -q`:本套件 set -o pipefail,grep -q 命中即早退,
+  #   echo 吃 SIGPIPE(141)⇒ pipefail 把"匹配成功"判成失败——且与输出大小/机器负载相关,
+  #   表现为"安静时全绿、流水线忙时稳定红"(2026-08-14 02:1x 实撞:9 项无辜测试齐红,
+  #   实测 20/20 复现)。herestring 无管道即无此竞态。
+  if grep -q "$want" <<< "$out"; then PASS=$((PASS+1)); echo "  ✅ $name";
+  else FAIL=$((FAIL+1)); echo "  ❌ $name  (未见「${want}」,实际:$(head -1 <<< "$out"))"; fi
 }
 tfail(){ # tfail <名字> <期望错误子串> <命令...> —— 命令须失败且报该错
   local name="$1"
   local want="$2"
   shift 2
   local out; out="$("$@" 2>&1)"; local rc=$?
-  if [ $rc -ne 0 ] && echo "$out" | grep -q "$want"; then PASS=$((PASS+1)); echo "  ✅ $name";
-  else FAIL=$((FAIL+1)); echo "  ❌ $name  (rc=$rc,输出:$(echo "$out"|head -1))"; fi
+  if [ $rc -ne 0 ] && grep -q "$want" <<< "$out"; then PASS=$((PASS+1)); echo "  ✅ $name";
+  else FAIL=$((FAIL+1)); echo "  ❌ $name  (rc=$rc,输出:$(head -1 <<< "$out"))"; fi
 }
 
 echo "== 1. 语法与用法 =="

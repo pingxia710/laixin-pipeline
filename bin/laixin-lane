@@ -41,6 +41,11 @@ set -euo pipefail
 SESSION="${LAIXIN_SESSION:-laixin}"
 DEFAULT_DIR="${LAIXIN_REPO:-$HOME/来信平台}"
 BOARD="${LAIXIN_BOARD:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md}"
+# 流水线 Claude 窗口的模型**显式钉死**(2026-08-13):不继承 settings.json 全局默认——
+# 谁在方案窗口 /model 换模型并"保存为默认",都不该静默改变验收/派工的模型与成本(实撞:切 Fable 5 后
+# 下一个验收窗口将以双倍价格起)。验收=核查+测试+走查,Opus 5(agentic coding 主力档)是对的档位。
+VERIFY_MODEL="${LAIXIN_VERIFY_MODEL:-claude-opus-5}"
+DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
 # 验收窗口以 --permission-mode auto 起(分类器逐条判安全:只读/测试自动过,危险动作仍拦)
 # 白名单是加速项而非唯一闸门——带 && 的复合命令一律绕不过分类器,靠白名单撑不住夜间无人值守
 VERIFY_ALLOW=(
@@ -422,7 +427,17 @@ cmd_doctor() {
     ok "主树当前分支:$(git -C "$DEFAULT_DIR" branch --show-current 2>/dev/null)"
   else bad "主树不是 git 仓库:$DEFAULT_DIR"; fi
 
-  echo "== 6. 已知工程债 =="
+  echo "== 6. 模型钉死(流水线不继承 /model 副作用) =="
+  ok "验收窗口钉:$VERIFY_MODEL  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_VERIFY_MODEL/LAIXIN_DISPATCH_MODEL)"
+  local gmodel
+  gmodel="$(python3 -c "import json;print(json.load(open('$HOME/.claude-official/settings.json')).get('model','未设'))" 2>/dev/null || echo 未知)"
+  echo "  ℹ️ claude 全局默认:$gmodel(只影响方案窗口/手开窗口,不影响流水线)"
+  case "$gmodel${VERIFY_MODEL}" in
+    *haiku*) if [ "${LAIXIN_CTX_WINDOW:-1000000}" -gt 200000 ]; then
+      wrn "检测到 haiku 系模型而 ctx 分母>200K——交班闸门会静默失效,设 LAIXIN_CTX_WINDOW=200000"; fi ;;
+  esac
+  echo
+  echo "== 7. 已知工程债 =="
   if [ -f "$DEFAULT_DIR/alembic/versions/20260811_0014_c6_draft_confirmation.py" ]; then
     if grep -q "inspect\|has_column\|column_exists" "$DEFAULT_DIR/alembic/versions/20260811_0014_c6_draft_confirmation.py" 2>/dev/null; then
       ok "迁移 0014 已带幂等检查"
@@ -912,7 +927,7 @@ cmd_dispatch() {
   tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir"
   sleep 0.5
   local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
-  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "claude -n \"$DISPATCH_WIN\" --permission-mode auto --disallowedTools $deny" C-m
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --disallowedTools $deny" C-m
   vwait_ready "$DISPATCH_WIN" "$dir" || die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
   sleep 1
   printf '%s' "$DISPATCH_BRIEF" | tmux load-buffer -b laixin-dmsg -
@@ -1098,7 +1113,7 @@ cmd_verify() {
   local allow deny
   allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
   deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
-  tmux send-keys -t "$SESSION:$w" "claude -n \"$w\" --permission-mode auto --allowedTools $allow --disallowedTools $deny" C-m
+  tmux send-keys -t "$SESSION:$w" "claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --allowedTools $allow --disallowedTools $deny" C-m
   vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-v $slice 40"
   sleep 1
 

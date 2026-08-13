@@ -57,6 +57,10 @@ echo "== 4. 配置外置(env 覆盖生效,默认不变) =="
 tout "SESSION 可覆盖" "不存在" env LAIXIN_SESSION=lx-test-nonexist "$LANE" status
 tout "ctx 分母可覆盖" "500,000" env LAIXIN_CTX_WINDOW=500000 "$LANE" ctx 3683f143
 
+echo "== 4b. 模型钉死(起窗命令不继承全局默认) =="
+tout "verify 起窗带 --model" '--model claude-opus-5' grep -A1 'claude -n \\"\$w\\"' "$LANE"
+tout "模型可覆盖" "claude-sonnet-5" env LAIXIN_VERIFY_MODEL=claude-sonnet-5 bash -c 'source <(grep "^VERIFY_MODEL=" "'"$LANE"'"); echo "$VERIFY_MODEL"'
+
 echo "== 5. 排队解析(fixture,不依赖真总表) =="
 TMPT="$(mktemp -d)"
 cat > "$TMPT/table.md" <<'EOF'

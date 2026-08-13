@@ -223,6 +223,8 @@ cur=last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("c
 pct=cur/win*100
 bar="█"*int(pct//5)+"░"*(20-int(pct//5))
 print(f"会话 {os.path.basename(f)[:8]}…  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
+# ⚠️ 闸门线双真相源:此处 70/55 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
+# 必须同步(一个 bash 一个 python,跨语言共用常量的代价大于收益)。改一处就改另一处。
 if   pct>=70: print("🔴 ≥70% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
 elif pct>=55: print("🟡 55-70%:进入交班准备区,别再开新调查;手上这片收尾就交班")
 else:         print("🟢 <55%:正常工作区间")
@@ -613,11 +615,14 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
   return 0
 }
 
-ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;"已写"与"ready"等价)
+ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认 prompt 就绪,不认设计就绪)
+  # ⛔ 两个实撞的坑(2026-08-13 夜,空闲告警把创始人已裁后延的「评审-1处罚落地」报成可发片):
+  #   1. 裸 /ready/ 会被行内 `status: design-ready` 子串击中——设计就绪 ≠ prompt 就绪,只有后者可 fresh+send;
+  #   2. 🅿️(创始人后延)的行无论其余措辞如何都不得作为"下一片"提示——照此发车就是推翻创始人裁定。
   awk -v lane="$1" '
     /^## 排队/{inq=1;next} inq&&/^## /{exit}
     inq&&/^\|/&&$0!~/^\|---/{
-      if ($0 ~ ("\\| *\\**" lane "\\** *\\|") && $0 ~ /ready|已写/ && $0 !~ /已发车|已完成|已并入|验收中|发不了/) {
+      if ($0 ~ ("\\| *\\**" lane "\\** *\\|") && $0 ~ /prompt ?ready|prompt ?已写|prompt ?已就绪/ && $0 !~ /已发车|已完成|已并入|验收中|发不了|🅿/) {
         n=split($0,c,"|"); nm=c[2]; gsub(/[* ~]/,"",nm); print substr(nm,1,28); exit
       }
     }' "$TABLE" 2>/dev/null

@@ -191,6 +191,7 @@ laixin-lane verify <片名> \
 
 ## 已知边界
 
+- **起窗被专线自检拦截**(2026-08-13 实撞:readiness FAIL → claude 拒启 → 验收窗口没起来):`verify`/`dispatch` 现在会**秒级报出 FAIL 项并记看板**,不再哑等 90s。处置:①这是 fail-closed 保护(封号风险>停摆),**绝不绕过**;②修专线问题(`us-status` / `bash dns-guard.sh`),修好重试;③方向不明升级创始人。夜间流水线因此停摆是**正确行为**,早晨看板会有 ⛔ 记录;
 - lane 里 Codex 崩了:`peek` 见 shell 提示符 → `fresh` 重启 → 重发当前片路径(Codex 从分支现场续);
 - 迁移片验收必跑回环;B 轨零迁移核 `git diff main --stat`;
 - prompt 写死的 worktree 号会失效,**发车前校准**;片合并/验收结束后即回收 worktree(`git worktree remove`)——**真实理由是解发车阻塞,不是省磁盘**:git 不允许两棵树 checkout 同一分支,空闲验收树占着 `main` 会卡住主树 `checkout main`(2026-08-13 实撞);

@@ -295,7 +295,7 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
   ensure_session
   case "$mode" in
     --infra)
-      win_exists "$EV_WIN" || cmd_events start
+      ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start; }
       echo "基础设施已恢复:events 在跑(交付暂存 spool)。引擎点火用:laixin-lane resurrect --full"
       ;;
     --full)
@@ -313,7 +313,7 @@ cmd_uptime() {  # 三件套连续运行时长与今日事件计数(持续运行�
   for pair in "watchdog:$WD_LOG" "events:$EV_LOG"; do
     local name="${pair%%:*}" f="${pair#*:}"
     if [ "$name" = watchdog ] && ! win_exists "$WATCHDOG_WIN"; then echo "watchdog: 未运行"; continue; fi
-    if [ "$name" = events ]   && ! win_exists "$EV_WIN";       then echo "events:   未运行"; continue; fi
+    if [ "$name" = events ]   && ! ev_alive;                   then echo "events:   未运行(进程判活)"; continue; fi
     local start
     start="$(grep -E '启动' "$f" 2>/dev/null | tail -1 | sed -E 's/^\[([^]]+)\].*/\1/' || true)"  # 日志无"启动"行时 grep 返 1,不兜底会在 set -e 下把整个 uptime 中途击穿(只打印第一行)
     if [ -n "$start" ]; then
@@ -414,7 +414,9 @@ cmd_doctor() {
     if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
     else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
     win_exists "$WATCHDOG_WIN" && ok "看门狗运行中" || wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"
-    win_exists "$EV_WIN" && ok "事件总线运行中" || wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"
+    if ev_alive; then ok "事件总线运行中(进程判活)"
+    elif win_exists "$EV_WIN"; then wrn "⛔ events 窗口在但循环已死(假绿灯)——events stop && events start;交付事件正在漏,优先处理"
+    else wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"; fi
     local vs; vs="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^verify-' || true)"
     [ "${vs:-0}" -gt 0 ] && ok "在跑的验收窗口:$vs 个" || ok "无在跑的验收窗口"
   else bad "tmux 会话 $SESSION 不存在"; fi
@@ -625,7 +627,7 @@ ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值�
   local h; h="$(pane_hash "$w")"
   if [ "$h" = "GONE" ]; then rm -f "$sf"; return 0; fi
   local old="" silent=0 alerted=0
-  [ -f "$sf" ] && read -r old silent alerted < "$sf" 2>/dev/null
+  [ -f "$sf" ] && read -r old silent alerted < "$sf" 2>/dev/null || true  # read 在无换行/空文件时返 1,不兜底会在 set -e 下击穿调用方
   if [ "$h" = "${old:-}" ]; then silent=$((silent+EV_TICK)); else silent=0; alerted=0; fi
   if [ "$silent" -ge "$EV_STALL" ] && [ "${alerted:-0}" -eq 0 ]; then
     alerted=1
@@ -647,6 +649,10 @@ ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值�
 }
 
 ev_loop(){
+  # 监视器的存活优先于单次扫描的严格性:脚本全局 set -Eeuo pipefail,而循环里
+  # "无 verify-* 窗口时 grep 返 1"这类**正常空结果**会经 pipefail 把整个循环无声带死
+  # (2026-08-13 实撞两次:12:06 起 60s 即死、重启后再死;窗口还在 ⇒ status/doctor 全报假绿灯)
+  set +e; set +o pipefail
   mkdir -p "$EV_DIR"
   ev_scan_deliveries > "$EV_SEEN"
   ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份"
@@ -675,27 +681,34 @@ $(cat "$EV_SPOOL")"
     ev_watch_target "lane-b"
     tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep '^verify-' | while read -r vw; do
       ev_watch_target "$vw"
-    done
+    done || true   # 无 verify-* 窗口时 grep 返 1 属正常空结果——这正是两次击穿循环的那颗雷
   done
 }
+
+ev_alive(){ pgrep -f "laixin-lane ev-loop" >/dev/null 2>&1; }  # 判活只认进程:窗口存在是进程存活的不可靠代理(2026-08-13 实撞:循环死了窗口还在,status/doctor/看门狗全被假绿灯骗过)
 
 cmd_events(){
   case "${1:-status}" in
     start)
       ensure_session
-      win_exists "$EV_WIN" && { echo "事件总线已在跑"; return 0; }
+      ev_alive && { echo "事件总线已在跑(进程判活:pgrep -f 'laixin-lane ev-loop')"; return 0; }
+      win_exists "$EV_WIN" && tmux kill-window -t "$SESSION:$EV_WIN"  # 残留假绿灯窗口,清掉重起
       dispatch_alive || echo "提示:dispatch 不在——交付事件将暂存(spool),告警将丢弃。通常应由 laixin-lane dispatch 自动带起本总线。"
+      mkdir -p "$EV_DIR"
       tmux new-window -d -t "$SESSION" -n "$EV_WIN" -c "$HOME"
       sleep 0.3
-      tmux send-keys -t "$SESSION:$EV_WIN" "laixin-lane ev-loop" C-m
-      echo "事件总线已启动(窗口 $EV_WIN;日志 $EV_LOG)"
+      tmux send-keys -t "$SESSION:$EV_WIN" "laixin-lane ev-loop 2>>$EV_LOG" C-m
+      echo "事件总线已启动(窗口 $EV_WIN;日志 $EV_LOG;stderr 也落此,死因不再无声)"
       ;;
     stop)
+      pkill -f "laixin-lane ev-loop" 2>/dev/null || true
       win_exists "$EV_WIN" || { echo "本就没在跑"; return 0; }
       tmux kill-window -t "$SESSION:$EV_WIN"; board "事件总线" "停止"; echo "已停"
       ;;
     status)
-      win_exists "$EV_WIN" && echo "事件总线:运行中" || echo "事件总线:未运行"
+      if ev_alive; then echo "事件总线:运行中(进程判活)"
+      elif win_exists "$EV_WIN"; then echo "事件总线:⛔ 窗口在但循环已死(假绿灯态)——laixin-lane events stop && laixin-lane events start"
+      else echo "事件总线:未运行"; fi
       if [ -s "$EV_SPOOL" ]; then echo "spool 暂存:$(grep -c '^【事件】' "$EV_SPOOL") 条待投"; else echo "spool:空"; fi
       [ -f "$EV_LOG" ] && { echo "--- 日志末 5 行 ---"; tail -5 "$EV_LOG"; }
       return 0
@@ -943,7 +956,7 @@ cmd_dispatch() {
   tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
   printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
   board "看门狗" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
-  win_exists "$EV_WIN" || cmd_events start >/dev/null 2>&1 || true
+  ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
   echo "$DISPATCH_WIN 已起并接管。复核:laixin-lane peek-d 30"
 }
 
@@ -961,7 +974,7 @@ wd_loop() {
   while true; do
     sleep "$interval"
     # —— 0. 事件总线也要活着(它给派工窗口喂事件) ——
-    win_exists "$EV_WIN" || { board "看门狗" "事件总线不在,自动重启"; cmd_events start >/dev/null 2>&1 || true; }
+    ev_alive || { board "看门狗" "事件总线循环已死(窗口在≠活着),重启"; cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then
       if [ "$restarts" -ge "$max_restart" ]; then

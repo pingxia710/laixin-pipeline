@@ -82,6 +82,13 @@ tout "A 轨取到 ready 片且跳过已发车" "测试可发片" ev_next_ready A
 tout "B 轨认已写等价 ready" "前端片" ev_next_ready B
 rm -rf "$TMPT"
 
+echo "== 6. 事件总线守活(2026-08-13 假绿灯实撞后加,静态回归绊线) =="
+tout "ev-loop 循环体禁用 -e/pipefail(监视器不许被空结果带死)" "set +e" sed -n "/^ev_loop/,/^}/p" "$LANE"
+tout "verify 窗口空集扫描有兜底" "done || true" sed -n "/^ev_loop/,/^}/p" "$LANE"
+tout "ev_alive 判活认进程不认窗口" "pgrep -f" sed -n "/^ev_alive/,/^}/p" "$LANE"
+tout "events status 有假绿灯态提示" "窗口在但循环已死" sed -n "/^cmd_events/,/^}/p" "$LANE"
+tout "看门狗巡检用进程判活重启 events" "ev_alive || { board" grep "ev_alive || { board" "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

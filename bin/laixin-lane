@@ -828,11 +828,12 @@ cmd_next_worktree(){  # B 轨 worktree 编号:已注册的 + 目录残留的都�
 cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗口——防手抄 hash 笔误,顺带机器校验交付契约
   local report="${1:-}"; shift || true
   [ -n "$report" ] || die "用法:laixin-lane verify-from <交付报告路径> --prompt <路径> [--to X] [--dry]"
-  local prompt="" to="" dry=""
+  local prompt="" to="" dry="" allow_stale=""
   while [ $# -gt 0 ]; do case "$1" in
     --prompt) prompt="${2:?}"; shift 2 ;;
     --to)     to="${2:?}"; shift 2 ;;
     --dry)    dry=1; shift ;;
+    --allow-stale) allow_stale=1; shift ;;
     *) die "未知参数:$1" ;;
   esac; done
   [ -f "$report" ] || die "报告不存在:$report"
@@ -842,11 +843,26 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
   read -r branch commit <<< "$(echo "$last" | sed 's/\*//g; s/^【交付完成】[[:space:]]*//')"
   [ -n "$branch" ] && [ -n "$commit" ] || die "末行解析不出分支与 commit:$last"
   git -C "$DEFAULT_DIR" cat-file -t "$commit" >/dev/null 2>&1 || die "commit $commit 在仓库不存在——报告末行可能笔误"
+  # ⛔ 末行是会过期的快照(2026-08-13 夜,一晚实撞两次):开发方交付后自行 rebase,分支前进而报告末行
+  #   没更新——B 轨那次已交接才发现,验收窗口整轮改验。比对分支 ref 是机器的活,不该靠派工窗口肉眼。
+  local tip="" stale=""
+  tip="$(git -C "$DEFAULT_DIR" rev-parse --verify -q "$branch" 2>/dev/null || true)"
+  if [ -n "$tip" ]; then
+    case "$tip" in "$commit"*) : ;; *) stale=1 ;; esac
+  fi
   local slice; slice="$(basename "$report" .md)"
   slice="$(echo "$slice" | sed -E 's/(验收记录|-?交付报告)$//; s/^来信平台-//')"
   echo "解析:片名=$slice  分支=$branch  commit=$commit  (契约与 commit 存在性已校验)"
+  [ -n "$tip" ] || echo "⚠️ 分支 $branch 在仓库解析不到(可能已删)——无法核对末行快照是否过期"
+  if [ -n "$stale" ]; then
+    echo "⛔ 末行快照已过期:分支 $branch 现指向 ${tip:0:12},报告末行是 $commit——交付后分支又动过(常见:开发方自行 rebase 而报告没更新,或 fresh 抢在它更新报告之前)。"
+    echo "   验的必须是要合的:请开发方更新报告末行,或核实 ${tip:0:12} 后按它验收。"
+  fi
   if [ -n "$dry" ]; then echo "(--dry:不起窗)"; return 0; fi
   [ -n "$prompt" ] || die "需要 --prompt <该片prompt绝对路径>"
+  if [ -n "$stale" ] && [ -z "$allow_stale" ]; then
+    die "⛔ 拒绝按过期快照起验收窗口(分支已前进到 ${tip:0:12})。更新报告末行后重试;确要验旧 commit 加 --allow-stale。"
+  fi
   cmd_verify "$slice" --branch "$branch" --commit "$commit" --report "$report" --prompt "$prompt" ${to:+--to "$to"}
 }
 

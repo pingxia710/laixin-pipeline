@@ -628,7 +628,26 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
 ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值投递一次告警,变化即复位
   local w="$1"; local sf="$EV_DIR/$w.state"  # 必须分两条:同一条 local 的参数先全部展开再赋值,$w 在展开时还未定义,set -u 直接击杀(2026-08-13 两次无声死亡的真凶)
   local h; h="$(pane_hash "$w")"
-  if [ "$h" = "GONE" ]; then rm -f "$sf"; return 0; fi
+  local gf; gf="$EV_DIR/$w.gone"
+  if [ "$h" = "GONE" ]; then
+    rm -f "$sf"
+    # ⚠️ GONE 必须分两类看待(2026-08-13 实撞后加):
+    #   verify-* 消失 = vdown 正常回收 ⇒ 静默(原行为,保留);
+    #   lane-* 消失   = 常驻窗口没了,永远不正常 ⇒ 必须告警。
+    # 原实现对两者一视同仁地静默 ⇒ lane-b 派工后窗口整个消失,空转 17 分钟无人知道。
+    # ⭐ 这是监控的经典盲区:「6 分钟无变化」会告警,而「窗口整个不存在」反而静默——
+    #    恰恰是更严重的那种。监控器只能看见它假设存在的东西:窗口没了,连"无变化"都无从谈起。
+    case "$w" in
+      lane-a|lane-b)
+        [ -f "$gf" ] && return 0   # 已告过一次,不刷屏;窗口回来后标记会被清掉,再消失还会再告
+        : > "$gf"
+        ev_deliver "告警" "【告警】$w 窗口整个消失(不是无变化,是**不存在**)——Codex 已死且不会自己回来,该轨此刻零产出。
+处置:laixin-lane fresh ${w#lane-} 重起 → 重发该轨当前片的 prompt 路径(Codex 从分支现场续,已落地的 commit 不丢);若该轨本无在飞片,在总表「进行中」写明空转原因。"
+        ;;
+    esac
+    return 0
+  fi
+  rm -f "$gf"   # 窗口在 ⇒ 清除消失标记,使"再次消失"仍能告警(否则只报第一次)
   local old="" silent=0 alerted=0
   [ -f "$sf" ] && read -r old silent alerted < "$sf" 2>/dev/null || true  # read 在无换行/空文件时返 1,不兜底会在 set -e 下击穿调用方
   if [ "$h" = "${old:-}" ]; then silent=$((silent+EV_TICK)); else silent=0; alerted=0; fi

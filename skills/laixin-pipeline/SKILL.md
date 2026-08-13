@@ -61,7 +61,7 @@ laixin-lane watchdog start|stop|status     # 看门狗(需先 laixin-lane dispat
 - **先 `fresh` 再 `send`**——Codex 上下文不跨片,prompt 自包含(权威库直读);
 - **`send` 之后必 `peek` 复核**:见 `Working`/`Explored`/`Read` 才算派工成功;只见提示符=消息被吞,重发;
 - **发车前校准占号(机器执法)**:A 轨跑 `laixin-lane next-migration`,B 轨跑 `laixin-lane next-worktree`——未合并分支与未提交文件都占号,main 上 `ls` 看不见(0026/0033 两次实撞);prompt 里写死的号以此为准覆核;
-- 发车后:总表"进行中"登记 + 看板记 `派工 <片名> → lane-<轨>`。
+- **先登记后发车(2026-08-13 改,顺序即闸门)**:`send` **之前**先把总表改到位(交付片移入"验收中"、本片登记"进行中"),再 fresh+send——**Codex 的发车前置检查读的就是这张表**,先发后登必留一个读到旧表的窗口期(实撞第三次:lane-a 因台账滞后拒发,三次全对);发车后看板记 `派工 <片名> → lane-<轨>`。
 
 **2. 事件由事件总线投递(2026-08-13 第三轮:你不需要也不要自建 Monitor)**
 

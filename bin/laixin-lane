@@ -1030,7 +1030,16 @@ vtrusted_dir() {  # 只对本机自有目录自动确认信任对话框,其他�
 vwait_ready() {  # 轮询画面按内容分派按键,直到 claude 输入框就绪(替代盲等+盲发键)
   local w="$1" dir="$2" pane tries=0
   while [ "$tries" -lt 45 ]; do
-    pane="$(tmux capture-pane -p -t "$SESSION:$w" -S -45 2>/dev/null || true)"
+    pane="$(tmux capture-pane -p -t "$SESSION:$w" -S -60 2>/dev/null || true)"
+    # 专线自检(readiness)拦截 = claude 拒绝启动,pane 回落 shell——秒级识别并带出原因,
+    # 不哑等 90s(2026-08-13 实撞:自检 FAIL 致验收窗口没起来,当时只报"启动超时"无原因)
+    if echo "$pane" | grep -qE '结果：[1-9][0-9]* fail'; then
+      local why; why="$(echo "$pane" | grep -E '^\[FAIL\]' | head -5)"
+      board "事件总线" "⛔ $w 起窗被专线自检拦截:$(echo "$why" | head -1)"
+      die "$w 被专线自检(readiness)拦截,claude 拒绝启动。FAIL 项:
+${why:-(未捕获到 FAIL 行,peek 看现场)}
+处置:①修专线问题(us-status / bash dns-guard.sh);②窗口已保留供诊断,看完 vdown 回收。**自检拦截是 fail-closed 保护(封号风险>停摆),不要绕过。**"
+    fi
     case "$pane" in
       *"mode on"*|*"for agents"*|*"? for shortcuts"*) return 0 ;;                 # 已就绪(各权限模式状态栏文案不同,取并集)
       *"MCP servers"*)              tmux send-keys -t "$SESSION:$w" Escape ;;     # 不给验收窗口挂 MCP
@@ -1044,6 +1053,8 @@ vwait_ready() {  # 轮询画面按内容分派按键,直到 claude 输入框就�
     esac
     sleep 2; tries=$((tries+1))
   done
+  # 90s 仍未就绪:把 pane 末尾带出来,别让调用者盲猜
+  board "事件总线" "⛔ $w 启动超时(90s),pane 末行:$(tmux capture-pane -p -t "$SESSION:$w" -S -5 2>/dev/null | grep -v '^$' | tail -1)"
   return 1
 }
 

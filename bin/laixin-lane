@@ -1,0 +1,1201 @@
+#!/bin/bash
+# laixin-lane — laixin开发流水线的信使脚本(tmux 编排双轨 Codex + 看板自动记录)
+# 用法:
+#   laixin-lane up a [--dir DIR]     确保 lane-a 窗口存在并启动 codex(默认 DIR=~/来信平台)
+#   laixin-lane fresh <a|b> [--dir DIR]  重启该轨(down+up,全新上下文;每片派工前用)
+#   laixin-lane send <a|b> <文本>    向该轨 Codex 输入框粘贴文本并回车(多行走 stdin)
+#   laixin-lane peek <a|b> [N]       看该轨最近 N 行输出(默认 60)
+#   laixin-lane log <文本>           手工追加一条事件到流水线看板(供各窗口记录)
+#   laixin-lane status               两轨窗格状态
+#   laixin-lane attach [a|b]         进入会话观看(人用;Ctrl-b d 退出)
+#   laixin-lane down <a|b>           关闭该轨窗口
+#   laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径 [--to 派工窗口名]
+#                                    起一次性验收窗口(全新 claude,验完即弃);派工窗口用
+#   laixin-lane vdown <片名>         回收该验收窗口(收到回执后调,与 worktree 回收同理)
+#   laixin-lane vlist                列出在跑的验收窗口
+#   laixin-lane dispatch [--fresh]   起(或换新)托管的派工窗口;看门狗要靠它才能重生流水线
+#   laixin-lane peek-d [N]           看派工窗口最近 N 行
+#   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
+#   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
+#   laixin-lane whoholds             谁当前持有派工权
+#   laixin-lane ctx [会话id前缀]     当前上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)
+#   laixin-lane evidence [片名]      看验收留下的证据文件(回执里的数字须能在此 grep 到)
+#   laixin-lane evid-gc [天数]       清理超期证据目录(默认 7 天)
+#   laixin-lane doctor               体检:skill 落位/命令/知识库/拓扑/发车位/已知工程债
+#   laixin-lane stats                流水线节奏(静默占比)+队列燃料+片级周期
+#   laixin-lane events start|stop|status  事件总线:交付与卡住事件投递进派工窗口(dispatch 自动带起)
+#   laixin-lane verify-from <报告> --prompt P [--to X] [--dry]  解析报告末行起验收(防手抄 hash 错)
+#   laixin-lane next-migration       下一可用迁移号(未合并分支/未提交文件也占号,全都扫)
+#   laixin-lane next-worktree        下一可用 B 轨 worktree 号
+#   laixin-lane handoff              生成交接包客观半部(判断仍须人写并标明)
+#   laixin-lane halt                 一键停三件套(lanes/verify 不动)
+#   laixin-lane resurrect [--infra|--full]  重启后恢复:--infra 只起 events(默认,不烧钱);--full 三件套全起
+#   laixin-lane uptime               三件套连续运行时长+今日事件计数
+#   laixin-lane daily-report         夜报聚合(看板+守护日志过去24h,早晨汇报用)
+#   laixin-lane install-boot         装开机自恢复(infra 级,launchd)
+set -euo pipefail
+
+# ---- 配置(全部可被环境变量或 config 文件覆盖;默认值=来信平台) ----
+# 跨项目复用:复制 ~/.config/laixin-lane/config.example 为 config 并改路径即可,脚本本体不用改
+[ -f "$HOME/.config/laixin-lane/config" ] && . "$HOME/.config/laixin-lane/config"
+SESSION="${LAIXIN_SESSION:-laixin}"
+DEFAULT_DIR="${LAIXIN_REPO:-$HOME/来信平台}"
+BOARD="${LAIXIN_BOARD:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md}"
+# 验收窗口以 --permission-mode auto 起(分类器逐条判安全:只读/测试自动过,危险动作仍拦)
+# 白名单是加速项而非唯一闸门——带 && 的复合命令一律绕不过分类器,靠白名单撑不住夜间无人值守
+VERIFY_ALLOW=(
+  "Bash(pytest*)" "Bash(python -m pytest*)" "Bash(python3 -m pytest*)" "Bash(alembic*)"
+  "Bash(git status*)" "Bash(git log*)" "Bash(git diff*)" "Bash(git show*)" "Bash(git branch*)"
+  "Bash(git rev-parse*)" "Bash(git merge-base*)" "Bash(git worktree*)" "Bash(git checkout*)" "Bash(git rebase*)"
+  "Bash(ls*)" "Bash(cat*)" "Bash(head*)" "Bash(tail*)" "Bash(wc*)" "Bash(grep*)" "Bash(rg*)" "Bash(find*)"
+  "Bash(browser-harness*)" "Bash(curl*)" "Bash(laixin-lane vlog*)" "Bash(laixin-lane peek*)"
+  "Read" "Write" "Edit" "Glob" "Grep"
+)
+# 机器执法:验收窗口不合并、不推送、不碰 lane(纪律交给工具层,不靠自觉)
+VERIFY_DENY=(
+  "Bash(git push*)" "Bash(git merge*)" "Bash(git reset --hard*)"
+  "Bash(laixin-lane send*)" "Bash(laixin-lane fresh*)" "Bash(laixin-lane up*)" "Bash(laixin-lane down*)"
+)
+
+die() { echo "laixin-lane: $*" >&2; exit 1; }
+
+board() {  # board <来源> <事件文本> —— 追加一行到看板事件流
+  local src="$1"; shift
+  printf '| %s | %s | %s |\n' "$(date '+%m-%d %H:%M')" "$src" "$*" >> "$BOARD" 2>/dev/null || true
+}
+
+win() {
+  case "$1" in
+    a|b) echo "lane-$1" ;;
+    *) die "轨道只能是 a 或 b,收到:$1" ;;
+  esac
+}
+
+ensure_session() {
+  tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n "hub" -c "$HOME"
+}
+
+target() { echo "$SESSION:$(win "$1")"; }
+
+has_window() {
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$(win "$1")"
+}
+
+cmd_up() {
+  local lane="${1:-}"; shift || true
+  [ -n "$lane" ] || die "up 需要轨道名:laixin-lane up a|b [--dir DIR]"
+  local dir="$DEFAULT_DIR"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) dir="${2:?--dir 需要路径}"; shift 2 ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  [ -d "$dir" ] || die "目录不存在:$dir"
+  ensure_session
+  if has_window "$lane"; then
+    echo "$(win "$lane") 已存在。换目录/新上下文用:laixin-lane fresh $lane [--dir DIR]"
+    tmux display-message -p -t "$(target "$lane")" '#{window_name}: #{pane_current_path} [#{pane_current_command}]'
+    return 0
+  fi
+  tmux new-window -t "$SESSION" -n "$(win "$lane")" -c "$dir"
+  sleep 0.5
+  tmux send-keys -t "$(target "$lane")" "codex" C-m
+  board "lane-$lane" "启动 codex @ $dir"
+  echo "$(win "$lane") 已在 $dir 启动 codex。观看:laixin-lane attach $lane"
+}
+
+cmd_fresh() {
+  local lane="${1:-}"; shift || true
+  [ -n "$lane" ] || die "fresh 需要轨道名"
+  if has_window "$lane"; then
+    tmux kill-window -t "$(target "$lane")"
+    board "lane-$lane" "重启(全新上下文)"
+    sleep 0.3
+  fi
+  cmd_up "$lane" "$@"
+}
+
+cmd_send() {
+  local lane="${1:-}"; shift || true
+  [ -n "$lane" ] || die "send 需要轨道名"
+  has_window "$lane" || die "$(win "$lane") 不存在,先 laixin-lane up $lane"
+  local text
+  if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
+  [ -n "$text" ] || die "没有要发送的内容"
+  printf '%s' "$text" | tmux load-buffer -b laixin-msg -
+  tmux paste-buffer -p -b laixin-msg -t "$(target "$lane")"
+  tmux delete-buffer -b laixin-msg
+  sleep 0.4
+  tmux send-keys -t "$(target "$lane")" C-m
+  lock_write   # 派工即续期:动 lane 的那个窗口就是派工窗口
+  local head1; head1="$(echo "$text" | head -1 | cut -c1-80)"
+  board "lane-$lane" "← 收到:${head1}"
+  echo "已发送到 $(win "$lane")(${head1}…)"
+}
+
+cmd_peek() {
+  local lane="${1:-}"; local n="${2:-60}"
+  [ -n "$lane" ] || die "peek 需要轨道名"
+  has_window "$lane" || die "$(win "$lane") 不存在"
+  tmux capture-pane -p -t "$(target "$lane")" -S "-$n"
+}
+
+cmd_log() {
+  local src="${LAIXIN_WINDOW:-窗口}"
+  [ $# -gt 0 ] || die "log 需要事件文本(来源可用环境变量 LAIXIN_WINDOW 标注,如 执行窗口/方案窗口)"
+  board "$src" "$*"
+  echo "已记录到看板"
+}
+
+cmd_status() {
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在(laixin-lane up a 创建)"; return 0; }
+  tmux list-windows -t "$SESSION" -F '#{window_name}  #{pane_current_path}  [#{pane_current_command}]'
+}
+
+cmd_attach() {
+  local lane="${1:-}"
+  tmux has-session -t "$SESSION" 2>/dev/null || die "会话 $SESSION 不存在"
+  if [ -n "$lane" ]; then tmux select-window -t "$(target "$lane")"; fi
+  exec tmux attach -t "$SESSION"
+}
+
+cmd_down() {
+  local lane="${1:-}"
+  [ -n "$lane" ] || die "down 需要轨道名"
+  has_window "$lane" || { echo "$(win "$lane") 本就不存在"; return 0; }
+  tmux kill-window -t "$(target "$lane")"
+  board "lane-$lane" "关闭"
+  echo "$(win "$lane") 已关闭"
+}
+
+# ============ 证据落盘(2026-08-13 补:把"铁律三"从靠自觉变成可机器复查) ============
+EVID_ROOT="$HOME/.laixin-evidence"
+
+# 上下文占比:从 Claude Code 本地 transcript 精确读(零依赖;判据是**占比**不是 token 绝对数)
+# 依据 pingxia-e6 的实测:自我感知会低估 15-25 个百分点(感觉"30-40%",实际 54.9%)⇒ 不能靠窗口自己估
+cmd_ctx() {
+  local proj="${LAIXIN_CTX_PROJ:-$HOME/.claude-official/projects/-Users-pingxia}"
+  python3 - "$proj" "${1:-}" <<'PY'
+import json,os,sys,glob
+proj,want=sys.argv[1],(sys.argv[2] if len(sys.argv)>2 else "")
+win=int(os.environ.get("LAIXIN_CTX_WINDOW","1000000"))   # 分母可配:换模型必须改,写死会让闸门静默失效
+files=sorted(glob.glob(os.path.join(proj,"*.jsonl")),key=os.path.getmtime,reverse=True)
+if not files: print("找不到 transcript:"+proj); sys.exit(0)
+def read_ctx(path):
+    last=None
+    for line in open(path,encoding="utf-8",errors="ignore"):
+        try: d=json.loads(line)
+        except: continue
+        u=(d.get("message") or {}).get("usage")
+        if u: last=u
+    if not last: return None
+    return last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("cache_creation_input_tokens",0)
+if want:
+    m=[f for f in files if want in os.path.basename(f)]
+    if not m: print(f"没有匹配 '{want}' 的会话"); sys.exit(0)
+    files=m
+elif len(files)>1:
+    # ⚠️ 多窗口并存时"mtime 最新"不等于"你自己"——列出来让调用者认领,而不是猜
+    print("⚠️ 检测到多个会话,mtime 最新的**未必是你自己**(本机同时跑着方案/派工/验收多个窗口)。")
+    print("   你的 session id 在 scratchpad 路径里(系统提示里那串 uuid 的前 8 位)。")
+    print("   指定自己:laixin-lane ctx <前8位>\n")
+    for f in files[:5]:
+        c=read_ctx(f)
+        print(f"   {os.path.basename(f)[:8]}…  {(f'{c:,} = {c/win*100:.1f}%' if c else '无 usage 记录'):<26} 改于 {__import__('time').strftime('%H:%M:%S',__import__('time').localtime(os.path.getmtime(f)))}")
+    print()
+    sys.exit(0)
+f=files[0]
+last=None
+with open(f,encoding="utf-8",errors="ignore") as fh:
+    for line in fh:
+        try: d=json.loads(line)
+        except: continue
+        u=(d.get("message") or {}).get("usage")
+        if u: last=u
+if not last: print("该 transcript 无 usage 记录:"+os.path.basename(f)); sys.exit(0)
+cur=last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("cache_creation_input_tokens",0)
+pct=cur/win*100
+bar="█"*int(pct//5)+"░"*(20-int(pct//5))
+print(f"会话 {os.path.basename(f)[:8]}…  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
+if   pct>=70: print("🔴 ≥70% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
+elif pct>=55: print("🟡 55-70%:进入交班准备区,别再开新调查;手上这片收尾就交班")
+else:         print("🟢 <55%:正常工作区间")
+print("注:判据是**占比**不是 token 绝对数——同样 500k,1M 模型是半程、200k 模型早已溢出。分母用 LAIXIN_CTX_WINDOW 覆盖。")
+PY
+  return 0
+}
+
+cmd_evidence() {
+  local slice="${1:-}"
+  if [ -z "$slice" ]; then
+    [ -d "$EVID_ROOT" ] || { echo "还没有任何证据目录"; return 0; }
+    echo "== 已留证的片 =="
+    for d in "$EVID_ROOT"/*/; do
+      [ -d "$d" ] || continue
+      printf '  %-28s %s 个文件  %s\n' "$(basename "$d")" "$(ls -1 "$d" 2>/dev/null | wc -l | tr -d ' ')" \
+        "$(date -r "$d" '+%m-%d %H:%M' 2>/dev/null)"
+    done
+    echo "看某片:laixin-lane evidence <片名>"
+    return 0
+  fi
+  local slug; slug="$(echo "$slice" | tr ' /' '--' | cut -c1-24)"
+  local dir="$EVID_ROOT/$slug"
+  [ -d "$dir" ] || die "无该片证据目录:$dir(验收窗口没落盘,或片名不符)"
+  echo "== $slug 的证据($dir) =="
+  local n=0
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    n=$((n+1))
+    printf '\n--- %s (%s 行, %s) ---\n' "$(basename "$f")" "$(wc -l < "$f" | tr -d ' ')" "$(date -r "$f" '+%m-%d %H:%M')"
+    # 只抽关键行:测试计数、失败、错误、迁移落点——派工窗口一眼看到真实数字
+    grep -aE "passed|failed|error|ERROR|FAILED|Traceback|alembic current|head\)|OperationalError" "$f" 2>/dev/null \
+      | tail -6 | sed 's/^/    /' || echo "    (无关键行)"
+  done
+  [ "$n" -eq 0 ] && echo "  ⚠️ 目录是空的——回执里的数字没有任何落盘证据支撑"
+  echo
+  echo "复查用法:回执里出现的每个数字,都应能在上面 grep 到;对不上就是编造或口误,退回重验。"
+  return 0
+}
+
+cmd_evidence_gc() {
+  [ -d "$EVID_ROOT" ] || { echo "无证据目录"; return 0; }
+  local days="${1:-7}" n=0
+  while IFS= read -r d; do
+    rm -rf "$d"; n=$((n+1))
+  done < <(find "$EVID_ROOT" -maxdepth 1 -mindepth 1 -type d -mtime +"$days" 2>/dev/null)
+  echo "已清理 $n 个超过 ${days} 天的证据目录"
+  return 0
+}
+
+# ============ doctor / stats(2026-08-13 补) ============
+KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}"
+TABLE="${LAIXIN_TABLE:-$KB/4-开发层/来信平台-执行总表.md}"
+
+cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自有活,由派工流程收尾)
+  local stopped=""
+  win_exists "$WATCHDOG_WIN" && { tmux kill-window -t "$SESSION:$WATCHDOG_WIN"; stopped="$stopped watchdog"; }
+  win_exists "$EV_WIN"       && { tmux kill-window -t "$SESSION:$EV_WIN"; stopped="$stopped events"; }
+  if dispatch_alive; then tmux kill-window -t "$SESSION:$DISPATCH_WIN"; stopped="$stopped dispatch"; fi
+  # 只清属于托管窗口的锁——外部手开派工窗口的锁不动(halt 不该打开双派工的风险窗口)
+  [ "$(lock_holder)" = "$DISPATCH_WIN" ] && rm -f "$DISPATCH_LOCK"
+  board "方案窗口" "halt:三件套停止(${stopped:-本就没在跑});lanes/verify 未动"
+  echo "已停:${stopped:-无(三件套本就没在跑)}"
+  echo "仍在跑:"; tmux list-windows -t "$SESSION" -F '  #{window_name} [#{pane_current_command}]' 2>/dev/null | grep -vE 'hub' || echo "  (无)"
+  return 0
+}
+
+cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧钱,交付信号不丢);--full:三件套全起
+  local mode="${1:---infra}"
+  ensure_session
+  case "$mode" in
+    --infra)
+      win_exists "$EV_WIN" || cmd_events start
+      echo "基础设施已恢复:events 在跑(交付暂存 spool)。引擎点火用:laixin-lane resurrect --full"
+      ;;
+    --full)
+      cmd_dispatch --force-rival 2>/dev/null || cmd_dispatch
+      win_exists "$WATCHDOG_WIN" || cmd_watchdog start
+      echo "三件套已全部拉起。laixin-lane doctor 复核。"
+      ;;
+    *) die "resurrect 只接受 --infra(默认,只起事件总线) 或 --full(三件套全起,会启动 claude 计费)" ;;
+  esac
+  return 0
+}
+
+cmd_uptime() {  # 三件套连续运行时长与今日事件计数(持续运行记录的实时视图)
+  local now; now="$(date +%s)"
+  for pair in "watchdog:$WD_LOG" "events:$EV_LOG"; do
+    local name="${pair%%:*}" f="${pair#*:}"
+    if [ "$name" = watchdog ] && ! win_exists "$WATCHDOG_WIN"; then echo "watchdog: 未运行"; continue; fi
+    if [ "$name" = events ]   && ! win_exists "$EV_WIN";       then echo "events:   未运行"; continue; fi
+    local start
+    start="$(grep -E '启动' "$f" 2>/dev/null | tail -1 | sed -E 's/^\[([^]]+)\].*/\1/')"
+    if [ -n "$start" ]; then
+      local st; st="$(date -j -f '%Y-%m-%d %H:%M:%S' "$start" +%s 2>/dev/null || echo "$now")"
+      printf '%-9s 连续运行 %s 小时 %s 分\n' "$name:" "$(( (now-st)/3600 ))" "$(( ((now-st)%3600)/60 ))"
+    else
+      printf '%-9s 运行中(日志无启动记录)\n' "$name:"
+    fi
+  done
+  dispatch_alive && echo "dispatch: 托管中" || echo "dispatch: 未托管"
+  local today; today="$(date '+%F')"
+  echo "今日事件:投递 $(grep -c "^\[$today.*投递" "$EV_LOG" 2>/dev/null || echo 0) · 暂存 $(grep -c "^\[$today.*暂存" "$EV_LOG" 2>/dev/null || echo 0) · 看门狗动作 $(grep -c "^\[$today" "$WD_LOG" 2>/dev/null || echo 0)"
+  return 0
+}
+
+cmd_daily_report() {  # 夜报聚合:看板+事件日志+看门狗日志的过去24h(方案窗口早晨向创始人汇报用)
+  local since="${1:-$(date -v-24H '+%m-%d %H:%M' 2>/dev/null || date '+%m-%d 00:00')}"
+  echo "# 流水线日报(自 $since 起,生成于 $(date '+%F %H:%M'))"
+  echo
+  echo "## 看板事件(合并/打回/挂起/换班/派工)"
+  grep '^|' "$BOARD" | awk -F'|' -v s="$since" '$2>=" "s' 2>/dev/null | grep -E '合并|打回|挂起|换班|派工|交付|验收通过' | tail -30 | sed 's/^/  /' || echo "  (无)"
+  echo
+  echo "## 节奏·燃料·周期"
+  cmd_stats 2>/dev/null | sed 's/^/  /'
+  echo
+  echo "## 守护日志(异常优先)"
+  { grep -E '重起|戳|暂存|丢弃|不自动' "$WD_LOG" "$EV_LOG" 2>/dev/null | tail -15 | sed 's/^/  /'; } || echo "  (无异常)"
+  echo
+  echo "## 当前拓扑"; cmd_status 2>/dev/null | sed 's/^/  /'
+  cmd_uptime | sed 's/^/  /'
+  return 0
+}
+
+cmd_install_boot() {  # 开机自恢复(infra 级:只起 events 保信号不丢,不自动烧钱)
+  local plist="$HOME/Library/LaunchAgents/com.pingxia.laixin-lane.plist"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.pingxia.laixin-lane</string>
+  <key>ProgramArguments</key><array>
+    <string>$HOME/.local/bin/laixin-lane</string><string>resurrect</string><string>--infra</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$HOME/.laixin-events.d/boot.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.laixin-events.d/boot.log</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict></plist>
+PLIST
+  launchctl unload "$plist" 2>/dev/null || true
+  launchctl load "$plist"
+  echo "已装开机自恢复(infra 级):重启后自动起 tmux+events,交付信号不丢;claude 不自动启动(不烧钱)。"
+  echo "引擎点火仍需人/方案窗口:laixin-lane resurrect --full。卸载:launchctl unload $plist && rm $plist"
+  return 0
+}
+
+cmd_doctor() {
+  local fail=0 warn=0
+  ok()   { printf '  ✅ %s\n' "$*"; }
+  bad()  { printf '  ❌ %s\n' "$*"; fail=$((fail+1)); }
+  wrn()  { printf '  ⚠️  %s\n' "$*"; warn=$((warn+1)); }
+
+  echo "== 1. skill 落位(单点源=~/.codex/skills,其余必须是软链) =="
+  local eff="${CLAUDE_CONFIG_DIR:-$HOME/.claude-official}"
+  for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience; do
+    if [ ! -f "$HOME/.codex/skills/$sk/SKILL.md" ]; then bad "$sk 单点源缺失"; continue; fi
+    if [ -L "$eff/skills/$sk" ]; then ok "$sk 生效目录已软链"
+    elif [ -d "$eff/skills/$sk" ]; then bad "$sk 在生效目录是**实体副本**(会与单点源漂移)"
+    else bad "$sk 未落在生效目录 $eff/skills —— 窗口调不到它(静默失效)"; fi
+    if [ -d "$HOME/.claude/skills/$sk" ] && [ ! -L "$HOME/.claude/skills/$sk" ]; then
+      wrn "$sk 在 ~/.claude/skills 还有一份实体副本(第二份事实,建议改软链)"; fi
+  done
+
+  echo "== 2. 脚本与命令 =="
+  local repo_dir="$HOME/Developer/laixin-pipeline"
+  if [ -d "$repo_dir/.git" ]; then
+    local dirty; dirty="$(git -C "$repo_dir" status -s 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$dirty" = "0" ]; then ok "流水线仓库干净(改动已提交,可回滚)"; else wrn "流水线仓库有 $dirty 项未提交改动——脚本改完就提交,改坏才能回滚"; fi
+  else wrn "流水线脚本未纳入 git(~/Developer/laixin-pipeline)"; fi
+  bash -n "$HOME/.local/bin/laixin-lane" 2>/dev/null && ok "laixin-lane 语法正常" || bad "laixin-lane 语法错误"
+  command -v laixin-lane >/dev/null && ok "laixin-lane 在 PATH" || bad "laixin-lane 不在 PATH"
+  command -v claude >/dev/null && ok "claude 可执行" || bad "claude 不可执行(验收/派工窗口起不来)"
+
+  echo "== 3. 权威知识库 =="
+  [ -d "$KB" ] && ok "知识库存在" || bad "知识库路径不存在:$KB"
+  for f in "$BOARD" "$TABLE" "$KB/log.md"; do
+    if [ -w "$f" ]; then ok "可写 $(basename "$f")"; else bad "不可写或不存在 $(basename "$f")"; fi
+  done
+  if [ -d "$HOME/Documents/Obsidian Vault/项目入口/来信平台" ]; then
+    wrn "已停更的 Documents 副本仍在(分叉事故根因;确认无人再读它)"; fi
+
+  echo "== 4. tmux 拓扑 =="
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    ok "会话 $SESSION 在"
+    for l in a b; do win_exists "lane-$l" && ok "lane-$l 在($(pane_cmd "lane-$l"))" || wrn "lane-$l 不存在"; done
+    dispatch_alive && ok "派工窗口托管中" || wrn "派工窗口未托管(看门狗无法重生它;手开的窗口它管不着)"
+    local outn; outn="$(outside_sessions)"
+    if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
+    else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
+    win_exists "$WATCHDOG_WIN" && ok "看门狗运行中" || wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"
+    win_exists "$EV_WIN" && ok "事件总线运行中" || wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"
+    local vs; vs="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^verify-' || true)"
+    [ "${vs:-0}" -gt 0 ] && ok "在跑的验收窗口:$vs 个" || ok "无在跑的验收窗口"
+  else bad "tmux 会话 $SESSION 不存在"; fi
+
+  echo "== 5. 发车位硬闸门(A 轨主树必须干净) =="
+  if [ -d "$DEFAULT_DIR/.git" ]; then
+    local dirty; dirty="$(git -C "$DEFAULT_DIR" status -s -- '*.py' '*.ts' '*.tsx' 2>/dev/null | head -5)"
+    if [ -z "$dirty" ]; then ok "主树无未提交代码改动"
+    else wrn "主树有未提交代码改动(在飞片占号中?发车前必查):"; echo "$dirty" | sed 's/^/       /'; fi
+    ok "主树当前分支:$(git -C "$DEFAULT_DIR" branch --show-current 2>/dev/null)"
+  else bad "主树不是 git 仓库:$DEFAULT_DIR"; fi
+
+  echo "== 6. 已知工程债 =="
+  if [ -f "$DEFAULT_DIR/alembic/versions/20260811_0014_c6_draft_confirmation.py" ]; then
+    if grep -q "inspect\|has_column\|column_exists" "$DEFAULT_DIR/alembic/versions/20260811_0014_c6_draft_confirmation.py" 2>/dev/null; then
+      ok "迁移 0014 已带幂等检查"
+    else
+      wrn "迁移 0014 仍无幂等检查 ⇒ create_all+upgrade head 会在此断,任何片照模板验迁移都被挡"; fi
+  fi
+
+  echo
+  echo "体检结果:$fail 个错误 / $warn 个警告"
+  [ "$fail" -eq 0 ] && echo "可以开工。" || echo "先修错误再开工。"
+  return 0
+}
+
+cmd_stats() {
+  python3 - "$BOARD" "$TABLE" <<'PY'
+import re,sys
+from datetime import datetime
+board,table=sys.argv[1],sys.argv[2]
+rows=[]
+for l in open(board,encoding='utf-8'):
+    m=re.match(r'\|\s*(\d\d-\d\d \d\d:\d\d)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|',l)
+    if m: rows.append((datetime.strptime('2026-'+m.group(1),'%Y-%m-%d %H:%M'),m.group(2),m.group(3)))
+rows.sort()
+print("== 流水线节奏(看板事件流) ==")
+if len(rows)<2: print("  事件太少,不足以统计"); 
+else:
+    span=(rows[-1][0]-rows[0][0]).total_seconds()/60
+    gaps=[((b[0]-a[0]).total_seconds()/60,a,b) for a,b in zip(rows,rows[1:])]
+    idle=sum(m for m,_,_ in gaps if m>=30)
+    print(f"  事件 {len(rows)} 条,跨度 {span/60:.1f}h")
+    print(f"  ≥30 分钟静默合计 {idle/60:.1f}h(占 {idle/span*100:.0f}%)  ← 这是流水线真正的损耗")
+    print("  最长三段静默:")
+    for m,a,b in sorted(gaps,key=lambda x:-x[0])[:3]:
+        print(f"    {m:5.0f} 分钟  {a[0]:%m-%d %H:%M}[{a[1]}] → {b[0]:%m-%d %H:%M}[{b[1]}]")
+    from collections import Counter
+    c=Counter(r[1] for r in rows)
+    print("  事件来源:"+"  ".join(f"{k}×{v}" for k,v in c.most_common()))
+print()
+print("== 队列燃料(执行总表 排队 节) ==")
+s=open(table,encoding='utf-8').read()
+# 先取"进行中"节的在飞片名,用于交叉验证——排队节的状态常滞后于实际发车
+flying=set()
+mf=re.search(r'##\s*进行中.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
+if mf:
+    for line in mf.group(1).split('\n'):
+        if line.startswith('|') and '---' not in line:
+            c=[x.strip() for x in line.strip('|').split('|')]
+            if c and not c[0].startswith('片'):
+                flying.add(re.sub(r'[*~\[\]]','',c[0])[:34])
+m=re.search(r'##\s*排队.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
+buckets={'✅ 可立即发车(prompt ready 且未发)':[], '✏️ 派工窗口可自写(裁定齐/prompt 待写)':[],
+         '🚧 缺设计,要方案窗口补':[], '✔️ 已发车或已合入':[]}
+stale=[]
+if m:
+    for line in m.group(1).split('\n'):
+        if not line.startswith('|') or '---' in line: continue
+        cells=[c.strip() for c in line.strip('|').split('|')]
+        if len(cells)<4 or cells[0].startswith('片'): continue
+        name=re.sub(r'[*~\[\]]','',cells[0])[:34]; st=cells[-1]
+        if '已完成合入' in st or '已发车' in st or '已并入' in st: buckets['✔️ 已发车或已合入'].append(name)
+        elif ('发不了' in st or '设计缺口' in st or '退回方案窗口' in st) and '已补' not in st and '已齐' not in st:
+            buckets['🚧 缺设计,要方案窗口补'].append(name)
+        elif any(name.startswith(f[:12]) or f.startswith(name[:12]) for f in flying):
+            stale.append(name)
+        elif 'ready' in st.lower(): buckets['✅ 可立即发车(prompt ready 且未发)'].append(name)
+        elif '待写' in st: buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'].append(name)
+for k,v in buckets.items():
+    print(f"  {k}: {len(v)}")
+    for n in v[:6]: print(f"      · {n}")
+if stale:
+    print(f"  ⚠️ 排队节状态滞后 {len(stale)} 行(实际已在'进行中'节飞着,排队节还写着待写/ready):")
+    for n in stale: print(f"      · {n}")
+    print("      ⇒ 照排队节排片会重复发车;发车前以'进行中'节为准")
+ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'])
+print()
+print(f"  ⇒ 夜间可无人值守跑的片 ≈ {ready} 片立即可发 + {writable} 片派工窗口能自写")
+if ready+writable==0: print("  ⚠️ 燃料见底:看门狗能让窗口活着,但没片可派。**队列是方案窗口的产出,不是流水线能自造的**")
+
+print()
+print("== 片级周期(尽力解析看板;事件动词越规范这里越准) ==")
+def norm(x): return re.sub(r'[\s*`~«»()()::\-—_]+','',x)
+slices={}
+def find_key(name):
+    n=norm(name)
+    if not n: return None
+    for k in slices:
+        if k.startswith(n[:6]) or n.startswith(k[:6]): return k
+    return n[:16]
+def touch(name,kind,t):
+    k=find_key(name)
+    if not k: return
+    d=slices.setdefault(k,{'name':name.strip().strip('*')[:24]})
+    if kind=='派工': d.setdefault(kind,t)      # 首次派工
+    else: d[kind]=t                            # 其余取最后一次(整改重验覆盖)
+for t,src,txt in rows:
+    m=re.search(r'接下来开发.*?来信平台-(.+?)开发prompt',txt)
+    if m and src.startswith('lane'): touch(m.group(1),'派工',t); continue
+    m=re.search(r'起验收窗口 verify-\S+ ← (\S+?)[((]',txt)
+    if m: touch(m.group(1),'进验',t); continue
+    m=re.search(r'交接 (\S+?) →',txt)
+    if m: touch(m.group(1),'进验',t); continue
+    m=re.search(r'验收开始 (\S+)',txt)
+    if m: touch(m.group(1),'进验',t); continue
+    m=re.search(r'打回(?:回执|)[::]? ?([^\s,,((]+)',txt)
+    if m: touch(m.group(1),'结论',t); continue
+    m=re.search(r'验收通过并?合?并?[::]? ?([^\s,,((]+)',txt)
+    if m: touch(m.group(1),'结论',t); touch(m.group(1),'合并',t); continue
+    m=re.search(r'(?:^|\s)合并[::]? ?([^\s,,((]+)',txt)
+    if m: touch(m.group(1),'合并',t); continue
+shown=0
+for k,v in slices.items():
+    segs=[]
+    if '派工' in v and '进验' in v and v['进验']>v['派工']:
+        segs.append(f"开发 {int((v['进验']-v['派工']).total_seconds()/60)}m")
+    if '进验' in v and '结论' in v and v['结论']>=v['进验']:
+        segs.append(f"验收 {int((v['结论']-v['进验']).total_seconds()/60)}m")
+    if '派工' in v and '合并' in v and v['合并']>v['派工']:
+        segs.append(f"全程 {int((v['合并']-v['派工']).total_seconds()/60)}m")
+    if segs:
+        shown+=1; print(f"  {v['name']:<26} " + " · ".join(segs))
+if not shown: print("  (可配对的事件链不足)")
+PY
+  return 0
+}
+
+# ============ 事件总线(2026-08-13 第三轮:监听不再随窗口死) ============
+# 此前两个 Monitor 活在派工窗口进程里,窗口一换监听就停——7.8h 停摆的直接机制。
+# 事件总线是独立 tmux 窗口里的纯 bash 循环:交付落盘与卡住告警由它投递进派工窗口输入框。
+EV_WIN="events"
+EV_DIR="$HOME/.laixin-events.d"
+EV_LOG="$EV_DIR/events.log"
+EV_SPOOL="$EV_DIR/spool"
+EV_SEEN="$EV_DIR/deliveries.seen"
+EV_STALL="${LAIXIN_EV_STALL:-360}"   # 无变化多少秒判卡住/空闲(默认 6 分钟)
+EV_TICK="${LAIXIN_EV_TICK:-60}"
+
+ev_log(){ echo "[$(date '+%F %T')] $*" >> "$EV_LOG"; }
+
+ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能再触发;验收方追加结论后自然退出集合)
+  local f
+  for f in "$KB/4-开发层/记录"/*.md; do
+    [ -f "$f" ] || continue
+    tail -1 "$f" | grep -q '^【交付完成】' && printf '%s|%s\n' "$f" "$(stat -f %m "$f")"
+  done | sort
+}
+
+ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;"已写"与"ready"等价)
+  awk -v lane="$1" '
+    /^## 排队/{inq=1;next} inq&&/^## /{exit}
+    inq&&/^\|/&&$0!~/^\|---/{
+      if ($0 ~ ("\\| *\\**" lane "\\** *\\|") && $0 ~ /ready|已写/ && $0 !~ /已发车|已完成|已并入|验收中|发不了/) {
+        n=split($0,c,"|"); nm=c[2]; gsub(/[* ~]/,"",nm); print substr(nm,1,28); exit
+      }
+    }' "$TABLE" 2>/dev/null
+}
+
+ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付(事实)暂存,告警(瞬时)丢弃
+  local kind="$1"; shift
+  local text="$*"
+  if dispatch_alive; then
+    printf '%s' "$text" | tmux load-buffer -b laixin-ev -
+    tmux paste-buffer -p -b laixin-ev -t "$SESSION:$DISPATCH_WIN"
+    tmux delete-buffer -b laixin-ev
+    sleep 0.4
+    tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
+    ev_log "投递[$kind] $(echo "$text" | head -1)"
+  else
+    if [ "$kind" = "交付" ]; then
+      { echo "$text"; echo "---"; } >> "$EV_SPOOL"
+      ev_log "暂存[交付] $(echo "$text" | head -1)"
+    else
+      ev_log "丢弃[$kind](dispatch 不在,瞬时告警无行动者) $(echo "$text" | head -1)"
+    fi
+  fi
+}
+
+ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值投递一次告警,变化即复位
+  local w="$1" sf="$EV_DIR/$w.state"
+  local h; h="$(pane_hash "$w")"
+  if [ "$h" = "GONE" ]; then rm -f "$sf"; return 0; fi
+  local old="" silent=0 alerted=0
+  [ -f "$sf" ] && read -r old silent alerted < "$sf" 2>/dev/null
+  if [ "$h" = "${old:-}" ]; then silent=$((silent+EV_TICK)); else silent=0; alerted=0; fi
+  if [ "$silent" -ge "$EV_STALL" ] && [ "${alerted:-0}" -eq 0 ]; then
+    alerted=1
+    case "$w" in
+      lane-a|lane-b)
+        local lane="${w#lane-}" LN nxt hint
+        LN="$(echo "$lane" | tr 'ab' 'AB')"
+        nxt="$(ev_next_ready "$LN")"
+        hint="排队节未解析到该轨可发片 ⇒ 若确无,在总表'进行中'写明原因"
+        [ -n "$nxt" ] && hint="该轨下一片:${nxt}(ready 即 fresh+send)"
+        ev_deliver "告警" "【告警】$w 已 $((silent/60)) 分钟无变化(空闲或卡住)。先 laixin-lane peek $lane 30 判断:等回答/做完没落盘/真空闲。${hint}。三选一(派工/现在写/总表写明),同一轮内给出可见结论。"
+        ;;
+      verify-*)
+        ev_deliver "告警" "【告警】验收窗口 $w 已 $((silent/60)) 分钟无变化——可能撞上需拍板的问题、卡在权限提示、或已回执未回收。laixin-lane peek-v ${w#verify-} 40 查看;已回执则 vdown 回收。"
+        ;;
+    esac
+  fi
+  printf '%s %s %s\n' "$h" "$silent" "$alerted" > "$sf"
+}
+
+ev_loop(){
+  mkdir -p "$EV_DIR"
+  ev_scan_deliveries > "$EV_SEEN"
+  ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份"
+  board "事件总线" "启动(交付投递+卡住告警;监听不再随派工窗口死)"
+  local cur f m lastline vw
+  while true; do
+    sleep "$EV_TICK"
+    # 1) 新交付 → 投递(或暂存)
+    cur="$(ev_scan_deliveries)"
+    comm -13 "$EV_SEEN" <(echo "$cur") | while IFS='|' read -r f m; do
+      [ -n "$f" ] || continue
+      lastline="$(tail -1 "$f")"
+      ev_deliver "交付" "【事件】交付落盘:$f
+末行:$lastline
+下一步:laixin-lane verify-from \"$f\" --prompt <该片prompt路径> --to dispatch;同轮内派该轨下一片(合并不是终点,派工才是)。"
+    done
+    echo "$cur" > "$EV_SEEN"
+    # 2) spool 补投(dispatch 刚起来)
+    if dispatch_alive && [ -s "$EV_SPOOL" ]; then
+      ev_deliver "交付" "【事件】补投暂存事件($(grep -c '^【事件】' "$EV_SPOOL" 2>/dev/null || echo '?')条,你不在时落的盘):
+$(cat "$EV_SPOOL")"
+      : > "$EV_SPOOL"
+    fi
+    # 3) 卡住/空闲监视(lane + 全部验收窗口)
+    ev_watch_target "lane-a"
+    ev_watch_target "lane-b"
+    tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep '^verify-' | while read -r vw; do
+      ev_watch_target "$vw"
+    done
+  done
+}
+
+cmd_events(){
+  case "${1:-status}" in
+    start)
+      ensure_session
+      win_exists "$EV_WIN" && { echo "事件总线已在跑"; return 0; }
+      dispatch_alive || echo "提示:dispatch 不在——交付事件将暂存(spool),告警将丢弃。通常应由 laixin-lane dispatch 自动带起本总线。"
+      tmux new-window -d -t "$SESSION" -n "$EV_WIN" -c "$HOME"
+      sleep 0.3
+      tmux send-keys -t "$SESSION:$EV_WIN" "laixin-lane ev-loop" C-m
+      echo "事件总线已启动(窗口 $EV_WIN;日志 $EV_LOG)"
+      ;;
+    stop)
+      win_exists "$EV_WIN" || { echo "本就没在跑"; return 0; }
+      tmux kill-window -t "$SESSION:$EV_WIN"; board "事件总线" "停止"; echo "已停"
+      ;;
+    status)
+      win_exists "$EV_WIN" && echo "事件总线:运行中" || echo "事件总线:未运行"
+      if [ -s "$EV_SPOOL" ]; then echo "spool 暂存:$(grep -c '^【事件】' "$EV_SPOOL") 条待投"; else echo "spool:空"; fi
+      [ -f "$EV_LOG" ] && { echo "--- 日志末 5 行 ---"; tail -5 "$EV_LOG"; }
+      return 0
+      ;;
+    *) die "events 只接受 start|stop|status" ;;
+  esac
+}
+
+# ============ 机器执法小工具(2026-08-13 第三轮) ============
+
+cmd_next_migration(){  # 迁移号扫描:未合并分支与工作树未提交文件都占号(0026/0033 两次实撞的根因)
+  python3 - "$DEFAULT_DIR" <<'PY'
+import re,subprocess,sys,os,datetime
+repo=sys.argv[1]
+def run(*a): return subprocess.run(a,capture_output=True,text=True).stdout
+seen={}
+for br in run("git","-C",repo,"for-each-ref","--format=%(refname:short)","refs/heads").split():
+    for f in run("git","-C",repo,"ls-tree","-r","--name-only",br,"--","alembic/versions").splitlines():
+        m=re.search(r'(\d{8})_(\d{4})',os.path.basename(f))
+        if m: seen.setdefault((m.group(1),m.group(2)),set()).add("分支:"+br)
+for line in run("git","-C",repo,"worktree","list","--porcelain").splitlines():
+    if line.startswith("worktree "):
+        wt=line.split(" ",1)[1]; d=os.path.join(wt,"alembic","versions")
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                m=re.search(r'(\d{8})_(\d{4})',f)
+                if m: seen.setdefault((m.group(1),m.group(2)),set()).add("工作树:"+os.path.basename(wt))
+if not seen: print("未发现迁移文件,检查仓库路径"); sys.exit(0)
+print("最高 5 个迁移号(全分支+全工作树合并视图;未合并/未提交都算占号):")
+for k in sorted(seen)[-5:]:
+    print(f"  {k[0]}_{k[1]}   ← {', '.join(sorted(seen[k]))}")
+hi=max(int(k[1]) for k in seen)
+print(f"\n⇒ 下一可用序号:{hi+1:04d}(文件名形如 {datetime.date.today():%Y%m%d}_{hi+1:04d}_<name>.py)")
+print("注:main 上 `ls alembic/versions` 看不见未合并分支与别的工作树里的占号——prompt 里写死的号发车前必用本命令复核。")
+PY
+  return 0
+}
+
+cmd_next_worktree(){  # B 轨 worktree 编号:已注册的 + 目录残留的都算占用
+  echo "== 已注册 worktree =="
+  git -C "$DEFAULT_DIR" worktree list | sed 's/^/  /'
+  local reg dirs mx
+  reg="$(git -C "$DEFAULT_DIR" worktree list --porcelain | awk '/^worktree /{print $2}' | grep -oE '来信平台-b[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
+  dirs="$(ls -d "$HOME"/来信平台-b[0-9]* 2>/dev/null | grep -oE 'b[0-9]+$' | grep -oE '[0-9]+' | sort -n | tail -1)"
+  mx=$(( ${reg:-0} > ${dirs:-0} ? ${reg:-0} : ${dirs:-0} ))
+  echo
+  echo "⇒ 下一可用:~/来信平台-b$((mx+1))(注册最高 b${reg:-无},目录残留最高 b${dirs:-无})"
+  echo "注:目录残留但未注册的编号也不要复用(可能有未清内容);prompt 写死的号发车前必核。"
+  return 0
+}
+
+cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗口——防手抄 hash 笔误,顺带机器校验交付契约
+  local report="${1:-}"; shift || true
+  [ -n "$report" ] || die "用法:laixin-lane verify-from <交付报告路径> --prompt <路径> [--to X] [--dry]"
+  local prompt="" to="" dry=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --prompt) prompt="${2:?}"; shift 2 ;;
+    --to)     to="${2:?}"; shift 2 ;;
+    --dry)    dry=1; shift ;;
+    *) die "未知参数:$1" ;;
+  esac; done
+  [ -f "$report" ] || die "报告不存在:$report"
+  local last; last="$(tail -1 "$report")"
+  echo "$last" | grep -q '^【交付完成】' || die "契约不符:末行行首必须是【交付完成】<分支> <commit>,实际:$last"
+  local branch commit
+  read -r branch commit <<< "$(echo "$last" | sed 's/\*//g; s/^【交付完成】[[:space:]]*//')"
+  [ -n "$branch" ] && [ -n "$commit" ] || die "末行解析不出分支与 commit:$last"
+  git -C "$DEFAULT_DIR" cat-file -t "$commit" >/dev/null 2>&1 || die "commit $commit 在仓库不存在——报告末行可能笔误"
+  local slice; slice="$(basename "$report" .md)"
+  slice="$(echo "$slice" | sed -E 's/(验收记录|-?交付报告)$//; s/^来信平台-//')"
+  echo "解析:片名=$slice  分支=$branch  commit=$commit  (契约与 commit 存在性已校验)"
+  if [ -n "$dry" ]; then echo "(--dry:不起窗)"; return 0; fi
+  [ -n "$prompt" ] || die "需要 --prompt <该片prompt绝对路径>"
+  cmd_verify "$slice" --branch "$branch" --commit "$commit" --report "$report" --prompt "$prompt" ${to:+--to "$to"}
+}
+
+cmd_handoff(){  # 交接包客观半部机器生成;判断留给人写并须标明是判断
+  echo "# 交接包·客观状态(laixin-lane handoff 生成于 $(date '+%F %H:%M'))"
+  echo
+  echo "## main 与主树"
+  git -C "$DEFAULT_DIR" log --oneline -1 main | sed 's/^/  main: /'
+  echo "  主树分支:$(git -C "$DEFAULT_DIR" branch --show-current 2>/dev/null)  未提交:$(git -C "$DEFAULT_DIR" status -s 2>/dev/null | wc -l | tr -d ' ') 项"
+  echo; echo "## tmux 拓扑"; cmd_status 2>/dev/null | sed 's/^/  /'
+  echo; echo "## 在跑的验收窗口"; cmd_vlist 2>/dev/null | sed 's/^/  /'
+  echo; echo "## 派工权"; cmd_whoholds | sed 's/^/  /'
+  echo; echo "## 事件总线"; cmd_events status 2>/dev/null | head -2 | sed 's/^/  /'
+  echo; echo "## 节奏·燃料·片级周期"; cmd_stats 2>/dev/null | sed 's/^/  /'
+  echo; echo "## 看板末 12 行"; grep '^|' "$BOARD" 2>/dev/null | tail -12 | sed 's/^/  /'
+  cat <<'EOT'
+
+## ⚠️ 以下由交班窗口手工补(机器给不了)
+- 在飞片语境:整改到第几轮、验收卡在哪、片间依赖(如 打标台依赖转单-1 合并)
+- 你的判断(逐条标明是判断,并附得出它的那条命令)
+- 本班新踩的坑与教训
+- 待创始人/待方案窗口的挂账
+EOT
+  return 0
+}
+
+# ============ 派工窗口托管 + 看门狗(2026-08-13 补,对准 08-13 凌晨 7.8 小时停摆) ============
+DISPATCH_WIN="dispatch"
+WATCHDOG_WIN="watchdog"
+WD_LOG="$HOME/.laixin-lane-watchdog.log"
+# 派工窗口持有合并权,故不禁 merge;只禁推远端(流水线不碰 origin)
+DISPATCH_DENY=( "Bash(git push*)" )
+
+pane_cmd()  { tmux display-message -p -t "$SESSION:$1" '#{pane_current_command}' 2>/dev/null || echo "NONE"; }
+pane_hash() { tmux capture-pane -p -t "$SESSION:$1" -S -40 2>/dev/null | md5 -q 2>/dev/null || echo "GONE"; }
+win_exists(){ tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
+
+# 一条轨是否在干活(有 Codex 工作痕迹)
+lane_busy() {
+  win_exists "lane-$1" || return 1
+  tmux capture-pane -p -t "$SESSION:lane-$1" -S -30 2>/dev/null \
+    | grep -qE "Working|Explored|Reading|Search|Thinking|Applying|Running"
+}
+
+dispatch_alive() {
+  win_exists "$DISPATCH_WIN" || return 1
+  case "$(pane_cmd "$DISPATCH_WIN")" in
+    node|claude|claude.exe) return 0 ;;   # claude 进程还在
+    *) return 1 ;;                        # 掉回 shell = 已死
+  esac
+}
+
+DISPATCH_BRIEF='你是 laixin 开发流水线的**派工窗口**(由看门狗托管起动)。
+
+起手式,按序做完再报告:
+1. 调 Skill laixin-pipeline,认领"派工窗口"角色(不要兼任验收);
+2. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md 的"进行中"节,再读同目录 来信平台-流水线看板.md 末 20 行,再读 知识库/log.md 末尾;
+3. 事件总线(events 窗口)已随本窗口自动运行——交付落盘、轨道与验收窗口卡住会**直接投递进你的输入框**。**你无需也不要自建 Monitor 监听**;每条【事件】/【告警】到达,同一轮内完成「判断→行动→可见输出」。交付事件的下一步通常是 laixin-lane verify-from "<报告路径>" --prompt <prompt路径> --to dispatch;
+4. 接管当前状态:该派工的立即派(laixin-lane fresh + send + peek 复核),已交付待验的用 laixin-lane verify 起一次性验收窗口——**你的会话名就是 dispatch,所以固定写 --to dispatch**。
+
+派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
+
+接班先跑 laixin-lane doctor(体检)与 laixin-lane stats(看还剩多少燃料、有无总表状态滞后);合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
+**你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。所以状态一定随做随写进执行总表与看板,不要攒在窗口记忆里。
+
+铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、SendMessage 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
+状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。'
+
+# ---- 派工权认领:用"谁在动 lane"识别派工窗口,而不是数窗口个数 ----
+# 数量是身份的不可靠代理(开窗口问问题 vs 开窗口接管派工,在"数量"里长得一样);
+# 而 send 是派工窗口的定义性行为 ⇒ 直接测行为,不猜身份。
+DISPATCH_LOCK="$HOME/.laixin-dispatch.lock"
+LOCK_FRESH="${LAIXIN_LOCK_FRESH:-1800}"   # 心跳新鲜期(秒),默认 30 分钟
+
+whoami_window() {   # 调用者所在的 tmux 窗口名;不在 tmux 里则记为 external:<pid>
+  if [ -n "${TMUX_PANE:-}" ]; then
+    tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo "external:$PPID"
+  else
+    echo "external:$PPID"
+  fi
+}
+
+lock_write() {  # 原子写:先写临时文件再 mv,避免读到半写状态
+  local t; t="$(mktemp "${DISPATCH_LOCK}.XXXX")"
+  printf '%s %s\n' "$(whoami_window)" "$(date +%s)" > "$t" && mv -f "$t" "$DISPATCH_LOCK"
+}
+lock_holder(){ [ -f "$DISPATCH_LOCK" ] && awk '{print $1}' "$DISPATCH_LOCK" || echo ""; }
+lock_age()   { [ -f "$DISPATCH_LOCK" ] || { echo 999999; return; }; echo $(( $(date +%s) - $(awk '{print $2}' "$DISPATCH_LOCK") )); }
+
+# 是否有"别人"正持有派工权(持有者不是 dispatch 窗口,且心跳新鲜)
+rival_holds_dispatch() {
+  local h; h="$(lock_holder)"
+  [ -n "$h" ] || return 1
+  [ "$h" = "$DISPATCH_WIN" ] && return 1
+  [ "$(lock_age)" -lt "$LOCK_FRESH" ]
+}
+
+cmd_claim() {
+  local h; h="$(lock_holder)"
+  if [ -n "$h" ] && [ "$h" != "$(whoami_window)" ] && [ "$(lock_age)" -lt "$LOCK_FRESH" ]; then
+    echo "⚠️ 派工权当前由 [$h] 持有(心跳 $(lock_age) 秒前)。"
+    echo "   绝不允许两个派工窗口同时活着——先确认它已收工,再 laixin-lane claim --force"
+    [ "${1:-}" = "--force" ] || return 1
+    echo "   (--force:强行接管)"
+  fi
+  lock_write
+  board "派工窗口" "认领派工权:$(whoami_window)"
+  echo "已认领派工权:$(whoami_window)"
+  return 0
+}
+
+cmd_whoholds() {
+  local h; h="$(lock_holder)"
+  if [ -z "$h" ]; then echo "派工权:无人认领(锁文件不存在)"; return 0; fi
+  local a; a="$(lock_age)"
+  if [ "$a" -lt "$LOCK_FRESH" ]; then echo "派工权:[$h] 持有中(心跳 ${a}s 前,新鲜期 ${LOCK_FRESH}s)"
+  else echo "派工权:[$h] 已失效(心跳 ${a}s 前,超过新鲜期 ${LOCK_FRESH}s)⇒ 视为无人持有"; fi
+  return 0
+}
+
+# 活跃 claude 会话(socket 名即 PID,能与进程对上);排除 tmux 内已知窗口 ⇒ 剩下的是"手开的窗口"
+outside_sessions() {
+  local in_tmux total
+  in_tmux="$(tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_current_command}' 2>/dev/null \
+    | grep -cE '^(dispatch|verify-).*(node|claude)' || true)"
+  total=0
+  for sk in /tmp/cc-socks/*.sock; do
+    [ -S "$sk" ] || continue
+    local pid; pid="$(basename "$sk" .sock)"
+    ps -p "$pid" >/dev/null 2>&1 && total=$((total+1))
+  done
+  echo $(( total - ${in_tmux:-0} ))
+}
+
+# 防撞:两个派工窗口同时动 lane 会把 Codex 上下文搞乱(2026-08-13 实际险些发生,靠人工提醒才没撞)
+check_rival_dispatch() {
+  rival_holds_dispatch || return 0
+  echo "⚠️ 派工权由 [$(lock_holder)] 持有,心跳 $(lock_age) 秒前——它正在动 lane。" >&2
+  echo "   绝不允许两个派工窗口同时活着:先让它收工(或确认它已停 $((LOCK_FRESH/60)) 分钟以上),再重试。" >&2
+  echo "   确认无误可加 --force-rival 强行起窗。" >&2
+  return 1
+}
+
+cmd_dispatch() {
+  local dir="$HOME" force="" nocheck=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir)   dir="${2:?--dir 需要路径}"; shift 2 ;;
+      --fresh) force=1; shift ;;
+      --force-rival) nocheck=1; shift ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  ensure_session
+  if [ -z "$nocheck" ] && ! check_rival_dispatch; then
+    die "起窗中止——绝不允许两个派工窗口同时活着。先确认那些窗口已收工,或确认它们不是派工窗口后加 --force-rival 重试"
+  fi
+  if win_exists "$DISPATCH_WIN"; then
+    [ -n "$force" ] || { echo "$DISPATCH_WIN 已存在(换全新上下文用 --fresh)"; return 0; }
+    tmux kill-window -t "$SESSION:$DISPATCH_WIN"; sleep 0.3
+  fi
+  tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir"
+  sleep 0.5
+  local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "claude -n \"$DISPATCH_WIN\" --permission-mode auto --disallowedTools $deny" C-m
+  vwait_ready "$DISPATCH_WIN" "$dir" || die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
+  sleep 1
+  printf '%s' "$DISPATCH_BRIEF" | tmux load-buffer -b laixin-dmsg -
+  tmux paste-buffer -p -b laixin-dmsg -t "$SESSION:$DISPATCH_WIN"
+  tmux delete-buffer -b laixin-dmsg
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
+  printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
+  board "看门狗" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
+  win_exists "$EV_WIN" || cmd_events start >/dev/null 2>&1 || true
+  echo "$DISPATCH_WIN 已起并接管。复核:laixin-lane peek-d 30"
+}
+
+cmd_peekd() { tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" -S "-${1:-30}"; }
+
+# 看门狗主循环:纯 bash,不累不崩没有上下文,是整条流水线里唯一不会"忘"的东西
+wd_loop() {
+  local interval="${WD_INTERVAL:-60}"      # 秒
+  local nudge_after="${WD_NUDGE:-900}"     # 静默多久先戳一下(15 分钟)
+  local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
+  local max_restart="${WD_MAX_RESTART:-3}"
+  local last_hash="" silent=0 nudged=0 restarts=0
+  echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
+  board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
+  while true; do
+    sleep "$interval"
+    # —— 0. 事件总线也要活着(它给派工窗口喂事件) ——
+    win_exists "$EV_WIN" || { board "看门狗" "事件总线不在,自动重启"; cmd_events start >/dev/null 2>&1 || true; }
+    # —— 1. 派工窗口死了:立即重起 ——
+    if ! dispatch_alive; then
+      if [ "$restarts" -ge "$max_restart" ]; then
+        echo "[$(date '+%F %T')] 已达重起上限 $max_restart,停止自动重起" >> "$WD_LOG"
+        board "看门狗" "⛔ 派工窗口反复起不来(已重起 ${max_restart} 次),停止自动重起等人工介入"
+        continue
+      fi
+      if rival_holds_dispatch; then
+        echo "[$(date '+%F %T')] 派工窗口不在,但派工权由 [$(lock_holder)] 持有($(lock_age)s 前动过 lane)⇒ 不自动重起" >> "$WD_LOG"
+        board "看门狗" "派工窗口不在,但派工权由 [$(lock_holder)] 持有($(lock_age)s 前动过 lane)⇒ **不自动重起**,避免双派工窗口"
+        continue
+      fi
+      restarts=$((restarts+1))
+      echo "[$(date '+%F %T')] 派工窗口不在,第 $restarts 次重起" >> "$WD_LOG"
+      board "看门狗" "⚠️ 派工窗口不在(第 ${restarts} 次自动重起)"
+      cmd_dispatch --fresh --force-rival >/dev/null 2>&1 || board "看门狗" "重起失败,下轮重试"
+      last_hash=""; silent=0; nudged=0
+      continue
+    fi
+    # —— 2. 活着但静止:先判是不是"正常等待" ——
+    local h; h="$(pane_hash "$DISPATCH_WIN")"
+    if [ "$h" = "$last_hash" ]; then silent=$((silent+interval)); else silent=0; nudged=0; fi
+    last_hash="$h"
+    # 两轨都在干活 ⇒ 派工窗口静止是正常等待,不打扰
+    if lane_busy a && lane_busy b; then continue; fi
+    if [ "$silent" -ge "$restart_after" ]; then
+      if [ "$restarts" -ge "$max_restart" ]; then
+        board "看门狗" "⛔ 派工窗口持续无响应但已达重起上限,等人工介入"; continue
+      fi
+      restarts=$((restarts+1))
+      echo "[$(date '+%F %T')] 静默 ${silent}s 且有轨空闲,第 $restarts 次重起" >> "$WD_LOG"
+      board "看门狗" "⚠️ 派工窗口静默 $((silent/60)) 分钟且有轨空闲(戳过无效)→ 第 ${restarts} 次换新窗口接管"
+      cmd_dispatch --fresh >/dev/null 2>&1 || true
+      last_hash=""; silent=0; nudged=0
+    elif [ "$silent" -ge "$nudge_after" ] && [ "$nudged" -eq 0 ]; then
+      nudged=1
+      local idle=""; lane_busy a || idle="lane-a"; lane_busy b || idle="${idle:+$idle 与 }lane-b"
+      printf '%s' "【看门狗】你已静默 $((silent/60)) 分钟,而 ${idle} 空闲。轨道空闲是事故不是等待:立刻二选一——①该轨排队节有 ready 片就 fresh+send 派出去;②确无该轨片就在执行总表"进行中"节写明原因。同一轮内给出可见结论,不要只调工具不说话。" \
+        | tmux load-buffer -b laixin-nudge -
+      tmux paste-buffer -p -b laixin-nudge -t "$SESSION:$DISPATCH_WIN"
+      tmux delete-buffer -b laixin-nudge
+      sleep 0.4
+      tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
+      echo "[$(date '+%F %T')] 戳了派工窗口(静默 ${silent}s,${idle} 空闲)" >> "$WD_LOG"
+      board "看门狗" "戳派工窗口:静默 $((silent/60)) 分钟且 ${idle} 空闲"
+    fi
+  done
+}
+
+cmd_watchdog() {
+  case "${1:-start}" in
+    start)
+      ensure_session
+      win_exists "$WATCHDOG_WIN" && die "看门狗已在跑(停:laixin-lane watchdog stop)"
+      dispatch_alive || die "派工窗口不在托管状态。先 laixin-lane dispatch 起一个,再启看门狗——否则它会和你手开的窗口打架"
+      tmux new-window -t "$SESSION" -n "$WATCHDOG_WIN" -c "$HOME"
+      sleep 0.4
+      tmux send-keys -t "$SESSION:$WATCHDOG_WIN" "laixin-lane wd-loop" C-m
+      echo "看门狗已启动(tmux 窗口 $WATCHDOG_WIN)。日志:$WD_LOG"
+      ;;
+    stop)
+      win_exists "$WATCHDOG_WIN" || { echo "看门狗本就没在跑"; return 0; }
+      tmux kill-window -t "$SESSION:$WATCHDOG_WIN"
+      board "看门狗" "已停止"
+      echo "看门狗已停"
+      ;;
+    status)
+      if win_exists "$WATCHDOG_WIN"; then echo "看门狗:运行中"; else echo "看门狗:未运行"; fi
+      if dispatch_alive; then echo "派工窗口:托管中($(pane_cmd "$DISPATCH_WIN"))"; else echo "派工窗口:不在托管状态"; fi
+      for l in a b; do
+        if lane_busy "$l"; then echo "lane-$l:在干活"; else echo "lane-$l:空闲或不存在"; fi
+      done
+      [ -f "$WD_LOG" ] && { echo "--- 看门狗日志末 5 行 ---"; tail -5 "$WD_LOG"; }
+      return 0
+      ;;
+    *) die "watchdog 只接受 start|stop|status" ;;
+  esac
+}
+
+vtrusted_dir() {  # 只对本机自有目录自动确认信任对话框,其他目录一律交人工
+  case "$1" in
+    "$HOME"|"$HOME/来信平台"|"$HOME/来信平台-"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+vwait_ready() {  # 轮询画面按内容分派按键,直到 claude 输入框就绪(替代盲等+盲发键)
+  local w="$1" dir="$2" pane tries=0
+  while [ "$tries" -lt 45 ]; do
+    pane="$(tmux capture-pane -p -t "$SESSION:$w" -S -45 2>/dev/null || true)"
+    case "$pane" in
+      *"mode on"*|*"for agents"*|*"? for shortcuts"*) return 0 ;;                 # 已就绪(各权限模式状态栏文案不同,取并集)
+      *"MCP servers"*)              tmux send-keys -t "$SESSION:$w" Escape ;;     # 不给验收窗口挂 MCP
+      *"trust this folder"*)
+        if vtrusted_dir "$dir"; then
+          tmux send-keys -t "$SESSION:$w" C-m                                     # 自有目录:自动确认
+        else
+          die "$w 起在非自有目录 $dir,信任对话框需人工确认:laixin-lane attach"
+        fi ;;
+      *"Enter to confirm"*)         tmux send-keys -t "$SESSION:$w" C-m ;;
+    esac
+    sleep 2; tries=$((tries+1))
+  done
+  return 1
+}
+
+vwin() {  # 验收窗口名(片名里的空格/斜杠换成 -)
+  local slug; slug="$(echo "$1" | tr ' /' '--' | cut -c1-24)"
+  [ -n "$slug" ] || die "片名不能为空"
+  echo "verify-$slug"
+}
+
+cmd_verify() {
+  local slice="${1:-}"; shift || true
+  [ -n "$slice" ] || die "verify 需要片名:laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径"
+  local branch="" commit="" report="" prompt="" dir="$HOME" to=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch) branch="${2:?--branch 需要分支名}"; shift 2 ;;
+      --commit) commit="${2:?--commit 需要 commit}"; shift 2 ;;
+      --report) report="${2:?--report 需要交付报告路径}"; shift 2 ;;
+      --prompt) prompt="${2:?--prompt 需要 prompt 路径}"; shift 2 ;;
+      --dir)    dir="${2:?--dir 需要路径}"; shift 2 ;;
+      --to)     to="${2:?--to 需要派工窗口的会话名}"; shift 2 ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  [ -n "$branch" ] && [ -n "$commit" ] && [ -n "$report" ] && [ -n "$prompt" ] \
+    || die "四项交接信息缺一不可:--branch --commit --report --prompt"
+  [ -f "$report" ] || die "交付报告不存在:$report"
+  [ -f "$prompt" ] || die "prompt 不存在:$prompt"
+
+  local w; w="$(vwin "$slice")"
+  local slug_e; slug_e="$(echo "$slice" | tr ' /' '--' | cut -c1-24)"
+  local evid="$EVID_ROOT/$slug_e"
+  mkdir -p "$evid"
+  ensure_session
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
+    die "$w 已存在——同一片不重复起验收窗口(整改重验请先 laixin-lane vdown $slice)"
+  fi
+
+  tmux new-window -t "$SESSION" -n "$w" -c "$dir"
+  sleep 0.5
+  local allow deny
+  allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
+  deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
+  tmux send-keys -t "$SESSION:$w" "claude -n \"$w\" --permission-mode auto --allowedTools $allow --disallowedTools $deny" C-m
+  vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-v $slice 40"
+  sleep 1
+
+  # 交接只传客观信息;不含任何预期暗示(派工窗口写了 prompt,它的预期就是污染源)
+  local msg
+  msg="$(cat <<EOF
+你是本片的**一次性验收窗口**(验完即弃,不复用)。起手式:调 Skill laixin-pipeline,认领"验收窗口"角色,然后按 laixin-acceptance 七步做独立验收。
+
+片名:$slice
+prompt:$prompt
+分支:$branch
+commit:$commit
+交付报告(=验收记录):$report
+
+硬要求:
+1. 先重读 prompt 与交付报告,再动手;报告没提的验证项就是最该亲手跑的;
+2. 全量测试自己跑,判据是"全部 passed 且 zero failed",不是测试数相等;
+3. 验收隔离:主树可能被 Codex 占用,一律用独立验收 worktree 或 ref 级操作,禁止在共享工作树 checkout/merge;
+4. **最后一步必须**:rebase 到当时 main,并在 rebase 后的状态上复跑全量——"验的就是合的";
+5. **证据必须落盘**:凡结论要引用的输出,一律 `2>&1 | tee $evid/<名字>.log` 落到该目录再引用——
+   全量两次 → pytest-1.log / pytest-2.log;迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
+   证据目录:$evid
+   结论里每个数字、每处代码引用,必须能在这些文件里逐字 grep 到;记不起的重新跑工具,**不得凭印象写**。
+   派工窗口会用 `laixin-lane evidence $slice` 复查,对不上即退回重验;
+6. 写完验收记录(追加"验收方独立验收结论"节)后,用 SendMessage 回派工窗口 ${to:-(未指定:先 ListAgents,派工窗口是本机另一个 interactive 会话;首次发送需带它的 [ref])}:
+   - 通过 → verify 分支名 · 其 commit · **所基于的 main commit** · 全量结果
+   - 打回 → 逐条可复现的问题清单 + 是否需升级创始人
+7. 你不合并、不 push、不碰 lane(工具层已禁);打回也由派工窗口转发给 Codex。
+
+看板事件用 LAIXIN_WINDOW=验收窗口 laixin-lane log "..." 记。回执发出后你的活就结束了。
+EOF
+)"
+  printf '%s' "$msg" | tmux load-buffer -b laixin-vmsg -
+  tmux paste-buffer -p -b laixin-vmsg -t "$SESSION:$w"
+  tmux delete-buffer -b laixin-vmsg
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$w" C-m
+  board "派工窗口" "起验收窗口 $w ← $slice($branch $commit)"
+  echo "$w 已起并派单。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
+  echo "提示:派工窗口首次 SendMessage 需带 ref,先 ListAgents 查 $w 的 [ref]。"
+}
+
+cmd_vdown() {
+  local slice="${1:-}"
+  [ -n "$slice" ] || die "vdown 需要片名"
+  local w; w="$(vwin "$slice")"
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" \
+    || { echo "$w 本就不存在"; return 0; }
+  tmux kill-window -t "$SESSION:$w"
+  board "派工窗口" "回收验收窗口 $w"
+  echo "$w 已回收"
+}
+
+cmd_peekv() {
+  local slice="${1:-}"; local n="${2:-30}"
+  [ -n "$slice" ] || die "peek-v 需要片名"
+  local w; w="$(vwin "$slice")"
+  tmux capture-pane -p -t "$SESSION:$w" -S "-$n"
+}
+
+cmd_vlog() {  # 验收窗口专用记看板:免掉 LAIXIN_WINDOW= 前缀(带 env 前缀的命令不匹配工具白名单)
+  [ $# -gt 0 ] || die "vlog 需要事件文本"
+  board "验收窗口" "$*"
+  echo "已记录到看板"
+}
+
+cmd_vlist() {
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }
+  local out
+  out="$(tmux list-windows -t "$SESSION" -F '#{window_name}  [#{pane_current_command}]' | grep '^verify-' || true)"
+  [ -n "$out" ] && echo "$out" || echo "当前没有在跑的验收窗口"
+}
+
+case "${1:-}" in
+  events)   shift; cmd_events "$@" ;;
+  ev-loop)  shift; ev_loop ;;
+  verify-from)    shift; cmd_verify_from "$@" ;;
+  next-migration) shift; cmd_next_migration ;;
+  next-worktree)  shift; cmd_next_worktree ;;
+  handoff)  shift; cmd_handoff ;;
+  halt)     shift; cmd_halt ;;
+  resurrect) shift; cmd_resurrect "$@" ;;
+  uptime)   shift; cmd_uptime ;;
+  daily-report) shift; cmd_daily_report "$@" ;;
+  install-boot) shift; cmd_install_boot ;;
+  claim)    shift; cmd_claim "$@" ;;
+  whoholds) shift; cmd_whoholds ;;
+  ctx)      shift; cmd_ctx "$@" ;;
+  evidence) shift; cmd_evidence "$@" ;;
+  evid-gc)  shift; cmd_evidence_gc "$@" ;;
+  doctor)   shift; cmd_doctor ;;
+  stats)    shift; cmd_stats ;;
+  dispatch) shift; cmd_dispatch "$@" ;;
+  peek-d)   shift; cmd_peekd "$@" ;;
+  watchdog) shift; cmd_watchdog "$@" ;;
+  wd-loop)  shift; wd_loop ;;
+  verify) shift; cmd_verify "$@" ;;
+  vdown)  shift; cmd_vdown "$@" ;;
+  vlog)   shift; cmd_vlog "$@" ;;
+  peek-v) shift; cmd_peekv "$@" ;;
+  vlist)  shift; cmd_vlist "$@" ;;
+  up)     shift; cmd_up "$@" ;;
+  fresh)  shift; cmd_fresh "$@" ;;
+  send)   shift; cmd_send "$@" ;;
+  peek)   shift; cmd_peek "$@" ;;
+  log)    shift; cmd_log "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  attach) shift; cmd_attach "$@" ;;
+  down)   shift; cmd_down "$@" ;;
+  *) awk 'NR>1 && /^#/ {print; next} NR>1 {exit}' "$0"; exit 1 ;;
+esac

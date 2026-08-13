@@ -855,7 +855,8 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
   echo "解析:片名=$slice  分支=$branch  commit=$commit  (契约与 commit 存在性已校验)"
   [ -n "$tip" ] || echo "⚠️ 分支 $branch 在仓库解析不到(可能已删)——无法核对末行快照是否过期"
   if [ -n "$stale" ]; then
-    echo "⛔ 末行快照已过期:分支 $branch 现指向 ${tip:0:12},报告末行是 $commit——交付后分支又动过(常见:开发方自行 rebase 而报告没更新,或 fresh 抢在它更新报告之前)。"
+    # ⚠️ ${commit} 的花括号不能省:macOS bash 在中文 locale 下会把紧跟的多字节字符字节卷进变量名,set -u 直接击杀(实撞)
+    echo "⛔ 末行快照已过期:分支 $branch 现指向 ${tip:0:12},报告末行是 ${commit}——交付后分支又动过(常见:开发方自行 rebase 而报告没更新,或 fresh 抢在它更新报告之前)。"
     echo "   验的必须是要合的:请开发方更新报告末行,或核实 ${tip:0:12} 后按它验收。"
   fi
   if [ -n "$dry" ]; then echo "(--dry:不起窗)"; return 0; fi

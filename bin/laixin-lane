@@ -481,14 +481,28 @@ print()
 print("== 队列燃料(执行总表 排队 节) ==")
 s=open(table,encoding='utf-8').read()
 # 先取"进行中"节的在飞片名,用于交叉验证——排队节的状态常滞后于实际发车
-flying=set()
-mf=re.search(r'##\s*进行中.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
-if mf:
-    for line in mf.group(1).split('\n'):
-        if line.startswith('|') and '---' not in line:
-            c=[x.strip() for x in line.strip('|').split('|')]
-            if c and not c[0].startswith('片'):
-                flying.add(re.sub(r'[*~\[\]]','',c[0])[:34])
+def _stem(x):
+    # 只取括号前的**片名主干**:同一片在不同节的括注不同("公网部署收尾(限流家族收口…)"
+    # vs "公网部署收尾(A 轨微片…)"),按前缀比对会在第 7 个字符就分岔 ⇒ 永远匹配不上。
+    return re.split(r'[((]', re.sub(r'[*~\[\]]','',x))[0].strip()[:34]
+def _names_in_section(head):
+    out=set()
+    mm=re.search(r'##\s*'+head+r'.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
+    if mm:
+        for line in mm.group(1).split('\n'):
+            if line.startswith('|') and '---' not in line:
+                c=[x.strip() for x in line.strip('|').split('|')]
+                if c and not c[0].startswith('片') and _stem(c[0]):
+                    out.add(_stem(c[0]))
+    return out
+# 片离开排队节有三个去向,少比对一个就会虚高:在飞 / 在验 / 已合入
+flying=_names_in_section('进行中') | _names_in_section('验收中')
+# ⭐ 已合入的片同样会让排队节滞后,而它**不在"进行中"节** ⇒ 只比对 flying 抓不到它。
+#    2026-08-13 实撞:stats 报"可立即发车 4 片",而那 4 片全部已发车或已合入(油表虚高,
+#    夜间据此判燃料会误判还有活可派)。⇒ 增加与"已完成"节的比对。
+#    **判据用事实(片名出现在已完成节)而不是状态格的措辞** —— 措辞有无穷变体
+#    (实测总表里"已完成合入/已发车/已并入/20:3x 发车/交付并交接…"),靠关键词永远追不完。
+done=_names_in_section(r'已完成')
 m=re.search(r'##\s*排队.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
 buckets={'✅ 可立即发车(prompt ready 且未发)':[], '✏️ 派工窗口可自写(裁定齐/prompt 待写)':[],
          '🚧 缺设计,要方案窗口补':[], '✔️ 已发车或已合入':[]}
@@ -501,10 +515,14 @@ if m:
         # 分桶只认状态格**首段**(首个<br>前)——整格子串匹配会把解释文字里的"已发车"当状态,
         # 把在排片误报成已跑掉(2026-08-13 实撞:速率限制铺开被报燃料 0,假停摆族)
         name=re.sub(r'[*~\[\]]','',cells[0])[:34]; st=cells[-1].split('<br>')[0]
-        if '已完成合入' in st or '已发车' in st or '已并入' in st: buckets['✔️ 已发车或已合入'].append(name)
+        # ⭐ 事实优先于措辞:片名出现在"已完成"节 ⇒ 它已经合入,无论排队节这行怎么写。
+        #    放在关键词判断**之前**,因为滞后的行往往还写着 "prompt ready"(正是虚高的来源)。
+        if _stem(cells[0]) in done:
+            buckets['✔️ 已发车或已合入'].append(name)
+        elif '已完成合入' in st or '已发车' in st or '已并入' in st: buckets['✔️ 已发车或已合入'].append(name)
         elif ('发不了' in st or '设计缺口' in st or '退回方案窗口' in st) and '已补' not in st and '已齐' not in st:
             buckets['🚧 缺设计,要方案窗口补'].append(name)
-        elif any(name.startswith(f[:12]) or f.startswith(name[:12]) for f in flying):
+        elif _stem(cells[0]) in flying:
             stale.append(name)
         elif 'ready' in st.lower() or 'prompt 已写' in st: buckets['✅ 可立即发车(prompt ready 且未发)'].append(name)
         elif '待写' in st: buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'].append(name)

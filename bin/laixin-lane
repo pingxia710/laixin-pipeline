@@ -588,8 +588,11 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
   local f
   for f in "$KB/4-开发层/记录"/*.md; do
     [ -f "$f" ] || continue
-    tail -1 "$f" | grep -q '^【交付完成】' && printf '%s|%s\n' "$f" "$(stat -f %m "$f")"
+    # 用 if 不用 &&:glob 最后一个文件无标记时,&& 列表的失败会成为循环乃至函数的退出码,
+    # 在 set -e/pipefail 调用方处炸掉——此前没炸只是文件排序的运气(执行级绊线抓出)
+    if tail -1 "$f" | grep -q '^【交付完成】'; then printf '%s|%s\n' "$f" "$(stat -f %m "$f")"; fi
   done | sort
+  return 0
 }
 
 ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;"已写"与"ready"等价)
@@ -623,7 +626,7 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
 }
 
 ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值投递一次告警,变化即复位
-  local w="$1" sf="$EV_DIR/$w.state"
+  local w="$1"; local sf="$EV_DIR/$w.state"  # 必须分两条:同一条 local 的参数先全部展开再赋值,$w 在展开时还未定义,set -u 直接击杀(2026-08-13 两次无声死亡的真凶)
   local h; h="$(pane_hash "$w")"
   if [ "$h" = "GONE" ]; then rm -f "$sf"; return 0; fi
   local old="" silent=0 alerted=0
@@ -654,7 +657,8 @@ ev_loop(){
   # (2026-08-13 实撞两次:12:06 起 60s 即死、重启后再死;窗口还在 ⇒ status/doctor 全报假绿灯)
   set +e; set +o pipefail
   mkdir -p "$EV_DIR"
-  ev_scan_deliveries > "$EV_SEEN"
+  # 基线只在首次建立;重启保留旧基线 ⇒ 死亡/重启期间落盘的交付会在下一 tick 被 diff 出来补投,不再永久丢失
+  [ -s "$EV_SEEN" ] || ev_scan_deliveries > "$EV_SEEN"
   ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份"
   board "事件总线" "启动(交付投递+卡住告警;监听不再随派工窗口死)"
   local cur f m lastline vw
@@ -794,7 +798,7 @@ cmd_handoff(){  # 交接包客观半部机器生成;判断留给人写并须标�
   echo; echo "## tmux 拓扑"; cmd_status 2>/dev/null | sed 's/^/  /'
   echo; echo "## 在跑的验收窗口"; cmd_vlist 2>/dev/null | sed 's/^/  /'
   echo; echo "## 派工权"; cmd_whoholds | sed 's/^/  /'
-  echo; echo "## 事件总线"; cmd_events status 2>/dev/null | head -2 | sed 's/^/  /'
+  echo; echo "## 事件总线"; { cmd_events status 2>/dev/null || true; } | head -2 | sed 's/^/  /' || true  # status 输出多于 2 行时 head 早关管道,SIGPIPE 经 pipefail 会把 handoff 中途击穿(events.log 存在后实撞)
   echo; echo "## 节奏·燃料·片级周期"; cmd_stats 2>/dev/null | sed 's/^/  /'
   echo; echo "## 看板末 12 行"; grep '^|' "$BOARD" 2>/dev/null | tail -12 | sed 's/^/  /'
   cat <<'EOT'
@@ -816,7 +820,10 @@ WD_LOG="$HOME/.laixin-lane-watchdog.log"
 DISPATCH_DENY=( "Bash(git push*)" )
 
 pane_cmd()  { tmux display-message -p -t "$SESSION:$1" '#{pane_current_command}' 2>/dev/null || echo "NONE"; }
-pane_hash() { tmux capture-pane -p -t "$SESSION:$1" -S -40 2>/dev/null | md5 -q 2>/dev/null || echo "GONE"; }
+pane_hash() {  # GONE 判定不依赖 pipefail(ev-loop 里 pipefail 已关;原写法在无 pipefail 时会把死窗口当成空 hash 的活窗口)
+  local out; out="$(tmux capture-pane -p -t "$SESSION:$1" -S -40 2>/dev/null)" || { echo "GONE"; return 0; }
+  echo "$out" | md5 -q 2>/dev/null || echo "GONE"
+}
 win_exists(){ tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
 
 # 一条轨是否在干活(有 Codex 工作痕迹)

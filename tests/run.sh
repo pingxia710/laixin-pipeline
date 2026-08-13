@@ -58,8 +58,11 @@ tout "SESSION 可覆盖" "不存在" env LAIXIN_SESSION=lx-test-nonexist "$LANE"
 tout "ctx 分母可覆盖" "500,000" env LAIXIN_CTX_WINDOW=500000 "$LANE" ctx 3683f143
 
 echo "== 4b. 模型钉死(起窗命令不继承全局默认) =="
-tout "verify 起窗带 --model" '--model claude-opus-5' grep -A1 'claude -n \\"\$w\\"' "$LANE"
-tout "模型可覆盖" "claude-sonnet-5" env LAIXIN_VERIFY_MODEL=claude-sonnet-5 bash -c 'source <(grep "^VERIFY_MODEL=" "'"$LANE"'"); echo "$VERIFY_MODEL"'
+tout "起窗命令引用 VERIFY_MODEL" 'model \$VERIFY_MODEL' grep -- '--model' "$LANE"
+tout "起窗命令引用 DISPATCH_MODEL" 'model \$DISPATCH_MODEL' grep -- '--model' "$LANE"
+# eval 单行赋值(别用 source <():bash 3.2 静默失败,见 AGENTS.md)
+MV="$(env LAIXIN_VERIFY_MODEL=claude-sonnet-5 bash -c "eval \"\$(grep '^VERIFY_MODEL=' '$LANE')\"; echo \"\$VERIFY_MODEL\"")"
+tout "模型可覆盖" "claude-sonnet-5" echo "$MV"
 
 echo "== 5. 排队解析(fixture,不依赖真总表) =="
 TMPT="$(mktemp -d)"

@@ -195,6 +195,29 @@ t "design-ready ≠ prompt ready,且已合入片的滞后排队行被已完成�
   bash -uc "set -eo pipefail; TABLE='$QT'; source '$TMPE/fns.sh'; [ -z \"\$(ev_next_ready B)\" ]"
 rm -rf "$TMPE"
 
+echo "== 9. 对话框签名分类(2026-08-15「Set up auto mode」一天冻 4 窗后加;自愈盲区修复) =="
+dlg(){ printf '%s\n' "$1" | "$LANE" dialog-classify; }
+tout "auto-mode 设置对话框 → esc(当日实测 Esc 安全)" "esc:auto-mode-setup" \
+  dlg "Set up auto mode for your environment?
+  1. Set it up  2. Not now  3. Don't show again
+  Enter to confirm · Esc to cancel"
+tout "auto-mode 向导第二屏 → esc(误入向导后的退出路)" "esc:auto-mode-wizard" \
+  dlg "How you use Claude here    ◀ Mixed ▶
+  Also scan shell history [ ]
+  Continue"
+tout "trust 对话框 → alert(⛔ Esc=杀进程,2026-08-13 实撞,绝不自动动键)" "alert:trust-dialog" \
+  dlg "Do you trust the files in this folder?
+  Enter to confirm · Esc to cancel"
+tout "未知模态对话框 → alert(处置键未知只告警)" "alert:unknown-dialog" \
+  dlg "Some brand new dialog we have never seen
+  Enter to confirm · Esc to cancel"
+tout "正常工作画面 → none(空提示符/工具输出不误报)" "none" \
+  dlg "❯
+  Opus 5 · dispatch · 28% (285k/1M)
+  auto mode on (shift+tab to cycle)"
+tout "含 Esc 字样但非模态(帮助文本)→ none" "none" \
+  dlg "Press Esc to cancel current input, or keep typing."
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

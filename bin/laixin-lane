@@ -46,6 +46,16 @@ BOARD="${LAIXIN_BOARD:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开�
 # 下一个验收窗口将以双倍价格起)。验收=核查+测试+走查,Opus 5(agentic coding 主力档)是对的档位。
 VERIFY_MODEL="${LAIXIN_VERIFY_MODEL:-claude-opus-5}"
 DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
+# 流水线窗口专用 settings(2026-08-15「Set up auto mode」对话框一天冻 4 窗后加):
+# askUserQuestionTimeout 让交互对话框空闲超时自动继续——把「无限冻结」压成「有界暂停」。
+# ⛔ 只经 --settings 挂给流水线窗口,不写全局 settings.json——方案窗口是人机对话,问句不该被自动应答。
+# 双保险:本项是兜底,主防线是看门狗 dialog_sweep(签名识别+已验证安全键)。
+HEADLESS_SETTINGS="${LAIXIN_HEADLESS_SETTINGS:-$HOME/.config/laixin-lane/headless-settings.json}"
+ensure_headless_settings() {
+  [ -f "$HEADLESS_SETTINGS" ] && return 0
+  mkdir -p "$(dirname "$HEADLESS_SETTINGS")"
+  printf '{\n  "askUserQuestionTimeout": "60s"\n}\n' > "$HEADLESS_SETTINGS"
+}
 # 验收窗口以 --permission-mode auto 起(分类器逐条判安全:只读/测试自动过,危险动作仍拦)
 # 白名单是加速项而非唯一闸门——带 && 的复合命令一律绕不过分类器,靠白名单撑不住夜间无人值守
 VERIFY_ALLOW=(
@@ -925,6 +935,51 @@ pane_hash() {  # GONE 判定不依赖 pipefail(ev-loop 里 pipefail 已关;原�
 }
 win_exists(){ tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
 
+# 模态对话框分类(stdin=窗口画面文本 → stdout=处置动作)。
+# 背景(2026-08-15):claude 的「Set up auto mode」对话框一天冻结 4 个窗口(dispatch 两次
+# 74min+5.5h、两个验收窗口数小时)。冻结时看门狗全盲:文字戳被对话框吞掉,且戳窗引起的
+# 画面重绘会重置静默计时 ⇒ 永远到不了重起阈值;即便重起,新会话照样弹 ⇒ 唯一有效处置
+# 是识别签名后按各自的安全键。
+# 输出:esc:<名> = 已验证 Esc 安全,可自动清除;alert:<名> = ⛔ 不许动键只告警
+#(trust 对话框 Esc=杀进程,2026-08-13 实撞;未知对话框处置键未知,同样只告警);none = 无对话框。
+# ⚠️ 新增签名前必须人工实测该对话框的安全键——把没验证过的键写进 esc 类=给看门狗装了盲开枪的手。
+dialog_classify() {
+  local txt; txt="$(cat)"
+  if grep -q "Set up auto mode" <<< "$txt"; then echo "esc:auto-mode-setup"; return 0; fi
+  if grep -q "How you use Claude here" <<< "$txt"; then echo "esc:auto-mode-wizard"; return 0; fi
+  if grep -qi "trust the files" <<< "$txt"; then echo "alert:trust-dialog"; return 0; fi
+  if grep -q "Esc to cancel" <<< "$txt" && grep -qE "Enter to (confirm|continue)" <<< "$txt"; then
+    echo "alert:unknown-dialog"; return 0
+  fi
+  echo "none"
+}
+
+# 扫一个窗口的对话框并处置;$1=窗口名。返回 0=清除了(esc),2=告警级(不敢动键),1=无对话框
+dialog_sweep_win() {
+  local w="$1" cls marker="$HOME/.laixin-lane-dlg-${w}.flag"
+  cls="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null | tail -25 | dialog_classify)"
+  case "$cls" in
+    esc:*)
+      tmux send-keys -t "$SESSION:$w" Escape
+      rm -f "$marker"
+      echo "[$(date '+%F %T')] 清除对话框 ${cls#esc:} @ $w" >> "$WD_LOG"
+      board "看门狗" "🧹 清除已知对话框 ${cls#esc:} @ ${w}(Esc,已验证安全键)"
+      return 0 ;;
+    alert:*)
+      echo "[$(date '+%F %T')] ⛔ 检出不可自动处置的对话框 ${cls#alert:} @ $w" >> "$WD_LOG"
+      # 防刷屏:同窗同episode 15 分钟至多上一次看板(日志每轮照记)
+      local now m_age=99999
+      now="$(date +%s)"
+      [ -f "$marker" ] && m_age=$(( now - $(stat -f %m "$marker" 2>/dev/null || echo 0) ))
+      if [ "$m_age" -ge 900 ]; then
+        board "看门狗" "⛔ ${w} 被对话框 ${cls#alert:} 挡住,处置键未验证不敢动,需人工:laixin-lane attach"
+        touch "$marker"
+      fi
+      return 2 ;;
+    *) rm -f "$marker"; return 1 ;;
+  esac
+}
+
 # 一条轨是否在干活(有 Codex 工作痕迹)
 lane_busy() {
   win_exists "lane-$1" || return 1
@@ -1052,7 +1107,8 @@ cmd_dispatch() {
   tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir"
   sleep 0.5
   local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
-  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --disallowedTools $deny" C-m
+  ensure_headless_settings
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
   vwait_ready "$DISPATCH_WIN" "$dir" || die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
   sleep 1
   printf '%s' "$DISPATCH_BRIEF" | tmux load-buffer -b laixin-dmsg -
@@ -1100,6 +1156,18 @@ wd_loop() {
       last_hash=""; silent=0; nudged=0
       continue
     fi
+    # —— 1.5 模态对话框扫描:活着但被冻是自愈盲区(2026-08-15 四窗冻结后加)——
+    #    必须先于静默计时:冻结时戳窗文本被对话框吞掉且重绘会重置 hash ⇒ 静默计时永远到不了
+    #    重起阈值(当日 74min+5.5h 两段实测);重起也无效(新会话照样弹)。
+    local dlg_rc=0; dialog_sweep_win "$DISPATCH_WIN" || dlg_rc=$?   # set -e 下裸调用非零会杀循环
+    case "$dlg_rc" in
+      0) last_hash=""; silent=0; nudged=0; continue ;;   # 刚清除,给窗口一拍恢复
+      2) continue ;;                                      # 挡住且不敢动键:告警已发,不做无效戳/重起
+    esac
+    local vw
+    for vw in $(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep '^verify-' || true); do
+      dialog_sweep_win "$vw" >/dev/null 2>&1 || true
+    done
     # —— 2. 活着但静止:先判是不是"正常等待" ——
     local h; h="$(pane_hash "$DISPATCH_WIN")"
     if [ "$h" = "$last_hash" ]; then silent=$((silent+interval)); else silent=0; nudged=0; fi
@@ -1238,7 +1306,8 @@ cmd_verify() {
   local allow deny
   allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
   deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
-  tmux send-keys -t "$SESSION:$w" "claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --allowedTools $allow --disallowedTools $deny" C-m
+  ensure_headless_settings
+  tmux send-keys -t "$SESSION:$w" "claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --allowedTools $allow --disallowedTools $deny" C-m
   vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-v $slice 40"
   sleep 1
 
@@ -1341,6 +1410,7 @@ case "${1:-}" in
   peek-d)   shift; cmd_peekd "$@" ;;
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
+  dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)
   verify) shift; cmd_verify "$@" ;;
   vdown)  shift; cmd_vdown "$@" ;;
   vlog)   shift; cmd_vlog "$@" ;;

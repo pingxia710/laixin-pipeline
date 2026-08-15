@@ -218,6 +218,23 @@ tout "正常工作画面 → none(空提示符/工具输出不误报)" "none" \
 tout "含 Esc 字样但非模态(帮助文本)→ none" "none" \
   dlg "Press Esc to cancel current input, or keep typing."
 
+echo "== 10. prompt-lint 引用可解析性(2026-08-15 生产方式层「当下可判」件①) =="
+TMPP="$(mktemp -d)"
+mkdir -p "$TMPP/kb/索引" "$TMPP/repo/app"
+printf '| 转单-9 | x |\n| 资金3-1 | y |\n' > "$TMPP/kb/索引/wiki-裁定池总表.md"
+printf '| R48 | z |\n' > "$TMPP/kb/索引/wiki-红线清单.md"
+printf 'l1\nl2\nl3\nl4\nl5\n' > "$TMPP/repo/app/x.py"
+printf '引用 app/x.py:3 与 转单-9 与 资金3-1 与 R48 全部真实。\n' > "$TMPP/good.md"
+printf '引用 app/x.py:99 越界,商会-99 查无,R999 查无,app/ghost.py:1 文件不存在。\n' > "$TMPP/bad.md"
+tout "全真引用 → PASS(文件:行号+域-序号含资金3-1形态+R编号)" "0 项查无" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/good.md"
+tfail "行号越界+编号查无+文件不存在 → 非零退出且逐项报错" "行号越界" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/bad.md"
+tfail "查无编号在报错清单里点名" "商会-99" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/bad.md"
+tfail "缺文件参数报用法" "用法" "$LANE" prompt-lint
+rm -rf "$TMPP"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

@@ -310,6 +310,64 @@ cmd_evidence_gc() {
 KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}"
 TABLE="${LAIXIN_TABLE:-$KB/4-开发层/来信平台-执行总表.md}"
 
+# prompt-lint <file> — 发车前引用可解析性机器核(2026-08-15 生产方式层「当下可判」件①;抄 spec-kit「Analyze」思路)
+# 核三类引用:①`文件:行号`(文件存在+行号不越界,先按仓库根再按知识库根解析)②「域-序号」裁定编号(裁定池+红线清单命中)
+# ③ R 编号(红线清单命中)。任一查无 ⇒ 非零退出——治 F 族(引用链走样)与 D 族(台账漂移):
+# 引错的编号/漂移的行号在发车前变红,而不是在 Codex 施工中变成一轮返工。
+# ⚠️ 只核「可解析性」不核语义:行号存在≠内容还是你以为的那句——语义核对仍归发车前 grep 纪律。
+cmd_prompt_lint() {
+  local f="${1:-}"; [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane prompt-lint <prompt文件>"
+  LX_KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}" LX_REPO="$DEFAULT_DIR" python3 - "$f" <<'PYEOF'
+import os, re, sys
+f = sys.argv[1]
+txt = open(f, encoding="utf-8").read()
+kb, repo = os.environ["LX_KB"], os.environ["LX_REPO"]
+errs, oks = [], 0
+
+def read(p):
+    try: return open(p, encoding="utf-8", errors="ignore").read()
+    except OSError: return ""
+
+# ① 文件:行号
+for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|md|txt|json)):(\d+)', txt):
+    rel, ln = m.group(1), int(m.group(2))
+    path = next((p for p in (os.path.join(repo, rel), os.path.join(kb, rel), rel) if os.path.isfile(p)), None)
+    if path is None:
+        hint = ""
+        if "/" not in rel:  # 裸文件名:按 basename 搜一遍给建议(引用纪律仍判错——裸名是引用走样的温床)
+            hits = []
+            for root, dirs, files in os.walk(repo):
+                dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".venv", ".next", "__pycache__")]
+                if rel in files: hits.append(os.path.relpath(os.path.join(root, rel), repo))
+            if hits: hint = f"(疑似 {' 或 '.join(hits[:3])} ——引用请带路径前缀)"
+        errs.append(f"文件不存在: {rel}:{ln}{hint}")
+        continue
+    n = sum(1 for _ in open(path, encoding="utf-8", errors="ignore"))
+    if ln > n: errs.append(f"行号越界: {rel}:{ln}(实际 {n} 行)")
+    else: oks += 1
+
+pool = read(os.path.join(kb, "索引/wiki-裁定池总表.md"))
+redl = read(os.path.join(kb, "索引/wiki-红线清单.md"))
+if not pool: errs.append("裁定池总表读不到(核对 LAIXIN_KB)")
+if not redl: errs.append("红线清单读不到(核对 LAIXIN_KB)")
+
+# ② 域-序号 裁定编号(转单-9 / 商会-10 / 资金3-1 形态)
+for tok in sorted(set(re.findall(r'[一-鿿][一-鿿0-9]{0,6}-\d{1,3}', txt))):
+    if pool and tok not in pool and tok not in redl:
+        errs.append(f"裁定编号查无: {tok}(裁定池+红线清单均未命中)")
+    else: oks += 1
+
+# ③ R 编号
+for tok in sorted(set(re.findall(r'\bR\d{1,3}\b', txt))):
+    if redl and tok not in redl: errs.append(f"红线编号查无: {tok}")
+    else: oks += 1
+
+for e in errs: print(f"  ❌ {e}")
+print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无")
+sys.exit(1 if errs else 0)
+PYEOF
+}
+
 cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自有活,由派工流程收尾)
   local stopped=""
   win_exists "$WATCHDOG_WIN" && { tmux kill-window -t "$SESSION:$WATCHDOG_WIN"; stopped="$stopped watchdog"; }
@@ -1411,6 +1469,7 @@ case "${1:-}" in
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)
+  prompt-lint) shift; cmd_prompt_lint "$@" ;;  # 发车前核 prompt 引用可解析性(文件:行号/裁定编号/R编号)
   verify) shift; cmd_verify "$@" ;;
   vdown)  shift; cmd_vdown "$@" ;;
   vlog)   shift; cmd_vlog "$@" ;;

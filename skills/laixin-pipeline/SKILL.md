@@ -307,9 +307,11 @@ new_tab("http://localhost:<你的应用端口>/<路径>")
 wait_for_load()
 print(page_info())   # 采集前先断言 URL(上节硬规则)
 PY
-# 4) 验收收尾:杀掉自己的 Chrome,别留孤儿进程:
+# 4) 验收收尾:杀掉自己的 Chrome,别留孤儿进程(创始人:用完要关):
 pkill -f "remote-debugging-port=$PORT"
 ```
+
+`vdown`/`down`/`fresh`/`halt` 回收窗口时会**机器兜底清扫同端口的 headless**(`cdp_sweep`)——兜底存在不豁免第 4 步,自己关是本分。
 
 细节疑难查 browser-harness 官方 interaction-skills/connection.md;⛔ 不设 BU_NAME 单给 BU_CDP_URL(daemon 按名单例,会命中别人的默认 daemon——本节案发机理)。
 

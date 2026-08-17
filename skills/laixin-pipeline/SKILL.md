@@ -288,7 +288,30 @@ laixin-lane verify <片名> \
 
 「专属实例会被 daemon 复用架空」(验收方原话):漂的不是端口也不是浏览器进程,是 **daemon 的标签归属**——`ensure_daemon()` 会忽略 `BU_CDP_URL` 复用别人的 daemon,标签被切到并行验收窗口的页面上。两个当日样本:①通知片验收方标签被切到 `127.0.0.1:3246`,首次采集作废;②主页-3 验收方已起专属 headless(9347+独立 profile),daemon 仍被安全片窗口(3178)复用,一次测量跑在对方页面(h1 数=0)。**规矩(硬要求,⛔ 起了专属端口/专属浏览器也不豁免)**:每次采集/测量前**先断言当前标签页 URL 等于预期**(形如 `ASSERT_URL: http://localhost:<你的端口>/<路径>`),断言失败即中止采集重连,⛔ 不带着未断言的读数下任何结论——两次事故都是靠这条拦下的。
 
-**机制层加固(2026-08-17 当晚已实施,`ebe6268`)**:起窗自动注入按窗口派生的 `BU_NAME`(verify=`v<cksum>` 短名 / dispatch / lane-a·b)——daemon 按名单例,每窗自有 daemon 后 `BU_CDP_URL` 在创建时即生效,串台应在机制层消失(机理:此前各窗共用默认名,后来者的 CDP URL「来晚了」无处生效;dispatch 十九任读文档+单测推出,PR #300 旁证该变量被尊重)。⚠️ **未经两个并发 verify 窗口实测确认前,URL 断言纪律仍是主防线 ⛔ 不撤**;首个并发样本确认隔离成立后,方可把断言降级为兜底。
+**机制层加固(2026-08-17 当晚实施并升级,`ebe6268` 起)**:起窗自动注入**成对**的 `BU_NAME`(verify=`v<cksum>` 短名 / dispatch / lane-a·b)与 `BU_CDP_URL`(**端口段创始人裁定:9230 往上整段归流水线**——dispatch=9230,lane-a/b=9231/9232,verify=9300-9999 按窗口名派生)——**每个窗口一条专属 CDP 通道**(创始人原话),daemon 按名单例、端口预分配,窗口 ⛔ 自挑端口 ⛔ 连共享 Chrome;端口无人监听时 harness 报错是预期 fail-closed。⚠️ **未经两个并发 verify 窗口实测确认前,URL 断言纪律仍是主防线 ⛔ 不撤**。
+
+**Claude 验收窗口 CDP 走查操作段(照抄即用;Codex 侧已熟不需此段)**:
+
+```bash
+# 1) 通道是预分配的,先看自己的:
+echo "$BU_NAME $BU_CDP_URL"          # 端口取 URL 末段
+PORT="${BU_CDP_URL##*:}"
+# 2) 用该端口起自己的 headless Chrome(独立临时 profile):
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --remote-debugging-port="$PORT" \
+  --user-data-dir="$(mktemp -d)" --no-first-run about:blank &
+sleep 2 && curl -s "http://127.0.0.1:$PORT/json/version" | head -1   # 有 JSON 回显=通道就绪
+# 3) browser-harness 自动读环境里的 BU_NAME/BU_CDP_URL,直接用:
+browser-harness <<'PY'
+new_tab("http://localhost:<你的应用端口>/<路径>")
+wait_for_load()
+print(page_info())   # 采集前先断言 URL(上节硬规则)
+PY
+# 4) 验收收尾:杀掉自己的 Chrome,别留孤儿进程:
+pkill -f "remote-debugging-port=$PORT"
+```
+
+细节疑难查 browser-harness 官方 interaction-skills/connection.md;⛔ 不设 BU_NAME 单给 BU_CDP_URL(daemon 按名单例,会命中别人的默认 daemon——本节案发机理)。
 
 ## 已知边界
 

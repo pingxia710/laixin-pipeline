@@ -115,7 +115,8 @@ cmd_up() {
   fi
   tmux new-window -t "$SESSION" -n "$(win "$lane")" -c "$dir"
   sleep 0.5
-  tmux send-keys -t "$(target "$lane")" "BU_NAME=\"lane-$lane\" codex" C-m
+  local _cdp_port; case "$lane" in a) _cdp_port=9231 ;; b) _cdp_port=9232 ;; *) _cdp_port=$(( 9233 + $(printf '%s' "$lane" | cksum | awk '{print $1}') % 60 )) ;; esac
+  tmux send-keys -t "$(target "$lane")" "BU_NAME=\"lane-$lane\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" codex" C-m
   board "lane-$lane" "启动 codex @ $dir"
   echo "$(win "$lane") 已在 $dir 启动 codex。观看:laixin-lane attach $lane"
 }
@@ -1166,7 +1167,8 @@ cmd_dispatch() {
   sleep 0.5
   local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
   ensure_headless_settings
-  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
+  local _cdp_port=9230
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
   vwait_ready "$DISPATCH_WIN" "$dir" || die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
   sleep 1
   printf '%s' "$DISPATCH_BRIEF" | tmux load-buffer -b laixin-dmsg -
@@ -1365,10 +1367,15 @@ cmd_verify() {
   allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
   deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
   ensure_headless_settings
-  # BU_NAME 按窗口派生唯一 daemon 名(ASCII,片名可含中文故用 cksum)——browser-harness daemon 是按名单例,
-  # 不注入则多个验收窗口共用默认 daemon,BU_CDP_URL 因"来晚了"失效,标签串台(2026-08-17 两实撞)
-  local bu; bu="v$(printf '%s' "$w" | cksum | awk '{print $1}')"
-  tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --allowedTools $allow --disallowedTools $deny" C-m
+  # 每窗口一条专属 CDP 通道(2026-08-17 创始人裁定「每个一个通道」):
+  # BU_NAME=按窗口派生唯一 daemon 名(ASCII,片名可含中文故用 cksum)——daemon 按名单例,
+  # 不注入则多窗共用默认 daemon,BU_CDP_URL 因"来晚了"失效,标签串台(当日两实撞);
+  # BU_CDP_URL=预分配端口(创始人 2026-08-17 划定:9230 往上整段归流水线;dispatch=9230,lane=9231/9232,
+  # verify=9300-9999 按窗口名派生)——窗口起 headless 用这个端口,⛔ 自挑端口 ⛔ 连共享 Chrome;
+  # 端口无人监听时 harness 报错即 fail-closed,不会退回共享 Chrome。
+  local bu port; bu="v$(printf '%s' "$w" | cksum | awk '{print $1}')"
+  port=$(( 9300 + $(printf '%s' "$w" | cksum | awk '{print $1}') % 700 ))
+  tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --allowedTools $allow --disallowedTools $deny" C-m
   vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-v $slice 40"
   sleep 1
 

@@ -425,6 +425,16 @@ rm -rf "$RPT"
 # #14c 绊线:vdown 挂了 facts-fresh 与总表脏提醒(静态,vdown 本体碰 tmux 不在套内实跑)
 tout "vdown 挂 facts-fresh(#14c 合并邻接挂载点)" "cmd_facts_fresh" sed -n "/^cmd_vdown/,/^}/p" "$LANE"
 tout "vdown 有总表未提交提醒且不代交(#14c)" "未提交改动" sed -n "/^cmd_vdown/,/^}/p" "$LANE"
+# M1 升级提醒族(复盘页#8,方案 log:29:投而未接与没投不得同形;绊线测试须含「投而未接」路径)
+TMPM="$(mktemp -d)"
+sed -n "/^ev_ack_overdue/,/^}/p" "$LANE" > "$TMPM/fn.sh"; EV_ACK=2700; source "$TMPM/fn.sh"
+printf '1000|老片|P\n5000|新片|P\n800|已升级片|E\n' > "$TMPM/pending"
+tout "投而未接超阈值被判升级(M1 绊线)" "老片" bash -c 'source "'"$TMPM"'/fn.sh"; EV_ACK=2700 ev_ack_overdue 4000 < "'"$TMPM"'/pending"'
+t "未超阈值与已升级的不重报(M1)" bash -c 'source "'"$TMPM"'/fn.sh"; out="$(EV_ACK=2700 ev_ack_overdue 4000 < "'"$TMPM"'/pending")"; ! grep -qE "新片|已升级片" <<< "$out"'
+tout "ev_deliver 投交付即登记待认领(M1)" "EV_PENDING" sed -n "/^ev_deliver/,/^}/p" "$LANE"
+tout "巡检见 verify 窗口即销账(M1)" "认领销账" sed -n "/^ev_loop/,/^}/p" "$LANE"
+tout "升级提醒⛔自动拉起(M1 方案红线)" "不自动拉起" sed -n "/^ev_loop/,/^}/p" "$LANE"
+rm -rf "$TMPM"
 rm -rf "$TMPP"
 
 echo

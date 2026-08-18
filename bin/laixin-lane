@@ -1038,6 +1038,8 @@ EV_DIR="$HOME/.laixin-events.d"
 EV_LOG="$EV_DIR/events.log"
 EV_SPOOL="$EV_DIR/spool"
 EV_SEEN="$EV_DIR/deliveries.seen"
+EV_PENDING="$EV_DIR/pending.ack"          # M1(复盘页#8):已投交付的认领台账 epoch|slug|状态(P待认领/E已升级)
+EV_ACK="${LAIXIN_EV_ACK:-2700}"           # 无认领升级阈值(秒,45min 取 30-60 区间中值;方案 log:29 原文 30-60 分钟)
 EV_STALL="${LAIXIN_EV_STALL:-360}"   # 无变化多少秒判卡住/空闲(默认 6 分钟)
 EV_TICK="${LAIXIN_EV_TICK:-60}"
 EV_HB="$EV_DIR/heartbeat"            # 循环每 tick 写 epoch;重启时它就是「陈旧/新交付」的分界线
@@ -1103,6 +1105,10 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
     sleep 0.4
     tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
     ev_log "投递[$kind] $(echo "$text" | head -1)"
+    if [ "$kind" = "交付" ]; then   # M1:登记待认领(slug 取报告名同 verify-from 口径)
+      local _slug; _slug="$(echo "$text" | grep -oE '[^/]+\.md' | head -1 | sed -E 's/\.md$//; s/(验收记录|-?交付报告)$//; s/^来信平台-//' | tr ' /' '--' | cut -c1-24)"
+      [ -n "$_slug" ] && printf '%s|%s|P\n' "$(date +%s)" "$_slug" >> "$EV_PENDING"
+    fi
   else
     if [ "$kind" = "交付" ]; then
       { echo "$text"; echo "---"; } >> "$EV_SPOOL"
@@ -1174,6 +1180,25 @@ ev_loop(){
   while true; do
     sleep "$EV_TICK"
     date +%s > "$EV_HB"
+    # M1 认领巡检(复盘页#8):见到该片 verify-* 窗口=已认领销账;超阈值未认领=升级提醒一次(P→E 防刷屏)
+    if [ -s "$EV_PENDING" ]; then
+      _now="$(date +%s)"
+      : > "$EV_PENDING.new"
+      while IFS='|' read -r _pe _ps _pst; do
+        [ -n "$_ps" ] || continue
+        if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "verify-$_ps"; then
+          ev_log "M1 认领销账:$_ps(verify 窗口已见)"; continue
+        fi
+        if [ "$_pst" = "P" ] && [ $(( _now - _pe )) -ge "$EV_ACK" ]; then
+          board "事件总线" "⚠️ 升级提醒(M1):交付「$_ps」投递 $(( (_now-_pe)/60 )) 分钟无认领——「投了没人接」与「没投」不得同形;dispatch 在处理请看板留痕,断窗则报创始人开窗 ⛔ 不自动拉起"
+          ev_log "M1 升级提醒:$_ps"
+          printf '%s|%s|E\n' "$_pe" "$_ps" >> "$EV_PENDING.new"
+        else
+          printf '%s|%s|%s\n' "$_pe" "$_ps" "$_pst" >> "$EV_PENDING.new"
+        fi
+      done < "$EV_PENDING"
+      mv -f "$EV_PENDING.new" "$EV_PENDING"
+    fi
     # 1) 新交付 → 投递(或暂存);mtime 早于心跳截止线的是重扫陈旧报告,记日志不投递
     cur="$(ev_scan_deliveries)"
     comm -13 "$EV_SEEN" <(echo "$cur") | while IFS='|' read -r f m; do
@@ -1201,6 +1226,11 @@ $(cat "$EV_SPOOL")"
       ev_watch_target "$vw"
     done || true   # 无 verify-* 窗口时 grep 返 1 属正常空结果——这正是两次击穿循环的那颗雷
   done
+}
+
+ev_ack_overdue(){  # M1 纯判定:stdin=pending 台账(epoch|slug|状态),$1=当前 epoch → 打印超阈值且未升级的行
+  # 「投了没人接」与「没投」不得在系统里同形(方案 log:29,创始人点头的 M1 升级提醒族)。
+  awk -F'|' -v now="$1" -v ack="$EV_ACK" '$3=="P" && (now-$1)>=ack {print}'
 }
 
 ev_alive(){ pgrep -f "laixin-lane ev-loop" >/dev/null 2>&1; }  # 判活只认进程:窗口存在是进程存活的不可靠代理(2026-08-13 实撞:循环死了窗口还在,status/doctor/看门狗全被假绿灯骗过)

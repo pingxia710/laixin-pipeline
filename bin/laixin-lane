@@ -460,6 +460,35 @@ sys.exit(1 if errs else 0)
 PYEOF
 }
 
+cmd_report_lint() {  # #18b(2026-08-19):交付报告举证 lint——举证毛病反复(自称逐字不逐字/零命令输出/
+  # 缺 commit 自证行),靠验收补跑=成本转嫁;只查机器可判的形态半边,实质仍归验收七步。
+  local f="${1:-}"
+  [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane report-lint <交付报告路径>"
+  local errs=0 warns=0
+  # ① 完成信号契约:末非空行是【交付完成】或含停车字样(#21 同款取行)
+  local last; last="$(grep -v '^[[:space:]]*$' "$f" | tail -1)"
+  if ! grep -qE '^【交付完成】|停车' <<< "$last"; then
+    echo "  ❌ 末行既非【交付完成】契约也非停车报告:$last"; errs=$((errs+1))
+  fi
+  # ② 命令输出块:自测举证至少要有一个围栏代码块(零输出块=全是声明式「已验证」)
+  local blocks; blocks="$(grep -c '^```' "$f" || true)"   # grep -c 零命中退出码 1,set -e 下不兜底会静默杀掉本函数(本批实撞)
+  if [ "$blocks" -lt 2 ]; then
+    echo "  ❌ 零命令输出块(围栏计数 $blocks)——自测判据须实跑贴证据,⛔ 声明式(宪法头 10 条)"; errs=$((errs+1))
+  fi
+  # ③ 自称「逐字」的行须带锚(:行号 或 文件路径)——合格的数字可以来自不合格的地方,取值来源是判据的一部分
+  local zl
+  zl="$(grep -n '逐字' "$f" | grep -vE ':[0-9]+|\.md|\.py|\.tsx?|\.mjs' || true)"
+  if [ -n "$zl" ]; then
+    echo "  ⚠️ 自称「逐字」但行内无锚(文件或行号),可跳查性存疑:"; echo "$zl" | head -3 | sed 's/^/     /'; warns=$((warns+1))
+  fi
+  # ④ commit 自证行(宪法头 10 条 2026-08-18 补):完成报告须显式写「达标/未达标」判定
+  if grep -q '^【交付完成】' <<< "$last" && ! grep -qE '达标' "$f"; then
+    echo "  ❌ 缺 commit 数达标自证行(「commit 数 N,任务数 M,达标/未达标+理由」,宪法头 10 条)"; errs=$((errs+1))
+  fi
+  echo "report-lint: $(basename "$f") — ${errs} 项缺陷,${warns} 项提示"
+  [ "$errs" -eq 0 ]
+}
+
 cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自有活,由派工流程收尾)
   local stopped=""
   win_exists "$WATCHDOG_WIN" && { tmux kill-window -t "$SESSION:$WATCHDOG_WIN"; stopped="$stopped watchdog"; }
@@ -1915,7 +1944,8 @@ case "${1:-}" in
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)
-  prompt-lint) shift; cmd_prompt_lint "$@" ;;  # 发车前核 prompt 引用可解析性(文件:行号/裁定编号/R编号)
+  prompt-lint) shift; cmd_prompt_lint "$@" ;;
+  report-lint) shift; cmd_report_lint "$@" ;;  # 交付报告举证lint:契约末行/输出块计数/逐字带锚/达标自证行(#18b)  # 发车前核 prompt 引用可解析性(文件:行号/裁定编号/R编号)
   verify) shift; cmd_verify "$@" ;;
   vdown)  shift; cmd_vdown "$@" ;;
   vlog)   shift; cmd_vlog "$@" ;;

@@ -412,6 +412,16 @@ tout "改读法片缺消费点清单 → ⚠️ 提示(#18a)" "消费点清单" 
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-read.md"
 printf '收敛 payload 序列化面,消费点清单如下。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-read2.md"
 t "带消费点清单不提示(#18a)" bash -c 'out="$(env LAIXIN_KB="'"$TMPP"'/kb" LAIXIN_REPO="'"$TMPP"'/repo" "'"$LANE"'" prompt-lint "'"$TMPP"'/ph-read2.md" 2>&1)"; ! grep -q "消费点清单——" <<< "$out"' 
+# #18b report-lint:举证形态半边机器化(实质归验收)
+RPT="$(mktemp -d)"
+printf '报告\n```\n输出\n```\ncommit 数 1,任务数 1,达标\n【交付完成】b test123\n' > "$RPT/好报告.md"
+tout "合规报告过 report-lint(#18b)" "0 项缺陷" "$LANE" report-lint "$RPT/好报告.md"
+printf '报告全是声明式已验证\n【交付完成】b test123\n' > "$RPT/坏报告.md"
+tfail "零输出块+缺达标行被拒(#18b)" "零命令输出块" "$LANE" report-lint "$RPT/坏报告.md"
+printf '停车报告:词表查无\n理由如下停车\n' > "$RPT/停车.md"
+t "停车报告不报末行契约错(#18b 停车是合法末态)" \
+  bash -c 'out="$("$0" report-lint "$1" 2>&1)"; ! grep -q "末行既非" <<< "$out"' "$LANE" "$RPT/停车.md"
+rm -rf "$RPT"
 rm -rf "$TMPP"
 
 echo

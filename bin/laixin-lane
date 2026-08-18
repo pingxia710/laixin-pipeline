@@ -511,6 +511,72 @@ PLIST
   return 0
 }
 
+cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史
+  # 只推已提交历史——未提交的是活窗口的在途工作,由各窗口按纪律及时提交;⛔ 本命令不 add 不 commit
+  # (备份自动 commit -A 会与窗口的精确提交互扫且污染史,见复盘页#9)
+  local rc=0 r
+  for r in "$HOME/Obsidian" "$HOME/Developer/laixin-pipeline" "$HOME/来信平台"; do
+    if git -C "$r" remote get-url origin >/dev/null 2>&1; then
+      if git -C "$r" push origin main -q 2>/dev/null; then
+        echo "✅ $(basename "$r") 已推送"
+      else
+        echo "❌ $(basename "$r") 推送失败(网络/认证?)"; rc=1
+      fi
+    else
+      echo "⚠️ $(basename "$r") 无 origin 远端,跳过"; rc=1
+    fi
+  done
+  [ "$rc" -ne 0 ] && board "备份" "⛔ 异地备份有失败项,laixin-lane backup 手跑核对"
+  return "$rc"
+}
+
+cmd_install_backup(){  # 每小时异地备份 launchd(P0-2 配套)
+  local plist="$HOME/Library/LaunchAgents/com.pingxia.laixin-backup.plist"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.pingxia.laixin-backup</string>
+  <key>ProgramArguments</key><array>
+    <string>$HOME/.local/bin/laixin-lane</string><string>backup</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$HOME/.laixin-events.d/backup.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.laixin-events.d/backup.log</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict></plist>
+PLIST
+  launchctl unload "$plist" 2>/dev/null || true
+  launchctl load "$plist"
+  echo "已装每小时异地备份(三仓 push;日志 ~/.laixin-events.d/backup.log)。卸载:launchctl unload $plist && rm $plist"
+  return 0
+}
+
+cmd_install_boot_full(){  # 开机全自动恢复(2026-08-18 生产级 P0-3,创始人裁「全自动烧钱」):等网络+专线就绪后 resurrect --full
+  local plist="$HOME/Library/LaunchAgents/com.pingxia.laixin-boot-full.plist"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.pingxia.laixin-boot-full</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-c</string>
+    <string>sleep 120; for i in 1 2 3 4 5; do $HOME/.local/bin/laixin-lane resurrect --full &amp;&amp; exit 0; sleep 180; done; echo 'boot-full 五次未成,交给看门狗/人工' &gt;&gt; $HOME/.laixin-events.d/boot.log</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$HOME/.laixin-events.d/boot.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.laixin-events.d/boot.log</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict></plist>
+PLIST
+  launchctl unload "$plist" 2>/dev/null || true
+  launchctl load "$plist"
+  echo "已装开机全自动恢复:开机 2 分钟后 resurrect --full(重试 5 次×3 分钟;专线未就绪时 claude 起窗自检会 fail-closed,由重试兜住)。"
+  echo "⚠️ 本机重启后流水线会自动烧钱(创始人 2026-08-18 裁定);燃烧护栏=看门狗既有重起上限。卸载:launchctl unload $plist && rm $plist"
+  return 0
+}
+
 cmd_doctor() {
   local fail=0 warn=0
   ok()   { printf '  ✅ %s\n' "$*"; }
@@ -537,6 +603,16 @@ cmd_doctor() {
   bash -n "$HOME/.local/bin/laixin-lane" 2>/dev/null && ok "laixin-lane 语法正常" || bad "laixin-lane 语法错误"
   command -v laixin-lane >/dev/null && ok "laixin-lane 在 PATH" || bad "laixin-lane 不在 PATH"
   command -v claude >/dev/null && ok "claude 可执行" || bad "claude 不可执行(验收/派工窗口起不来)"
+  # 上游版本变化检测(2026-08-18 生产级 P0-4 代偿:创始人裁保持自动升级——升级不拦,但绝不静默:
+  # 「Set up auto mode」冻 4 窗 5.5h 的祸根正是上游悄悄带来的新对话框)
+  local vf="$EV_DIR/tool-versions" vnow vold
+  vnow="claude=$(claude --version 2>/dev/null | head -1) codex=$(codex --version 2>/dev/null | head -1)"
+  vold="$(cat "$vf" 2>/dev/null || true)"
+  if [ -n "$vold" ] && [ "$vnow" != "$vold" ]; then
+    wrn "上游 CLI 版本已变化:$vold → $vnow ——留意新模态对话框(dialog_classify 签名库可能要补),首个新起窗口盯 90 秒"
+    board "doctor" "⚠️ 上游版本变化:$vnow(留意新对话框,签名库或需补)"
+  fi
+  mkdir -p "$EV_DIR"; printf '%s' "$vnow" > "$vf"
 
   echo "== 3. 权威知识库 =="
   [ -d "$KB" ] && ok "知识库存在" || bad "知识库路径不存在:$KB"
@@ -1555,6 +1631,9 @@ case "${1:-}" in
   uptime)   shift; cmd_uptime ;;
   daily-report) shift; cmd_daily_report "$@" ;;
   audit-queue) cmd_audit_queue ;;  # 台账巡检:排队/验收中片名×看板合并记录,揪陈旧行(接班/交班各跑一次)
+  backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
+  install-backup) cmd_install_backup ;;      # 每小时备份 launchd
+  install-boot-full) cmd_install_boot_full ;;  # 开机全自动恢复(P0-3,烧钱,创始人已裁)
   install-boot) shift; cmd_install_boot ;;
   claim)    shift; cmd_claim "$@" ;;
   whoholds) shift; cmd_whoholds ;;

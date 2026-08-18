@@ -1491,13 +1491,27 @@ cmd_dispatch() {
     [ -n "$force" ] || { echo "$DISPATCH_WIN 已存在(换全新上下文用 --fresh)"; return 0; }
     tmux kill-window -t "$SESSION:$DISPATCH_WIN"; sleep 0.3
   fi
-  tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir"
-  sleep 0.5
   local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
   ensure_headless_settings
   local _cdp_port=9230
-  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
-  vwait_ready "$DISPATCH_WIN" "$dir" || die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
+  # 起窗+就绪等待,撞 Claude 自更新时定向重试一次(复盘页#20c):08-19 05:07 实撞——起窗恰逢
+  # claude.exe 替换瞬间(时间戳 05:08,窗口以秒计),包装器 fail-closed 留空 shell,而报错落在
+  # 正退场的交班窗口里无人看见。该因**天然瞬时**,等 20s 重试一次不属「同因重试同死」;
+  # 其余启动失败照旧不自动重试(die 大声报,看门狗 wd_alive 修复后下一拍也会兜)。
+  local _attempt
+  for _attempt in 1 2; do
+    tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
+    sleep 0.5
+    tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
+    if vwait_ready "$DISPATCH_WIN" "$dir"; then break; fi
+    if [ "$_attempt" = 1 ] && tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" 2>/dev/null | grep -q "Claude Code CLI not found"; then
+      board "看门狗" "⚠️ dispatch 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
+      tmux kill-window -t "$SESSION:$DISPATCH_WIN" 2>/dev/null || true
+      sleep 20
+      continue
+    fi
+    die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
+  done
   sleep 1
   printf '%s' "$DISPATCH_BRIEF" | tmux load-buffer -b laixin-dmsg -
   tmux paste-buffer -p -b laixin-dmsg -t "$SESSION:$DISPATCH_WIN"
@@ -1507,6 +1521,15 @@ cmd_dispatch() {
   printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
   board "看门狗" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
   ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
+  # 起窗验尸(复盘页#20b,lanes #11-③ 同款):就绪判定可能被过渡画面骗过,15s 后回头核
+  # pane 里跑的真是 claude——掉回登录 shell 即大声告警,⛔ 自动重试(非瞬时因,人工看现场)。
+  ( sleep 15
+    _pc="$(tmux display-message -p -t "$SESSION:$DISPATCH_WIN" '#{pane_current_command}' 2>/dev/null || echo 无窗口)"
+    if [ "$_pc" = "$(basename "${SHELL:-/bin/zsh}")" ] || [ "$_pc" = "无窗口" ]; then
+      _tail="$(tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -2 | tr '\n' ' ' | cut -c1-160 || true)"
+      board "看门狗" "⚠️ dispatch 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
+    fi
+  ) &
   echo "$DISPATCH_WIN 已起并接管。复核:laixin-lane peek-d 30"
 }
 

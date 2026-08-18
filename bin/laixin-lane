@@ -773,7 +773,9 @@ cmd_doctor() {
     local outn; outn="$(outside_sessions)"
     if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
     else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
-    win_exists "$WATCHDOG_WIN" && ok "看门狗运行中" || wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"
+    if wd_alive; then ok "看门狗运行中(进程判活)"
+    elif win_exists "$WATCHDOG_WIN"; then wrn "看门狗窗口在但循环已死(假绿形态,复盘页#20⑤)——laixin-lane watchdog stop && start"
+    else wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"; fi
     if ev_alive; then ok "事件总线运行中(进程判活)"
     elif win_exists "$EV_WIN"; then wrn "⛔ events 窗口在但循环已死(假绿灯)——events stop && events start;交付事件正在漏,优先处理"
     else wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"; fi
@@ -1147,6 +1149,7 @@ $(cat "$EV_SPOOL")"
 }
 
 ev_alive(){ pgrep -f "laixin-lane ev-loop" >/dev/null 2>&1; }  # 判活只认进程:窗口存在是进程存活的不可靠代理(2026-08-13 实撞:循环死了窗口还在,status/doctor/看门狗全被假绿灯骗过)
+wd_alive(){ pgrep -f "laixin-lane wd-loop" >/dev/null 2>&1; }  # 同上一课的 wd 版(复盘页#20⑤):08-17 崩后窗口挂了一天半,doctor/status 全程报「运行中」——ev 修了自己,wd 的判活漏了同款
 
 cmd_events(){
   case "${1:-status}" in
@@ -1587,7 +1590,8 @@ cmd_watchdog() {
   case "${1:-start}" in
     start)
       ensure_session
-      win_exists "$WATCHDOG_WIN" && die "看门狗已在跑(停:laixin-lane watchdog stop)"
+      wd_alive && die "看门狗已在跑(停:laixin-lane watchdog stop)"
+      win_exists "$WATCHDOG_WIN" && die "看门狗窗口在但循环已死(假绿形态)——先 laixin-lane watchdog stop 清窗再 start"
       dispatch_alive || die "派工窗口不在托管状态。先 laixin-lane dispatch 起一个,再启看门狗——否则它会和你手开的窗口打架"
       tmux new-window -t "$SESSION" -n "$WATCHDOG_WIN" -c "$HOME"
       sleep 0.4
@@ -1601,7 +1605,9 @@ cmd_watchdog() {
       echo "看门狗已停"
       ;;
     status)
-      if win_exists "$WATCHDOG_WIN"; then echo "看门狗:运行中"; else echo "看门狗:未运行"; fi
+      if wd_alive; then echo "看门狗:运行中(进程判活)"
+      elif win_exists "$WATCHDOG_WIN"; then echo "看门狗:⛔ 窗口在但循环已死(假绿形态)——stop 清窗再 start"
+      else echo "看门狗:未运行"; fi
       if dispatch_alive; then echo "派工窗口:托管中($(pane_cmd "$DISPATCH_WIN"))"; else echo "派工窗口:不在托管状态"; fi
       for l in a b; do
         if lane_busy "$l"; then echo "lane-$l:在干活"; else echo "lane-$l:空闲或不存在"; fi

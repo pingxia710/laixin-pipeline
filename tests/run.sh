@@ -160,6 +160,16 @@ hb_cutoff_now_check(){  # 无心跳分支:截止应≈当前时刻(套内只有 
 }
 tout "无心跳:截止=当前时刻(首启由基线兜底)" "CUTOFF_NOW_OK" hb_cutoff_now_check
 rm -rf "$TMPH"
+
+echo "== 6c. 台账巡检 audit-queue(2026-08-18 优化#13:陈旧行机器 diff) =="
+TMPQ="$(mktemp -d)"; mkdir -p "$TMPQ/kb/4-开发层"
+printf '## 排队(测试)\n\n| 片 | 轨 | 前置 | 状态 |\n|---|---|---|---|\n| 甲片测试切片 | A | 无 | ready |\n| 乙片纯净切片 | B | 无 | ready |\n\n## 下一节\n' > "$TMPQ/kb/4-开发层/来信平台-执行总表.md"
+printf '| 08-18 | 派工窗口 | 合并 甲片测试切片 abc123 |\n' > "$TMPQ/kb/4-开发层/来信平台-流水线看板.md"
+tout "排队节陈旧行被揪出" "甲片测试切片" env LAIXIN_KB="$TMPQ/kb" "$LANE" audit-queue
+tout "干净行不误报且有嫌疑计数" "共 1 行嫌疑" env LAIXIN_KB="$TMPQ/kb" "$LANE" audit-queue
+printf '| 08-18 | 派工窗口 | 无关记录 |\n' > "$TMPQ/kb/4-开发层/来信平台-流水线看板.md"
+tout "零冲突时报绿" "零冲突" env LAIXIN_KB="$TMPQ/kb" "$LANE" audit-queue
+rm -rf "$TMPQ"
 tout "ev-loop 重启保留交付基线(死亡期间落盘不丢)" '\-s "\$EV_SEEN" \] ||' grep -F -- '-s "$EV_SEEN" ] ||' "$LANE"
 
 echo "== 7. 事件总线执行级绊线(真跑;静态 grep 抓不到展开顺序/管道返值类崩溃——2026-08-13 两次实撞后由 dispatch 建议加) =="

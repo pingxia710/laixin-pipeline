@@ -30,6 +30,7 @@ description: laixin开发流水线——五窗口拓扑下派工窗口与验收�
 ```bash
 laixin-lane fresh a                        # 重启 A 轨=全新上下文(默认 ~/来信平台 主树)
 laixin-lane fresh b --dir ~/来信平台-bN    # B 轨每片换 worktree(必须独立 worktree,不可用主树)
+laixin-lane fresh a --with-mcp aliyun-readonly  # 按片放行 MCP(默认全关只留 codegraph;部署/运维片需要阿里云通道时带此参——创始人 2026-08-18:默认关、选择性开)
 laixin-lane send a "好的,接下来开发 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/prompt/<片名>开发prompt.md"
 laixin-lane peek a 30                      # 抽查在飞状态;一律 ≥20 行,5 行只截到提示符会误判
 LAIXIN_WINDOW=派工窗口 laixin-lane log "合并 客服-1 <commit> 195绿"   # ← 派工窗口记看板用 log

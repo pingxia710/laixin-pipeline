@@ -639,7 +639,16 @@ done=_names_in_section(r'已完成')
 m=re.search(r'##\s*排队.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
 buckets={'✅ 可立即发车(prompt ready 且未发)':[], '✏️ 派工窗口可自写(裁定齐/prompt 待写)':[],
          '🚧 缺设计,要方案窗口补':[], '✔️ 已发车或已合入':[]}
-stale=[]; unparsed=[]
+stale=[]; unparsed=[]; blocked_rows=[]
+def _blocked(cells,st):
+    # 前置未解检测(2026-08-18 优化#2):状态格首段说 ready/待写,但前置格挂着未解条件 ⇒ 不算燃料。
+    # 实撞:聚单页片族标「可自写」而前置=待拆+词表定稿门,油表据此虚高,夜间排片会被误导。
+    # 判据保守:误拦的行会列名给人核,静默放行才是真危险。
+    pre=cells[2] if len(cells)>=4 else ''
+    if '⛔' in pre or '⛔' in st: return True
+    if re.search(r'已解除|已合入|已满足|已齐|前置已|零前置|无前置',pre): return False
+    if re.search(r'(前置|等|待).*(合入|定稿|待拆|裁定|细化)',pre): return True
+    return False
 if m:
     for line in m.group(1).split('\n'):
         if not line.startswith('|') or '---' in line: continue
@@ -657,8 +666,10 @@ if m:
             buckets['🚧 缺设计,要方案窗口补'].append(name)
         elif _stem(cells[0]) in flying:
             stale.append(name)
-        elif 'ready' in st.lower() or 'prompt 已写' in st: buckets['✅ 可立即发车(prompt ready 且未发)'].append(name)
-        elif '待写' in st: buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'].append(name)
+        elif 'ready' in st.lower() or 'prompt 已写' in st:
+            (blocked_rows if _blocked(cells,st) else buckets['✅ 可立即发车(prompt ready 且未发)']).append(name)
+        elif '待写' in st:
+            (blocked_rows if _blocked(cells,st) else buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']).append(name)
         else: unparsed.append(name)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
@@ -666,6 +677,9 @@ for k,v in buckets.items():
 if unparsed:
     print(f"  ❓ 状态未识别 {len(unparsed)} 行(状态格首段无已知标记;分桶只认首个<br>前的片段,解释文字请放 <br> 之后):")
     for n in unparsed: print(f"      · {n}")
+if blocked_rows:
+    print(f"  ⏳ 前置未解 {len(blocked_rows)} 行(状态格说可写,前置格挂着未解条件——⛔ 不算燃料;误拦请核前置格并补「已解除」标记):")
+    for n in blocked_rows[:6]: print(f"      · {n}")
 if stale:
     print(f"  ⚠️ 排队节状态滞后 {len(stale)} 行(实际已在'进行中'节飞着,排队节还写着待写/ready):")
     for n in stale: print(f"      · {n}")
@@ -678,7 +692,7 @@ if ready+writable==0: print("  ⚠️ 燃料见底:看门狗能让窗口活着,�
 print()
 print("== 片级周期(尽力解析看板;事件动词越规范这里越准) ==")
 def norm(x): return re.sub(r'[\s*`~«»()()::\-—_]+','',x)
-slices={}
+slices={}; rejects=set()
 def find_key(name):
     n=norm(name)
     if not n: return None
@@ -701,7 +715,7 @@ for t,src,txt in rows:
     m=re.search(r'验收开始 (\S+)',txt)
     if m: touch(m.group(1),'进验',t); continue
     m=re.search(r'打回(?:回执|)[::]? ?([^\s,,((]+)',txt)
-    if m: touch(m.group(1),'结论',t); continue
+    if m: touch(m.group(1),'结论',t); rejects.add(find_key(m.group(1))); continue
     m=re.search(r'验收通过并?合?并?[::]? ?([^\s,,((]+)',txt)
     if m: touch(m.group(1),'结论',t); touch(m.group(1),'合并',t); continue
     m=re.search(r'(?:^|\s)合并[::]? ?([^\s,,((]+)',txt)
@@ -718,7 +732,17 @@ for k,v in slices.items():
     if segs:
         shown+=1; print(f"  {v['name']:<26} " + " · ".join(segs))
 if not shown: print("  (可配对的事件链不足)")
+merged_keys=[k for k,d in slices.items() if '合并' in d]
+if merged_keys:
+    fp=[k for k in merged_keys if k not in rejects]
+    print()
+    print("== 质量节奏(优化#16) ==")
+    print(f"  首过率:{len(fp)}/{len(merged_keys)}({len(fp)*100//len(merged_keys)}%)——合并片中零打回直过的比例")
+    print("  打回轮是「变慢感」的主源:低于 60% 时先查 prompt 判据完备性与设计托底,再谈提速")
 PY
+  echo
+  echo "== 台账巡检(排队/验收中 × 看板合并记录;同一实现=audit-queue) =="
+  cmd_audit_queue
   return 0
 }
 

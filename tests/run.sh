@@ -406,6 +406,12 @@ tout "提及供给侧界面只引消费者词表 → ⚠️ 提示(#22b)" "供�
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-side.md"
 t "#22b 提示不改变退出码(纯提示级)" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-side.md"
+# #18a:改读法片缺消费点清单 → 提示级
+printf '收敛 payload 序列化面。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-read.md"
+tout "改读法片缺消费点清单 → ⚠️ 提示(#18a)" "消费点清单" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-read.md"
+printf '收敛 payload 序列化面,消费点清单如下。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-read2.md"
+t "带消费点清单不提示(#18a)" bash -c 'out="$(env LAIXIN_KB="'"$TMPP"'/kb" LAIXIN_REPO="'"$TMPP"'/repo" "'"$LANE"'" prompt-lint "'"$TMPP"'/ph-read2.md" 2>&1)"; ! grep -q "消费点清单——" <<< "$out"' 
 rm -rf "$TMPP"
 
 echo

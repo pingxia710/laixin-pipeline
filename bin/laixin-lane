@@ -414,6 +414,11 @@ for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|m
         # 引用的词表行含 X/N 类占位而行内无取值来源标注(配置/渲染/取值/实值)⇒ 红:占位模板不是可上屏的成句
         if "词汇表" in rel:
             lt = lines[ln-1]
+            # #22a(2026-08-19):占位符只扫词格(第二格)⛔ 扫备注格——备注格引用被替换的旧句是记录惯例,
+            # 而旧句往往正因含占位符才被替换 ⇒ 越是被正确替换的句子,越让 lint 对替换它的新句报红(结构性误报)。
+            if lt.lstrip().startswith("|"):
+                cells = [c.strip() for c in lt.strip().strip("|").split("|")]
+                lt = cells[1] if len(cells) >= 2 else lt
             if re.search(r'[XN] ?(天|日|小时|个工作日|个月|%|元)|¥ ?X|预计 ?[XN]', lt) and not re.search(r'配置|渲染|取值|实值', lt):
                 errs.append(f"词表占位符未注取值来源: {rel}:{ln}(句含 X/N 占位,⛔ 直接上屏——先裁取值来源并在词表行旁注明,宪法头 2 条)")
 
@@ -437,8 +442,15 @@ for tok in sorted(set(re.findall(r'\bR\d{1,3}\b', txt))):
     if redl and tok not in redl: errs.append(f"红线编号查无: {tok}")
     else: oks += 1
 
+# #22b(2026-08-19):词表预检半面提示——prompt 提到供给侧界面而引用的词表只有消费者词汇表 ⇒ 提示级
+# ⚠️(不拦):该失败模式卡里明写仍复发(失败样本总账 G 族,付款指引片开工即停车),纪律侧到极限的机器半边。
+warns = []
+if re.search(r'admin|管理台|工作台|后台界面|顾问端|顾问面|商会端|供给侧', txt) \
+   and "消费者词汇表" in txt and "供给侧词汇表" not in txt:
+    warns.append("prompt 涉及供给侧界面(admin/顾问/商会/工作台)但只引用了消费者词汇表——供给侧词汇表逐角色各查一次(kickoff 闸门 0 列角色;G 族复发样本:付款指引片开工即停车)")
+for w in warns: print(f"  ⚠️ {w}")
 for e in errs: print(f"  ❌ {e}")
-print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无")
+print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无" + (f",{len(warns)} 项提示" if warns else ""))
 sys.exit(1 if errs else 0)
 PYEOF
 }

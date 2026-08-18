@@ -385,6 +385,22 @@ tfail "词表占位符未注取值来源 → 红(优化#11)" "占位符" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-bad.md"
 tout "占位符带取值注 → 过" "0 项查无" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-good.md"
+# #22a(2026-08-19):占位符只扫词格——第三格备注引用被替换旧句(含 N)不再算到新句头上。
+# 定稿句零占位而备注引旧句 ⇒ 修复前报红(结构性误报),修复后过。
+printf '| 付款指引 | 收款方式会短信发给你 | 替换「请按线下收款指令支付 N 元」旧句 |\n' >> "$TMPP/kb/索引/wiki-消费者词汇表.md"
+printf '引用 索引/wiki-消费者词汇表.md:3 与 转单-9。\n' > "$TMPP/ph-note.md"
+tout "备注格引旧句含占位不误伤新句(#22a 只扫词格)" "0 项查无" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-note.md"
+printf '| 坏例 | 预计 X 日内原路到账 | 备注 |\n' >> "$TMPP/kb/索引/wiki-消费者词汇表.md"
+printf '引用 索引/wiki-消费者词汇表.md:4 与 转单-9。\n' > "$TMPP/ph-cell.md"
+tfail "词格本身含占位仍红(#22a 不放松词格)" "占位符" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-cell.md"
+# #22b:供给侧半面提示(提示级不拦,退出码仍 0)
+printf 'admin 工作台改造。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-side.md"
+tout "提及供给侧界面只引消费者词表 → ⚠️ 提示(#22b)" "供给侧词汇表逐角色" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-side.md"
+t "#22b 提示不改变退出码(纯提示级)" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-side.md"
 rm -rf "$TMPP"
 
 echo

@@ -185,6 +185,8 @@ tfail "kb-commit 拒目录" "不是文件" env LAIXIN_VAULT="$TMPV" "$LANE" kb-c
 tfail "kb-commit 拒旗标" "不收旗标" env LAIXIN_VAULT="$TMPV" "$LANE" kb-commit "test: A" -A
 tout "kb-commit 无变更时不报错" "无变更可提交" env LAIXIN_VAULT="$TMPV" "$LANE" kb-commit "test: again" a.md
 rm -rf "$TMPV"
+tfail "fresh --dir 目录不存在时先报错不杀窗" "窗口未动" "$LANE" fresh a --dir /nonexistent-dir-test-6f
+tout "lane MCP 第二批连字符服务已关(引号 key)" "douyin-creator" sed -n "/^cmd_up/,/^}/p" "$LANE"
 tout "send 有被吞检测(8s 抓屏找活动迹象)" "send 疑似被吞" sed -n "/^cmd_send/,/^}/p" "$LANE"
 tout "send 被吞检测不自动重发" "盲目重发" sed -n "/^cmd_send/,/^}/p" "$LANE"
 

@@ -705,8 +705,15 @@ EV_SPOOL="$EV_DIR/spool"
 EV_SEEN="$EV_DIR/deliveries.seen"
 EV_STALL="${LAIXIN_EV_STALL:-360}"   # 无变化多少秒判卡住/空闲(默认 6 分钟)
 EV_TICK="${LAIXIN_EV_TICK:-60}"
+EV_HB="$EV_DIR/heartbeat"            # 循环每 tick 写 epoch;重启时它就是「陈旧/新交付」的分界线
 
 ev_log(){ echo "[$(date '+%F %T')] $*" >> "$EV_LOG"; }
+
+ev_hb_cutoff(){  # 心跳截止线(2026-08-18 优化推动清单#1,防重扫假交付:08-15 重启曾把 10 份历史报告当新交付投递)
+  # 有心跳=上次循环还活着的时刻(减 2*tick 容差)——晚于它的 mtime 才算「停摆期间真落盘」值得补投;
+  # 无心跳(首启/升级首跑)=当前时刻——首启的陈旧报告由 EV_SEEN 基线兜底,双保险
+  if [ -s "$EV_HB" ]; then echo $(( $(cat "$EV_HB") - EV_TICK*2 )); else date +%s; fi
+}
 
 ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能再触发;验收方追加结论后自然退出集合)
   local f
@@ -824,15 +831,22 @@ ev_loop(){
   mkdir -p "$EV_DIR"
   # 基线只在首次建立;重启保留旧基线 ⇒ 死亡/重启期间落盘的交付会在下一 tick 被 diff 出来补投,不再永久丢失
   [ -s "$EV_SEEN" ] || ev_scan_deliveries > "$EV_SEEN"
-  ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份"
+  # 心跳截止线在基线之外再加一道:即使 EV_SEEN 丢失/漂移,mtime 早于上次心跳的报告也不会被当新交付
+  local hb_cutoff; hb_cutoff="$(ev_hb_cutoff)"
+  ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份 心跳截止=$(date -r "$hb_cutoff" '+%F %T')"
   board "事件总线" "启动(交付投递+卡住告警;监听不再随派工窗口死)"
   local cur f m lastline vw
   while true; do
     sleep "$EV_TICK"
-    # 1) 新交付 → 投递(或暂存)
+    date +%s > "$EV_HB"
+    # 1) 新交付 → 投递(或暂存);mtime 早于心跳截止线的是重扫陈旧报告,记日志不投递
     cur="$(ev_scan_deliveries)"
     comm -13 "$EV_SEEN" <(echo "$cur") | while IFS='|' read -r f m; do
       [ -n "$f" ] || continue
+      if [ -n "$m" ] && [ "$m" -lt "$hb_cutoff" ] 2>/dev/null; then
+        ev_log "跳过陈旧交付(mtime $(date -r "$m" '+%m-%d %H:%M') 早于心跳截止,判重扫非新交付):$f"
+        continue
+      fi
       lastline="$(tail -1 "$f")"
       ev_deliver "交付" "【事件】交付落盘:$f
 末行:$lastline

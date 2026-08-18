@@ -265,6 +265,13 @@ tfail "行号越界+编号查无+文件不存在 → 非零退出且逐项报错
 tfail "查无编号在报错清单里点名" "商会-99" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/bad.md"
 tfail "缺文件参数报用法" "用法" "$LANE" prompt-lint
+printf '| 满员话术 | 预计X日内原路到账 |\n| 好话术 | 预计 N 天内答复(N=时效配置渲染) |\n' > "$TMPP/kb/索引/wiki-消费者词汇表.md"
+printf '引用 索引/wiki-消费者词汇表.md:1 与 转单-9。\n' > "$TMPP/ph-bad.md"
+printf '引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-good.md"
+tfail "词表占位符未注取值来源 → 红(优化#11)" "占位符" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-bad.md"
+tout "占位符带取值注 → 过" "0 项查无" \
+  env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-good.md"
 rm -rf "$TMPP"
 
 echo

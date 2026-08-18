@@ -357,9 +357,17 @@ for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|m
             if hits: hint = f"(疑似 {' 或 '.join(hits[:3])} ——引用请带路径前缀)"
         errs.append(f"文件不存在: {rel}:{ln}{hint}")
         continue
-    n = sum(1 for _ in open(path, encoding="utf-8", errors="ignore"))
+    lines = open(path, encoding="utf-8", errors="ignore").read().split("\n")
+    n = len(lines)
     if ln > n: errs.append(f"行号越界: {rel}:{ln}(实际 {n} 行)")
-    else: oks += 1
+    else:
+        oks += 1
+        # 词表占位符检测(2026-08-18 优化#11:片二-B 把字面「X」直出消费者页面——宪法头 2 条的机器化那半)
+        # 引用的词表行含 X/N 类占位而行内无取值来源标注(配置/渲染/取值/实值)⇒ 红:占位模板不是可上屏的成句
+        if "词汇表" in rel:
+            lt = lines[ln-1]
+            if re.search(r'[XN] ?(天|日|小时|个工作日|个月|%|元)|¥ ?X|预计 ?[XN]', lt) and not re.search(r'配置|渲染|取值|实值', lt):
+                errs.append(f"词表占位符未注取值来源: {rel}:{ln}(句含 X/N 占位,⛔ 直接上屏——先裁取值来源并在词表行旁注明,宪法头 2 条)")
 
 pool = read(os.path.join(kb, "索引/wiki-裁定池总表.md"))
 redl = read(os.path.join(kb, "索引/wiki-红线清单.md"))

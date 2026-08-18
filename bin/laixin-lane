@@ -1334,7 +1334,8 @@ dialog_classify() {
 
 # 扫一个窗口的对话框并处置;$1=窗口名。返回 0=清除了(esc),2=告警级(不敢动键),1=无对话框
 dialog_sweep_win() {
-  local w="$1" cls marker="$HOME/.laixin-lane-dlg-${w}.flag"
+  local w="$1"   # ⛔ 不得与下行合并(绊线测试盯着):builtin 的参数先全部展开再执行赋值,
+  local cls marker="$HOME/.laixin-lane-dlg-${w}.flag"   # 引用在同一条 local 里展开时变量还未定义,set -u 直接击杀(ev_watch_win 同款杀手;wd-loop 08-17 18:54 起 60s 即崩一天半的真凶)
   cls="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null | tail -25 | dialog_classify)"
   case "$cls" in
     esc:*)

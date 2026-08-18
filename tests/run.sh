@@ -422,6 +422,9 @@ printf '停车报告:词表查无\n理由如下停车\n' > "$RPT/停车.md"
 t "停车报告不报末行契约错(#18b 停车是合法末态)" \
   bash -c 'out="$("$0" report-lint "$1" 2>&1)"; ! grep -q "末行既非" <<< "$out"' "$LANE" "$RPT/停车.md"
 rm -rf "$RPT"
+# #14c 绊线:vdown 挂了 facts-fresh 与总表脏提醒(静态,vdown 本体碰 tmux 不在套内实跑)
+tout "vdown 挂 facts-fresh(#14c 合并邻接挂载点)" "cmd_facts_fresh" sed -n "/^cmd_vdown/,/^}/p" "$LANE"
+tout "vdown 有总表未提交提醒且不代交(#14c)" "未提交改动" sed -n "/^cmd_vdown/,/^}/p" "$LANE"
 rm -rf "$TMPP"
 
 echo

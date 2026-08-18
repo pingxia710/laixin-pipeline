@@ -1881,6 +1881,15 @@ cmd_vdown() {
   cdp_sweep "$(cdp_port_verify "$w")"
   board "派工窗口" "回收验收窗口 $w"
   echo "$w 已回收"
+  # #14c(2026-08-19):vdown 是合并邻接动作(收回执→合并→回收)——在此顺手:①事实表新鲜度
+  # (表落后 7 片曾差 773 行,人工枚举与陈旧表各有遗漏谁也救不了谁);②总表未提交提醒(整晚零提交
+  # 曾致一次真实丢失不可恢复——HEAD 不是「我改之前」是「上次提交之前」)。提醒不代交:kb-commit
+  # 是有意动作,代交会把别人半写的编辑固化成恢复点(与 facts-fresh ⛔ 代写生成表同一哲学)。
+  cmd_facts_fresh || true
+  local _kb="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}"
+  if [ -n "$(git -C "$HOME/Obsidian" status --porcelain -- "$_kb/4-开发层/来信平台-执行总表.md" 2>/dev/null)" ]; then
+    echo "⚠️ 执行总表有未提交改动(#14c)——误改此刻不可回滚,台账写完当轮:laixin-lane kb-commit \"<说明>\" 项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md"
+  fi
   local wt
   for wt in "$HOME"/来信平台-verify*; do
     [ -d "$wt" ] || continue

@@ -1431,9 +1431,15 @@ whoami_window() {   # 调用者所在的 tmux 窗口名;不在 tmux 里则记为
   fi
 }
 
-lock_write() {  # 原子写:先写临时文件再 mv,避免读到半写状态
+lock_renew() {  # <持有者名> 原子续期(先写临时文件再 mv,避免读到半写状态);保名续期供看门狗代续
   local t; t="$(mktemp "${DISPATCH_LOCK}.XXXX")"
-  printf '%s %s\n' "$(whoami_window)" "$(date +%s)" > "$t" && mv -f "$t" "$DISPATCH_LOCK"
+  printf '%s %s\n' "$1" "$(date +%s)" > "$t" && mv -f "$t" "$DISPATCH_LOCK"
+}
+lock_write() { lock_renew "$(whoami_window)"; }
+lock_renew_if_holder() {  # 复盘页#19-(a):在班行为续期,但只当调用者==当前持有者(中继/验收也跑 log/peek,
+  # 不带身份校验会给死锁续命——登记时中继实测的反例);挂在 duty 命令路由前,零副作用零输出
+  [ -f "$DISPATCH_LOCK" ] || return 0
+  [ "$(lock_holder)" = "$(whoami_window)" ] && lock_renew "$(lock_holder)" || true
 }
 lock_holder(){ [ -f "$DISPATCH_LOCK" ] && awk '{print $1}' "$DISPATCH_LOCK" || echo ""; }
 lock_age()   { [ -f "$DISPATCH_LOCK" ] || { echo 999999; return; }; echo $(( $(date +%s) - $(awk '{print $2}' "$DISPATCH_LOCK") )); }
@@ -1465,7 +1471,9 @@ cmd_whoholds() {
   if [ -z "$h" ]; then echo "派工权:无人认领(锁文件不存在)"; return 0; fi
   local a; a="$(lock_age)"
   if [ "$a" -lt "$LOCK_FRESH" ]; then echo "派工权:[$h] 持有中(心跳 ${a}s 前,新鲜期 ${LOCK_FRESH}s)"
-  else echo "派工权:[$h] 已失效(心跳 ${a}s 前,超过新鲜期 ${LOCK_FRESH}s)⇒ 视为无人持有"; fi
+  elif [ "$h" = "$DISPATCH_WIN" ] && dispatch_alive; then
+    echo "派工权:[$h] 心跳过期(${a}s 前)但持有者窗口仍在班(#19-b 两态区分)⇒ **非可接管**——有意节流形态;看门狗下一拍会代续,或持有者跑任一 duty 命令即续"
+  else echo "派工权:[$h] 已失效(心跳 ${a}s 前,超过新鲜期 ${LOCK_FRESH}s,且持有者窗口不在班)⇒ 视为无人持有"; fi
   return 0
 }
 
@@ -1585,6 +1593,14 @@ wd_loop() {
       cmd_dispatch --fresh --force-rival >/dev/null 2>&1 || board "看门狗" "重起失败,下轮重试"
       last_hash=""; silent=0; nudged=0
       continue
+    fi
+    # —— 1.2 派工权代续(复盘页#19 根治):dispatch 窗口活着(pane=claude)是机器可观察的「在班」,
+    #    看门狗每拍据此代续——「有意不发车」不再被判无人持有(08-19 实撞:节流 70 分钟即失锁,
+    #    而失锁会让本循环重起新 dispatch=双派工窗口,锁的过期打开锁要防的事)。
+    #    只当持有者就是 dispatch 窗口才代续;持有者是别人(人工接管)⇒ 不碰,矛盾态才告警。
+    if [ "$(lock_holder)" = "$DISPATCH_WIN" ]; then lock_renew "$DISPATCH_WIN";
+    elif [ -n "$(lock_holder)" ] && [ "$(lock_age)" -ge "$LOCK_FRESH" ]; then
+      board "看门狗" "⚠️ 派工权矛盾态(#19-c):dispatch 窗口在班,但派工权由 [$(lock_holder)] 持有且心跳已过期 $(lock_age)s——接管未收尾或残留锁,人工核:laixin-lane whoholds"
     fi
     # —— 1.5 模态对话框扫描:活着但被冻是自愈盲区(2026-08-15 四窗冻结后加)——
     #    必须先于静默计时:冻结时戳窗文本被对话框吞掉且重绘会重置 hash ⇒ 静默计时永远到不了
@@ -1829,6 +1845,11 @@ cmd_vlist() {
   [ -n "$out" ] && echo "$out" || echo "当前没有在跑的验收窗口"
 }
 
+# #19-(a) 在班行为续期:派工窗口的日常动作不止 send——持有者跑任一 duty 命令即证明在班。
+# 身份校验在 lock_renew_if_holder 内(调用者==持有者才续),其余窗口跑同名命令零影响。
+case "${1:-}" in
+  send|peek|peek-d|peek-v|log|stats|ctx|evidence|verify|verify-from|vdown|vlist|handoff|kb-commit|next-migration|next-worktree|audit-queue|facts-fresh) lock_renew_if_holder ;;
+esac
 case "${1:-}" in
   events)   shift; cmd_events "$@" ;;
   ev-loop)  shift; ev_loop ;;

@@ -512,21 +512,28 @@ cmd_audit_queue(){  # 台账巡检(2026-08-18 优化#13):排队/验收中节片�
   # ——把「随机发现」变成「机器 diff」。命中≠定罪:同名词可能出现在别片的合并叙述里,报「嫌疑」由人核。
   local table="$KB/4-开发层/来信平台-执行总表.md" board_f="$KB/4-开发层/来信平台-流水线看板.md"
   { [ -f "$table" ] && [ -f "$board_f" ]; } || die "总表/看板读不到(核对 LAIXIN_KB)"
-  local n=0 sec name merged
+  local n=0 wn=0 weak="" sec name merged
   merged="$(grep '合并' "$board_f" || true)"   # 零命中是合法状态,别让 set -e 把巡检带死
   for sec in 排队 验收中; do
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       case "$name" in 片|轨|片名*|定位*|状态*) continue ;; esac
       [ "${#name}" -ge 4 ] || continue   # 太短的词当合并叙述子串必然误命中,跳过(人工核短名行)
-      if printf '%s\n' "$merged" | grep -qF -- "$name"; then
-        echo "⚠️ 「${sec}」节陈旧行嫌疑:「${name}」在看板合并记录有命中——人工核实后按台账三律整行移出"
+      # #15 分级(2026-08-19):强嫌疑=「合并 <片名>」紧邻(看板合并记录的成文格式,pipeline 卡已钉);
+      # 弱嫌疑=片名仅作子串出现在含「合并」的叙述里——交叉引用越多误报越多,而看板详细恰是纪律要求
+      # ⇒ 检查器噪声必须与想鼓励的行为同向。⛔ 不拿误报换漏报:弱嫌疑仍列名,只是降级为一行速核。
+      if printf '%s\n' "$merged" | grep -qE -- "合并 ?${name}"; then
+        echo "🔴 「${sec}」节陈旧行强嫌疑:「${name}」有格式合并记录『合并 ${name} …』——人工核实后按台账律第 3 条整行移出"
         n=$((n+1))
+      elif printf '%s\n' "$merged" | grep -qF -- "$name"; then
+        weak="${weak}「${name}」"
+        wn=$((wn+1))
       fi
     done < <(sed -n "/^## .*$sec/,/^## /p" "$table" | grep '^|' | grep -v '^| *--' | awk -F'|' 'NR>1{print $2}' | sed 's/\*\*//g' | sed 's/[(（].*//' | sed 's/^ *//; s/ *$//')
   done
-  if [ "$n" -eq 0 ]; then echo "✅ 台账巡检:排队/验收中节与看板合并记录零冲突"
-  else echo "共 $n 行嫌疑(命中≠定罪,逐行人工核)"; fi
+  [ "$wn" -gt 0 ] && echo "⚠️ 弱嫌疑 $wn 行(片名仅出现在含「合并」的叙述里,多为交叉引用):${weak}——速核即可,⛔ 不必逐行深查"
+  if [ "$n" -eq 0 ] && [ "$wn" -eq 0 ]; then echo "✅ 台账巡检:排队/验收中节与看板合并记录零冲突"
+  elif [ "$n" -gt 0 ]; then echo "共 $n 行强嫌疑(命中≠定罪,逐行人工核)+ $wn 行弱嫌疑"; fi
   return 0
 }
 

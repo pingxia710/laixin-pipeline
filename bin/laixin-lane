@@ -774,9 +774,11 @@ cmd_doctor() {
     if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
     else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
     if wd_alive; then ok "看门狗运行中(进程判活)"
+      loop_stale wd-loop && wrn "看门狗循环代龄落后(脚本比循环新,修复未生效)——watchdog stop && start 换代(#20⑥)"
     elif win_exists "$WATCHDOG_WIN"; then wrn "看门狗窗口在但循环已死(假绿形态,复盘页#20⑤)——laixin-lane watchdog stop && start"
     else wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"; fi
     if ev_alive; then ok "事件总线运行中(进程判活)"
+      loop_stale ev-loop && wrn "事件总线循环代龄落后(脚本比循环新,修复未生效)——events stop && start 换代(#20⑥)"
     elif win_exists "$EV_WIN"; then wrn "⛔ events 窗口在但循环已死(假绿灯)——events stop && events start;交付事件正在漏,优先处理"
     else wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"; fi
     local vs; vs="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^verify-' || true)"
@@ -1150,6 +1152,21 @@ $(cat "$EV_SPOOL")"
 
 ev_alive(){ pgrep -f "laixin-lane ev-loop" >/dev/null 2>&1; }  # 判活只认进程:窗口存在是进程存活的不可靠代理(2026-08-13 实撞:循环死了窗口还在,status/doctor/看门狗全被假绿灯骗过)
 wd_alive(){ pgrep -f "laixin-lane wd-loop" >/dev/null 2>&1; }  # 同上一课的 wd 版(复盘页#20⑤):08-17 崩后窗口挂了一天半,doctor/status 全程报「运行中」——ev 修了自己,wd 的判活漏了同款
+loop_stale(){  # <循环名 ev-loop|wd-loop> → 0=在跑的循环比脚本旧(驻内存的循环体不随文件更新换代)
+  # 复盘页#20⑥破案(2026-08-19):ev-loop 自 08-18 09:15 跑的是旧代码,之后全部修复(含#1心跳)
+  # 从未生效——#1 自己注明「下次重启起效」而重启从未发生。常驻循环的版本升级需要显式换代,
+  # 本函数让 status/doctor 看得见「代龄落后」,不再靠人记得。
+  # etime([[dd-]hh:]mm:ss)手工换算:macOS ps 无 etimes;lstart 在中文 locale 不可解析(实测「三 8月/19…」)
+  local pid et d=0 a b c up script_e
+  pid="$(pgrep -f "laixin-lane $1" 2>/dev/null | head -1)"; [ -n "$pid" ] || return 1
+  et="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"; [ -n "$et" ] || return 1
+  case "$et" in *-*) d="${et%%-*}"; et="${et#*-}" ;; esac
+  IFS=: read -r a b c <<< "$et"
+  if [ -n "${c:-}" ]; then up=$(( ((10#$d*24+10#$a)*60+10#$b)*60+10#$c ));
+  else up=$(( (10#$d*24*60+10#$a)*60+10#$b )); fi   # 无小时段:a=分 b=秒(10# 防 08/09 被当八进制)
+  script_e="$(stat -L -f %m "$0" 2>/dev/null)"; [ -n "$script_e" ] || return 1   # -L 必须:$0 经 ~/.local/bin 软链调用,不带 -L 取的是链自身 8月13 的 mtime,永远判不出新
+  [ "$script_e" -gt $(( $(date +%s) - up )) ]
+}
 
 cmd_events(){
   case "${1:-status}" in
@@ -1170,7 +1187,9 @@ cmd_events(){
       tmux kill-window -t "$SESSION:$EV_WIN"; board "事件总线" "停止"; echo "已停"
       ;;
     status)
-      if ev_alive; then echo "事件总线:运行中(进程判活)"
+      if ev_alive; then
+        echo "事件总线:运行中(进程判活)"
+        loop_stale ev-loop && echo "⚠️ 循环代龄落后:脚本比在跑的循环新——修复不会自动生效(#20⑥,ev-loop 曾带旧代码跑一天半),建议 events stop && start 换代"
       elif win_exists "$EV_WIN"; then echo "事件总线:⛔ 窗口在但循环已死(假绿灯态)——laixin-lane events stop && laixin-lane events start"
       else echo "事件总线:未运行"; fi
       if [ -s "$EV_SPOOL" ]; then echo "spool 暂存:$(grep -c '^【事件】' "$EV_SPOOL") 条待投"; else echo "spool:空"; fi

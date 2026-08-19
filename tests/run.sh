@@ -2206,6 +2206,16 @@ t "判活:grep 自身命令行不自匹配(前缀 (^|/)bash 即防线)" bash -c 
 tout "判活:文案⛔ 写死探针实现(实现换了文案会骗人)" "ps 认解释器行" bash -c '
   grep "事件总线已在跑" "'"$LANE"'"'
 rm -rf "$VLA"
+# 🔴 杀进程半边与判活半边必须同判据(2026-08-19 晚,方案窗口第十四任):判活换了解释器行,events stop 仍
+#   pkill -f 宽模式 ⇒ relay(deny 形态含该串)被当作 ev-loop 杀掉 ⇒ 看门狗再把它重生——中继 10 次重生真凶。
+t "停事件总线:⛔ pkill -f 宽模式(会杀 relay;只核代码行,注释里留案底)" bash -c '! grep -vE "^[[:space:]]*#" "'"$LANE"'" | grep -q "pkill -f \"laixin-lane ev-loop\""'
+t "停事件总线:改走 loop_pids ev-loop(与判活同判据)" bash -c 'grep -q "loop_pids ev-loop" "'"$LANE"'"'
+VLP="$(mktemp -d)"; VLPF="$VLP/fn.sh"
+sed -n "/^loop_alive_filter()/,/^}/p" "$LANE" > "$VLPF"; sed -n "/^loop_pids()/,/^}/p" "$LANE" >> "$VLPF"
+t "loop_pids:真循环出 pid、deny 形态不出(ps 桩)" bash -c '
+  source "'"$VLPF"'"; ps(){ printf "%s\n" "101 /bin/bash /x/laixin-lane ev-loop" "202 /x/claude-raw --disallowedTools Bash(laixin-lane ev-loop*)" "303 /bin/bash /x/laixin-lane wd-loop"; }
+  [ "$(loop_pids ev-loop | tr "\n" " ")" = "101 " ]'
+rm -rf "$VLP"
 
 # ── 通道拓扑(账号隔离 + 软切换,2026-08-19;创始人「两个通道独立运行、软切换」)──────────
 # 运行形态:claude 与 claude-b 两条通道各自独立跑,一条 token 将尽时逐步停工、另一条逐步拉起。

@@ -2188,6 +2188,15 @@ ev_ack_overdue(){  # M1 纯判定:stdin=pending 台账(epoch|slug|状态),$1=当
 loop_alive_filter(){ grep -qE "(^|/)bash[^:]*laixin-lane $1( |$)"; }
 ev_alive(){ ps -eo command= 2>/dev/null | loop_alive_filter ev-loop; }
 wd_alive(){ ps -eo command= 2>/dev/null | loop_alive_filter wd-loop; }
+loop_pids(){  # <wd-loop|ev-loop> → stdout=真循环 pid 列表。**与 loop_alive_filter 同一判据(逐行喂它),⛔ 另写正则**
+  # 2026-08-19 晚(方案窗口第十四任定位,创始人点名代 11B 修):判活探针已换解释器行,但 events stop 的
+  # **杀进程半边仍是 pkill -f "laixin-lane ev-loop"** ⇒ relay 命令行里的 deny 形态 Bash(laixin-lane ev-loop*)
+  # 每次 events stop 都被一起杀掉 ⇒ 下一拍看门狗判「中继不在」重生。当晚 10 次重生、9 次紧跟循环重启的真凶。
+  # 实证:pgrep -f "laixin-lane ev-loop" 命中 44831(真 ev-loop)与 45331(relay 第十三任,正是 deny 形态)。
+  local _pid _cmd
+  while read -r _pid _cmd; do printf "%s\n" "$_cmd" | loop_alive_filter "$1" && echo "$_pid"; done < <(ps -eo pid=,command= 2>/dev/null)
+  return 0
+}
 etime_secs(){  # <ps -o etime= 串([[dd-]hh:]mm:ss)> → stdout=秒数
   # macOS ps 无 etimes;lstart 在中文 locale 不可解析(实测「三 8月/19…」)⇒ 手工换算是唯一通路。
   # loop_stale(#20⑥)与 pane_claude_age(#58)共用。
@@ -2245,7 +2254,9 @@ cmd_events(){
       else echo "⚠️ 启动后 1.5s 未见 ev-loop 进程——多半起步中或秒退;laixin-lane events status 核现场"; fi
       ;;
     stop)
-      pkill -f "laixin-lane ev-loop" 2>/dev/null || true
+      # 🔴 ⛔ pkill -f "laixin-lane ev-loop":宽模式会命中 relay 命令行里的 deny 形态 Bash(laixin-lane ev-loop*),
+      #   把活着的中继一起杀掉(机理与实证见 loop_pids 注)。只杀与判活同判据认出的真循环。
+      local _lp; for _lp in $(loop_pids ev-loop); do kill "$_lp" 2>/dev/null || true; done
       win_exists "$EV_WIN" || { echo "本就没在跑"; return 0; }
       tmux kill-window -t "$SESSION:$EV_WIN"; board "事件总线" "停止"; echo "已停"
       ;;

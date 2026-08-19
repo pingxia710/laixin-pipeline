@@ -1087,6 +1087,69 @@ t "#25 绊线:换链=临时链+mv 原子替换,⛔ ln -sfn 直写正式链(macOS
   grep -q "mv -f \"\$ltmp\" \"\$lbin\"" <<< "$body" || exit 1
   ! grep -q "ln -sfn" <<< "$body"' "$LANE"
 
+echo "== 8b. #58 盲补 Enter 改正向信号(冷启动≠消息被吞;fixture 桩,零真实按键) =="
+# 机理:#37 的补偿(补 Enter)只看「画面有无变化」,claude 冷启动「只思考不产字」与「Enter 真丢」
+# 在该探针眼里同形 ⇒ 12:46 假阳性实撞,3 次盲 Enter 落进正在工作的窗口。修=补键前取正向存活信号
+# (进程在+etime 短 ⇒ 宽限等待);⛔ 修 A 破 B:真丢失(无进程/etime 长)仍必须补。
+T58="$(mktemp -d)"
+sed -n "/^confirm_briefed()/,/^}/p" "$LANE" > "$T58/f.sh"
+sed -n "/^dialog_classify()/,/^}/p" "$LANE" >> "$T58/f.sh"
+cat > "$T58/stub.sh" <<'S58'
+board(){ printf '%s\n' "$2" >> "$B58"; }
+caller_src(){ echo 测试; }
+SESSION=s
+tmux(){ case "$1" in
+  capture-pane) cat "$PANE58" ;;
+  send-keys)    echo KEY >> "$K58" ;;
+esac; }
+S58
+# 情景桩:冷启动(age 恒短;第 4 次 sleep 后 claude 结束思考开始产字——正是 12:46 实撞里的真相)
+cat > "$T58/age_cold.sh" <<'S58A'
+pane_claude_age(){ echo 10; }
+sleep(){ local n; n=$(cat "$TICK58"); n=$((n+1)); echo "$n" > "$TICK58"
+  [ "$n" -ge 4 ] && printf '● Working on takeover\n' > "$PANE58"; return 0; }
+S58A
+# 情景桩:真丢失·无进程形态(claude 没起来/已死)
+cat > "$T58/age_dead.sh" <<'S58B'
+pane_claude_age(){ return 1; }
+sleep(){ :; }
+S58B
+# 情景桩:进程在但 age 持续增长越过阈值(画面永远静止=真丢失·etime 长形态)
+cat > "$T58/age_grow.sh" <<'S58G'
+pane_claude_age(){ cat "$AGE58"; }
+sleep(){ local n; n=$(cat "$AGE58"); echo $((n+40)) > "$AGE58"; }
+S58G
+# ⭐ 绊线方向一(#58 主修):冷启动 fixture(进程在+etime 短+画面静止)⇒ ⛔ 补 Enter,零告警,产字后静默放行
+t "#58 绊线:冷启动(进程在 etime 短)画面静止 ⇒ 宽限等待零补 Enter 零告警,产字后放行" bash -c '
+  export B58="$1/b1" K58="$1/k1" PANE58="$1/p1" TICK58="$1/t1"
+  printf "> 接管指令停在画面(claude 冷启动思考中)\n" > "$PANE58"; : > "$K58"; : > "$B58"; echo 0 > "$TICK58"
+  bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; source \"$1/age_cold.sh\"; confirm_briefed dispatch dispatch" \
+    && [ ! -s "$K58" ] && [ ! -s "$B58" ]' 58 "$T58"
+# ⭐ 绊线方向二(⛔ 修 A 破 B):真丢失·无进程 ⇒ 仍补 3 次 Enter+大声报+rc 非零(#37 原防线不减)
+t "#58 绊线:真丢失(无进程)⇒ 仍补 3 次 Enter+疑似未提交告警+rc 非零" bash -c '
+  export B58="$1/b2" K58="$1/k2" PANE58="$1/p2"
+  printf "> 指令停在输入框(claude 没起来)\n" > "$PANE58"; : > "$K58"; : > "$B58"
+  bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; source \"$1/age_dead.sh\"; confirm_briefed dispatch dispatch" && exit 1
+  [ "$(grep -c KEY "$K58")" = 3 ] && grep -q "疑似未提交" "$B58"' 58 "$T58"
+# ⭐ 绊线方向二之二:进程在但画面持续静止、age 越过阈值 ⇒ 宽限到期后仍补(宽限不是免死金牌)
+t "#58 绊线:宽限到期(age 越过 180s 阈值)画面仍静止 ⇒ 回到补 Enter 路径+告警" bash -c '
+  export B58="$1/b3" K58="$1/k3" PANE58="$1/p3" AGE58="$1/a3"
+  printf "> 指令停在输入框(进程活着但真的没提交)\n" > "$PANE58"; : > "$K58"; : > "$B58"; echo 100 > "$AGE58"
+  bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; source \"$1/age_grow.sh\"; confirm_briefed dispatch dispatch" && exit 1
+  [ "$(grep -c KEY "$K58")" = 3 ] && grep -q "疑似未提交" "$B58"' 58 "$T58"
+# etime_secs 单测(抽自 loop_stale,#58 与 #20⑥ 共用;10# 防 08/09 八进制)
+sed -n "/^etime_secs()/,/^}/p" "$LANE" > "$T58/et.sh"
+t "#58:etime_secs 四形换算(mm:ss/前导零/hh:mm:ss/dd-hh:mm:ss)" bash -c '
+  source "$1/et.sh"
+  [ "$(etime_secs 1:23)" = 83 ] && [ "$(etime_secs 08:09)" = 489 ] \
+    && [ "$(etime_secs 01:02:03)" = 3723 ] && [ "$(etime_secs 2-01:00:00)" = 176400 ]' 58 "$T58"
+rm -rf "$T58"
+# 结构绊线:正向信号判据在 confirm_briefed 本体(回退即红);对话框安检仍在补键之前
+tout "#58:confirm_briefed 补键前挂正向存活信号(pane_claude_age)" "pane_claude_age" \
+  sed -n "/^confirm_briefed()/,/^}/p" "$LANE"
+tout "#58:pane_claude_age 用 etime(lstart 中文 locale 不可解析)" "etime" \
+  sed -n "/^pane_claude_age()/,/^}/p" "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

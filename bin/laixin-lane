@@ -1493,18 +1493,24 @@ ev_ack_overdue(){  # M1 纯判定:stdin=pending 台账(epoch|slug|状态),$1=当
 
 ev_alive(){ pgrep -f "laixin-lane ev-loop" >/dev/null 2>&1; }  # 判活只认进程:窗口存在是进程存活的不可靠代理(2026-08-13 实撞:循环死了窗口还在,status/doctor/看门狗全被假绿灯骗过)
 wd_alive(){ pgrep -f "laixin-lane wd-loop" >/dev/null 2>&1; }  # 同上一课的 wd 版(复盘页#20⑤):08-17 崩后窗口挂了一天半,doctor/status 全程报「运行中」——ev 修了自己,wd 的判活漏了同款
+etime_secs(){  # <ps -o etime= 串([[dd-]hh:]mm:ss)> → stdout=秒数
+  # macOS ps 无 etimes;lstart 在中文 locale 不可解析(实测「三 8月/19…」)⇒ 手工换算是唯一通路。
+  # loop_stale(#20⑥)与 pane_claude_age(#58)共用。
+  local et="$1" d=0 a b c
+  case "$et" in *-*) d="${et%%-*}"; et="${et#*-}" ;; esac
+  IFS=: read -r a b c <<< "$et"
+  if [ -n "${c:-}" ]; then echo $(( ((10#$d*24+10#$a)*60+10#$b)*60+10#$c ));
+  else echo $(( (10#$d*24*60+10#$a)*60+10#$b )); fi   # 无小时段:a=分 b=秒(10# 防 08/09 被当八进制)
+}
+
 loop_stale(){  # <循环名 ev-loop|wd-loop> → 0=在跑的循环比脚本旧(驻内存的循环体不随文件更新换代)
   # 复盘页#20⑥破案(2026-08-19):ev-loop 自 08-18 09:15 跑的是旧代码,之后全部修复(含#1心跳)
   # 从未生效——#1 自己注明「下次重启起效」而重启从未发生。常驻循环的版本升级需要显式换代,
-  # 本函数让 status/doctor 看得见「代龄落后」,不再靠人记得。
-  # etime([[dd-]hh:]mm:ss)手工换算:macOS ps 无 etimes;lstart 在中文 locale 不可解析(实测「三 8月/19…」)
-  local pid et d=0 a b c up script_e
+  # 本函数让 status/doctor 看得见「代龄落后」,不再靠人记得。etime 换算抽在 etime_secs。
+  local pid et up script_e
   pid="$(pgrep -f "laixin-lane $1" 2>/dev/null | head -1)"; [ -n "$pid" ] || return 1
   et="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"; [ -n "$et" ] || return 1
-  case "$et" in *-*) d="${et%%-*}"; et="${et#*-}" ;; esac
-  IFS=: read -r a b c <<< "$et"
-  if [ -n "${c:-}" ]; then up=$(( ((10#$d*24+10#$a)*60+10#$b)*60+10#$c ));
-  else up=$(( (10#$d*24*60+10#$a)*60+10#$b )); fi   # 无小时段:a=分 b=秒(10# 防 08/09 被当八进制)
+  up="$(etime_secs "$et")"
   script_e="$(stat -L -f %m "$0" 2>/dev/null)"; [ -n "$script_e" ] || return 1   # -L 必须:$0 经 ~/.local/bin 软链调用,不带 -L 取的是链自身 8月13 的 mtime,永远判不出新
   [ "$script_e" -gt $(( $(date +%s) - up )) ]
 }
@@ -1695,6 +1701,16 @@ WD_LOG="$HOME/.laixin-lane-watchdog.log"
 DISPATCH_DENY=( "Bash(git push*)" )
 
 pane_cmd()  { tmux display-message -p -t "$SESSION:$1" '#{pane_current_command}' 2>/dev/null || echo "NONE"; }
+pane_claude_age(){  # <窗口名> → stdout=pane 前台 claude 进程存活秒数;无 claude 进程/取不到 → rc1 零输出
+  # #58 正向存活信号的取数半边:补偿动作(补 Enter)与它要补偿的故障(Enter 真丢)必须有
+  # 可区分的触发判据——「画面静止」两者同形,「claude 进程在且 etime 短」只属于冷启动。
+  local w="$1" ppid cpid et
+  case "$(pane_cmd "$w")" in node|claude|claude.exe) ;; *) return 1 ;; esac
+  ppid="$(tmux display-message -p -t "$SESSION:$w" '#{pane_pid}' 2>/dev/null)"; [ -n "$ppid" ] || return 1
+  cpid="$(pgrep -P "$ppid" 2>/dev/null | head -1 || true)"; [ -n "$cpid" ] || cpid="$ppid"  # 子进程取不到就量 pane shell 本身(claude 直起时二者同龄)
+  et="$(ps -o etime= -p "$cpid" 2>/dev/null | tr -d ' ')"; [ -n "$et" ] || return 1
+  etime_secs "$et"
+}
 pane_hash() {  # GONE 判定不依赖 pipefail(ev-loop 里 pipefail 已关;原写法在无 pipefail 时会把死窗口当成空 hash 的活窗口)
   local out; out="$(tmux capture-pane -p -t "$SESSION:$1" -S -40 2>/dev/null)" || { echo "GONE"; return 0; }
   echo "$out" | md5 -q 2>/dev/null || echo "GONE"
@@ -1774,7 +1790,7 @@ dialog_sweep_win() {
 # 画面有对话框时补 Enter 等于替它选默认项(如静默降档模型),此时只告警交对话框扫描处置。
 confirm_briefed() {  # <窗口名> <标签> → 0=确认已提交;1=未确认(已大声报)
   local w="$1" label="$2" tries=0
-  local shot cls
+  local shot cls age
   while [ "$tries" -lt 3 ]; do
     sleep 3
     shot="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null || true)"
@@ -1783,6 +1799,18 @@ confirm_briefed() {  # <窗口名> <标签> → 0=确认已提交;1=未确认(�
     if [ "$cls" != "none" ]; then
       board "$(caller_src)" "⚠️ ${label} 接管指令未见提交且画面有对话框(${cls})——⛔ 补 Enter(会选中默认项),交看门狗对话框扫描处置"
       return 1
+    fi
+    # #58 补 Enter 前先取正向存活信号:新 claude 冷启动有「只思考不产字」窗口,画面静止与
+    # 「Enter 真丢」在回读探针眼里同形(12:46 假阳性实撞:盲补 3 次 Enter 落进正在工作的窗口)。
+    # 判据=pane 内 claude 进程在且 etime<阈值 ⇒ 冷启动中,宽限等待 ⛔ 补键;age 随真实时间
+    # 单调涨,画面持续静止最迟在越过阈值后回到补 Enter 路径——修假阳性不弃真丢失(#58 通则:
+    # 补偿动作与故障要有可区分触发判据;补救方向也要朝安全)。
+    # 阈值 180s=vwait_ready 启动上限 90s+同量级思考窗口(LAIXIN_COLDSTART_SECS 可覆盖);
+    # 「无进程/取不到 etime」视同非冷启动照走补 Enter(宽限没有对象,失效不掩故障)。
+    age="$(pane_claude_age "$w" 2>/dev/null || true)"
+    if [ -n "$age" ] && [ "$age" -lt "${LAIXIN_COLDSTART_SECS:-180}" ] 2>/dev/null; then
+      sleep 5
+      continue   # 宽限轮不计补键次数
     fi
     tmux send-keys -t "$SESSION:$w" C-m
     tries=$((tries+1))

@@ -835,6 +835,31 @@ tout "#44:resurrect --full 的 relay 拉起=恢复既有席位(--resurrect)" "cm
 t "#44:resurrect --full 内无裸 cmd_relay/cmd_dispatch/cmd_watchdog 调用" bash -c \
   'body="$(sed -n "/^cmd_resurrect()/,/^}/p" "$0")"; ! grep -qE "^[[:space:]]*(cmd_relay|cmd_dispatch|cmd_watchdog)[ )]" <<< "$body" && ! grep -qE "\|\| (cmd_relay|cmd_dispatch|cmd_watchdog) " <<< "$body"' "$LANE"
 
+echo "== 6l. #45 起窗看板来源=真实调用上下文(⛔ 硬编码「看门狗」) =="
+# 实撞(08-19 11:0x):创始人**手工**拉起 relay,看板记「看门狗 起中继窗口」,relay 第二任据此
+# 误判「看门狗保活有效」并正式推翻 #44 的失效判定(三层全错)——来源写「通常是谁」=为每一次
+# 非常规调用制造伪证,而演练/事故排查恰恰全是非常规调用。
+# ⭐ 主绊线(执行级,修复回退即红):手工调用路径的起窗 board 来源**不得**是「看门狗」
+t "#45 绊线:起窗 board 来源随真实调用方(手工/LAIXIN_WINDOW),⛔ 硬编码看门狗" bash -c \
+  'out="$(bash "$0" manual-src "$1")"; grep -q "| 手工 | 起中继窗口" <<< "$out" && grep -q "| 方案窗口 | 起中继窗口" <<< "$out" && ! grep -q "| 看门狗 | 起中继窗口" <<< "$out"' \
+  "$WDD" "$LANE"
+# 看门狗重生路径的来源仍是「看门狗」(它这回是真的)——borrow beat 模式的看板复核
+t "#45:看门狗重生路径来源=看门狗(真实时照记,⛔ 因噎废食)" bash -c \
+  'grep -q "| 看门狗 | ⚠️ 中继窗口不在" <<< "$(bash "$0" beat "$1")"' "$WDD" "$LANE"
+# 模式绊线:起窗族函数体内零硬编码 board "看门狗"(回退任一处即红)
+t "#45 模式绊线:cmd_relay/cmd_dispatch 函数体零硬编码 board \"看门狗\"" bash -c \
+  'for f in cmd_relay cmd_dispatch; do sed -n "/^${f}()/,/^}/p" "$0" | grep -q "board \"看门狗\"" && exit 1; done; :' "$LANE"
+tout "#45:wd_loop 重生调用显式声明来源=看门狗" 'LAIXIN_BOARD_SRC="看门狗" cmd_relay' sed -n "/^wd_loop()/,/^}/p" "$LANE"
+tout "#45:boot 链重生显式声明来源=resurrect" 'LAIXIN_BOARD_SRC="resurrect" cmd_relay' sed -n "/^cmd_resurrect()/,/^}/p" "$LANE"
+# caller_src 取值优先级(单测):显式声明 > 在班窗口自报 > 手工;与 #26 的 log 提示逻辑互不相扰
+t "#45:caller_src 优先级=LAIXIN_BOARD_SRC>LAIXIN_WINDOW>手工" bash -c '
+  T="$(mktemp -d)"; sed -n "/^caller_src()/,/^}/p" "$0" > "$T/f.sh"
+  a="$(env -u LAIXIN_WINDOW -u LAIXIN_BOARD_SRC bash -c "source \"$T/f.sh\"; caller_src")"
+  b="$(env -u LAIXIN_BOARD_SRC LAIXIN_WINDOW=派工窗口 bash -c "source \"$T/f.sh\"; caller_src")"
+  c="$(env LAIXIN_BOARD_SRC=看门狗 LAIXIN_WINDOW=派工窗口 bash -c "source \"$T/f.sh\"; caller_src")"
+  rm -rf "$T"
+  [ "$a" = 手工 ] && [ "$b" = 派工窗口 ] && [ "$c" = 看门狗 ]' "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

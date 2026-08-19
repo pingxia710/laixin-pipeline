@@ -92,6 +92,19 @@ board() {  # board <来源> <事件文本> —— 追加一行到看板事件流
   printf '| %s | %s | %s |\n' "$(date '+%m-%d %H:%M')" "$src" "$*" >> "$BOARD" 2>/dev/null || true
 }
 
+# #45:起窗类 board 条目的来源=**真实调用上下文**,⛔ 硬编码「最常见的调用方」。
+# 实撞(08-19 11:0x):创始人手工 relay --fresh --force-rival 拉起的窗口,看板记「看门狗 起中继窗口」,
+# relay 第二任据此误判「看门狗保活有效」并正式推翻 #44 的失效判定(三层全错)——来源字段写「通常是谁」
+# 等于为未来每一次非常规调用制造伪证,而演练/事故排查恰恰全是非常规调用。
+# 取值优先级:LAIXIN_BOARD_SRC(重生路径显式声明:wd_loop 传「看门狗」、boot 链传「resurrect」)
+# > LAIXIN_WINDOW(在班窗口的自报身份,与 #26 的 log 提示逻辑互不相扰——本函数不发提示不改 log)
+# > 「手工」(两者都没有=人在裸 shell 里敲的,如实记)。
+caller_src() {
+  if [ -n "${LAIXIN_BOARD_SRC:-}" ]; then echo "$LAIXIN_BOARD_SRC"
+  elif [ -n "${LAIXIN_WINDOW:-}" ]; then echo "$LAIXIN_WINDOW"
+  else echo "手工"; fi
+}
+
 win() {
   case "$1" in
     a|b) echo "lane-$1" ;;
@@ -550,10 +563,10 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
       # 的调用树里都有 die(die=echo+exit),同进程裸调用时 exit 直接终止本命令,后面的 || 兜底与
       # 后续席位恢复**全部旁路**(08-19 10:56 wd_loop 同族实撞)⇒ 一律子 shell 隔离,单席位失败
       # 大声报并继续拉别的席位,⛔ 半途无声退场。
-      ( cmd_dispatch --force-rival ) 2>/dev/null || ( cmd_dispatch ) \
-        || board "看门狗" "⛔ resurrect --full:派工窗口没起成——人工核:laixin-lane dispatch"
+      ( LAIXIN_BOARD_SRC="resurrect" cmd_dispatch --force-rival ) 2>/dev/null || ( LAIXIN_BOARD_SRC="resurrect" cmd_dispatch ) \
+        || board "resurrect" "⛔ resurrect --full:派工窗口没起成——人工核:laixin-lane dispatch"
       win_exists "$WATCHDOG_WIN" || ( cmd_watchdog start ) \
-        || board "看门狗" "⛔ resurrect --full:看门狗没起成——人工核:laixin-lane watchdog start"
+        || board "resurrect" "⛔ resurrect --full:看门狗没起成——人工核:laixin-lane watchdog start"
       # #32:中继席位一并恢复——本命令就是 boot 链(cmd_install_boot_full 的 launchd 调的正是
       # `resurrect --full`)⇒ 改这一处即覆盖开机自动恢复,⛔ 动 plist(unload/load 会碰常驻)。
       # 立项根因正是这里:P0-1 整机重启后 dispatch 自动重生零人工,而中继断档 14 分钟且要人在场。
@@ -562,7 +575,7 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
       # (静默跳过=拓扑缺一角且零症状,三约束②反向生效族)。
       if relay_enabled; then
         if relay_alive; then echo "中继窗口 $RELAY_WIN 已在跑,不重复起"
-        else ( cmd_relay --resurrect ) || board "看门狗" "⚠️ resurrect --full:中继窗口没起成(#32)——托管标记在但起窗失败,人工核:laixin-lane relay"
+        else ( LAIXIN_BOARD_SRC="resurrect" cmd_relay --resurrect ) || board "resurrect" "⚠️ resurrect --full:中继窗口没起成(#32)——托管标记在但起窗失败,人工核:laixin-lane relay"
         fi
       else
         echo "(中继窗口未启用托管:标记 $RELAY_ENABLED 不存在 ⇒ 跳过。启用方式=手跑一次 laixin-lane relay)"
@@ -1732,7 +1745,7 @@ cmd_dispatch() {
     tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
     if vwait_ready "$DISPATCH_WIN" "$dir"; then break; fi
     if [ "$_attempt" = 1 ] && tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" 2>/dev/null | grep -q "Claude Code CLI not found"; then
-      board "看门狗" "⚠️ dispatch 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
+      board "$(caller_src)" "⚠️ dispatch 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
       tmux kill-window -t "$SESSION:$DISPATCH_WIN" 2>/dev/null || true
       sleep 20
       continue
@@ -1746,7 +1759,7 @@ cmd_dispatch() {
   sleep 0.5
   tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
   printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
-  board "看门狗" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
+  board "$(caller_src)" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
   ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
   # 起窗验尸(复盘页#20b,lanes #11-③ 同款):就绪判定可能被过渡画面骗过,15s 后回头核
   # pane 里跑的真是 claude——掉回登录 shell 即大声告警,⛔ 自动重试(非瞬时因,人工看现场)。
@@ -1754,7 +1767,7 @@ cmd_dispatch() {
     _pc="$(tmux display-message -p -t "$SESSION:$DISPATCH_WIN" '#{pane_current_command}' 2>/dev/null || echo 无窗口)"
     if [ "$_pc" = "$(basename "${SHELL:-/bin/zsh}")" ] || [ "$_pc" = "无窗口" ]; then
       _tail="$(tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -2 | tr '\n' ' ' | cut -c1-160 || true)"
-      board "看门狗" "⚠️ dispatch 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
+      board "$(caller_src)" "⚠️ dispatch 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
     fi
   ) &
   echo "$DISPATCH_WIN 已起并接管。复核:laixin-lane peek-d 30"
@@ -1863,7 +1876,7 @@ cmd_relay() {
     tmux send-keys -t "$SESSION:$RELAY_WIN" "BU_NAME=\"relay\" BU_CDP_URL=\"http://127.0.0.1:$RELAY_CDP_PORT\" claude -n \"$RELAY_WIN\" --model $RELAY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
     if vwait_ready "$RELAY_WIN" "$dir"; then break; fi
     if [ "$_attempt" = 1 ] && tmux capture-pane -p -t "$SESSION:$RELAY_WIN" 2>/dev/null | grep -q "Claude Code CLI not found"; then
-      board "看门狗" "⚠️ relay 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
+      board "$(caller_src)" "⚠️ relay 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
       tmux kill-window -t "$SESSION:$RELAY_WIN" 2>/dev/null || true
       sleep 20
       continue
@@ -1877,14 +1890,14 @@ cmd_relay() {
   sleep 0.5
   tmux send-keys -t "$SESSION:$RELAY_WIN" C-m
   printf '%s\n' "$(date +%s)" > "$RELAY_ENABLED"   # 起窗即开托管:此后看门狗/resurrect/doctor 才管 relay
-  board "看门狗" "起中继窗口 $RELAY_WIN(全新上下文,已派接管指令;托管已启用=看门狗开始保活)"
+  board "$(caller_src)" "起中继窗口 $RELAY_WIN(全新上下文,已派接管指令;托管已启用=看门狗开始保活)"
   # 起窗验尸(复盘页#20b 同款):就绪判定可能被过渡画面骗过,15s 后回头核 pane 里跑的真是 claude——
   # 掉回登录 shell 即大声告警,⛔ 自动重试(非瞬时因,人工看现场)。
   ( sleep 15
     _pc="$(tmux display-message -p -t "$SESSION:$RELAY_WIN" '#{pane_current_command}' 2>/dev/null || echo 无窗口)"
     if [ "$_pc" = "$(basename "${SHELL:-/bin/zsh}")" ] || [ "$_pc" = "无窗口" ]; then
       _tail="$(tmux capture-pane -p -t "$SESSION:$RELAY_WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -2 | tr '\n' ' ' | cut -c1-160 || true)"
-      board "看门狗" "⚠️ relay 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
+      board "$(caller_src)" "⚠️ relay 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
     fi
   ) &
   echo "$RELAY_WIN 已起并接管(托管已启用)。复核:laixin-lane peek-r 30"
@@ -1939,7 +1952,7 @@ wd_loop() {
       if ! relay_alive; then
         board "看门狗" "⚠️ 中继窗口不在(#32 托管中),自动重起"
         local r_rc=0 r_out=""
-        r_out="$(cmd_relay --fresh --resurrect 2>&1)" || r_rc=$?
+        r_out="$(LAIXIN_BOARD_SRC="看门狗" cmd_relay --fresh --resurrect 2>&1)" || r_rc=$?
         [ "$r_rc" -eq 0 ] || board "看门狗" "⛔ 中继重生失败(rc=${r_rc}):$(tail -1 <<< "$r_out" | cut -c1-160)——循环存活,下一拍重试;人工核:laixin-lane relay"
       else
         dialog_sweep_win "$RELAY_WIN" >/dev/null 2>&1 || true
@@ -1963,7 +1976,7 @@ wd_loop() {
       # #44:同 relay——裸调用会被 cmd_dispatch 树里的 die(起窗超时等)带死宿主 ⇒ 子 shell 隔离收码。
       # --force-rival 在此合法:上文 rival_holds_dispatch 已判过无对手,守卫的活本循环自己刚做完。
       local d_rc=0 d_out=""
-      d_out="$(cmd_dispatch --fresh --force-rival 2>&1)" || d_rc=$?
+      d_out="$(LAIXIN_BOARD_SRC="看门狗" cmd_dispatch --fresh --force-rival 2>&1)" || d_rc=$?
       [ "$d_rc" -eq 0 ] || board "看门狗" "⛔ 派工窗口重起失败(rc=${d_rc}):$(tail -1 <<< "$d_out" | cut -c1-160)——循环存活,下轮重试"
       last_hash=""; silent=0; nudged=0
       continue
@@ -2005,7 +2018,7 @@ wd_loop() {
       # dispatch 时,若派工权正被别人新鲜持有(人工接管形态),必须仍被双派工守卫拦下——
       # 拦下如今是大声失败上看板,⛔ 再是带死宿主;原 `|| true` 的静默吞错一并升级为大声报。
       local s_rc=0 s_out=""
-      s_out="$(cmd_dispatch --fresh 2>&1)" || s_rc=$?
+      s_out="$(LAIXIN_BOARD_SRC="看门狗" cmd_dispatch --fresh 2>&1)" || s_rc=$?
       [ "$s_rc" -eq 0 ] || board "看门狗" "⛔ 静默换窗失败(rc=${s_rc}):$(tail -1 <<< "$s_out" | cut -c1-160)——循环存活,下轮重试"
       last_hash=""; silent=0; nudged=0
     elif [ "$silent" -ge "$nudge_after" ] && [ "$nudged" -eq 0 ]; then

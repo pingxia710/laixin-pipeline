@@ -5,6 +5,7 @@
 #   mech  : 机理自证——函数内 die(exit)穿透 `>/dev/null 2>&1 ||兜底` 直接杀宿主(兜底行不执行)
 #   beat  : fixture=「relay 已死 + 常态拓扑 outside=2」,跑真 wd_loop ≥2 拍,输出宿主生死+看板
 #   guard : 首起路径(无豁免旗)直接调真 cmd_relay --fresh,输出 rc 与守卫报文(守卫必须照旧拦)
+#   manual-src : (#45)手工/在班窗口调用起窗成功路径,输出看板——来源必须随真实调用方,⛔「看门狗」
 # 绊线判据(由 run.sh 断言,修复回退即变红):
 #   - beat 必须 HOST=alive(回退子 shell 隔离 ⇒ 守卫/超时 die 杀宿主 ⇒ HOST=dead)
 #   - beat 看板必须有「中继重生失败」大声条(回退大声报 ⇒ 缺条)
@@ -64,6 +65,7 @@ HEADLESS_SETTINGS="$TMPD/h.json"
 RELAY_ENABLED="$TMPD/relay.enabled"; : > "$RELAY_ENABLED"   # 托管标记在
 source "$TMPD/fns.sh"
 source "$TMPD/stubs.sh"
+unset LAIXIN_BOARD_SRC LAIXIN_WINDOW 2>/dev/null || true   # 外部环境不得污染来源判定
 
 case "$MODE" in
   beat)
@@ -86,6 +88,13 @@ case "$MODE" in
       cmd_relay --fresh' 2>&1)" || rc=$?
     echo "GUARD_RC=$rc"
     echo "$out"
+    ;;
+  manual-src)
+    vwait_ready(){ return 0; }   # 就绪成功 ⇒ 走到「起窗成功」的 board 条目
+    sleep(){ :; }                # 成功路径的 sleep 全旁路(含 15s 验尸子 shell,不留孤儿不拖慢)
+    cmd_relay --fresh --force-rival >/dev/null 2>&1 || echo "MANUAL_RC=$?"
+    LAIXIN_WINDOW="方案窗口" cmd_relay --fresh --force-rival >/dev/null 2>&1 || echo "MANUAL2_RC=$?"
+    echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
     ;;
   *) echo "未知 mode:$MODE" >&2; exit 2 ;;
 esac

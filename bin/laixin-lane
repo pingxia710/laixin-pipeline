@@ -437,7 +437,12 @@ TABLE="${LAIXIN_TABLE:-$KB/4-开发层/来信平台-执行总表.md}"
 # 核三类引用:①`文件:行号`(文件存在+行号不越界,先按仓库根再按知识库根解析)②「域-序号」裁定编号(裁定池+红线清单命中)
 # ③ R 编号(红线清单命中)。任一查无 ⇒ 非零退出——治 F 族(引用链走样)与 D 族(台账漂移):
 # 引错的编号/漂移的行号在发车前变红,而不是在 Codex 施工中变成一轮返工。
-# ⚠️ 只核「可解析性」不核语义:行号存在≠内容还是你以为的那句——语义核对仍归发车前 grep 纪律。
+# ⚠️ 射程(#五-29 升级后):①-③ 核「可解析性」;引用带「首N字」内容指纹(写法 `文件:行号「首N字」`)时
+#   加核「内容同一性」——指纹与行内容逐字比对,不匹配=行号漂移当场变红(实撞:供给侧词表一班被改
+#   10+ 次,prompt 写死的行号族每次编辑全体漂移靠人肉重核;词表收编行号大地震后上线,锚新版)。
+#   词表引用未带指纹给提示级提醒。语义(引的句子是否支持你的结论)仍归发车前 grep 纪律。
+#   指纹核状态感知(#22 同族):跳过删除线内容;词表行只认场景格+词格,只命中备注格
+#   (备注格引被替换旧句是记录惯例——旧句恰是最像「你以为的那句」的伪锚)单独点名。
 cmd_prompt_lint() {
   local f="${1:-}"; [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane prompt-lint <prompt文件>"
   LX_KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}" LX_REPO="$DEFAULT_DIR" python3 - "$f" <<'PYEOF'
@@ -451,9 +456,22 @@ def read(p):
     try: return open(p, encoding="utf-8", errors="ignore").read()
     except OSError: return ""
 
-# ① 文件:行号
-for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|md|txt|json)):(\d+)', txt):
-    rel, ln = m.group(1), int(m.group(2))
+def strip_struck(s): return re.sub(r'~~.*?~~', '', s)
+def fp_state(line, fp):
+    # #五-29 指纹判定的状态感知半边(#22 同族):记录了历史的行同时含新旧两个状态——
+    # 删除线=废弃句、「」引文=被替换旧句的备注惯例(替换「旧句」形态),指纹只命中它们
+    # 时不算「还在」,单独报形态。⛔ 按格位判词格/备注格:词表各表列布局不一
+    # (五段压缩表 4 列、供给侧视角表 5 列,词格位置漂移),格位判据在真表上必误伤。
+    live = re.sub(r'「[^」]*」', '', strip_struck(line))
+    if fp in live: return "ok"
+    if fp in strip_struck(line): return "note"
+    if fp in line: return "struck"
+    return "miss"
+
+warns = []
+# ① 文件:行号(#五-29:后随「首N字」内容指纹时加核同一性)
+for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|md|txt|json)):(\d+)(?:\s*「([^」\n]{1,120})」)?', txt):
+    rel, ln, fp = m.group(1), int(m.group(2)), m.group(3)
     path = next((p for p in (os.path.join(repo, rel), os.path.join(kb, rel), rel) if os.path.isfile(p)), None)
     if path is None:
         hint = ""
@@ -470,6 +488,18 @@ for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|m
     if ln > n: errs.append(f"行号越界: {rel}:{ln}(实际 {n} 行)")
     else:
         oks += 1
+        # #五-29 内容指纹:带「首N字」的引用逐字核行内容——行号可解析≠内容还是你以为的那句
+        is_vocab = "词汇表" in rel
+        if fp:
+            st = fp_state(lines[ln-1], fp)
+            if st == "note":
+                errs.append(f"指纹只命中引号内引文: {rel}:{ln}「{fp[:24]}」——多为备注格引被替换的旧句(「替换「旧句」」记录惯例),改锚现行句并核行号(#五-29)")
+            elif st == "struck":
+                errs.append(f"指纹只命中删除线内容: {rel}:{ln}「{fp[:24]}」——该句已废弃,引用请锚现行句(#五-29)")
+            elif st == "miss":
+                errs.append(f"内容指纹不匹配: {rel}:{ln}「{fp[:24]}」——行号漂移或内容已改(词表被编辑时行号全体漂移的形态),重新定位后更新引用(#五-29)")
+        elif is_vocab:
+            warns.append(f"词表引用未带内容指纹: {rel}:{ln} ——词表编辑行号会漂移,引用请带行首几个字锚内容(写法 {rel}:{ln}「首N字」),指纹不符会在发车前变红(#五-29)")
         # 词表占位符检测(2026-08-18 优化#11:片二-B 把字面「X」直出消费者页面——宪法头 2 条的机器化那半)
         # 引用的词表行含 X/N 类占位而行内无取值来源标注(配置/渲染/取值/实值)⇒ 红:占位模板不是可上屏的成句
         if "词汇表" in rel:
@@ -504,7 +534,7 @@ for tok in sorted(set(re.findall(r'\bR\d{1,3}\b', txt))):
 
 # #22b(2026-08-19):词表预检半面提示——prompt 提到供给侧界面而引用的词表只有消费者词汇表 ⇒ 提示级
 # ⚠️(不拦):该失败模式卡里明写仍复发(失败样本总账 G 族,付款指引片开工即停车),纪律侧到极限的机器半边。
-warns = []
+# (warns 列表已在 ① 前初始化——#五-29 指纹提示也进它)
 # #18a(2026-08-19):改数据读法的片必附消费点清单——病灶二五个独立事故同一根「谁还在读这个数据
 # 没有机器答案」;纪律侧 13-bis 已入 kickoff,这是它的机器半边。提示级:改读法的判定含语义成分,
 # 按「机器化边界=判据免语义」只做关键词保守版,误报宁缺。
@@ -515,7 +545,7 @@ if re.search(r'admin|管理台|工作台|后台界面|顾问端|顾问面|商会
     warns.append("prompt 涉及供给侧界面(admin/顾问/商会/工作台)但只引用了消费者词汇表——供给侧词汇表逐角色各查一次(kickoff 闸门 0 列角色;G 族复发样本:付款指引片开工即停车)")
 for w in warns: print(f"  ⚠️ {w}")
 for e in errs: print(f"  ❌ {e}")
-print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无" + (f",{len(warns)} 项提示" if warns else ""))
+print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无或指纹不符" + (f",{len(warns)} 项提示" if warns else ""))
 sys.exit(1 if errs else 0)
 PYEOF
 }

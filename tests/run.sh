@@ -1264,6 +1264,43 @@ tfail "底册读不到时自曝 ⛔ 静默当零命中(三约束②)" "底册/�
 tout "stats 尾部挂接班可选项提示(⛔ 常驻,只是可发现)" "audit-pages" sed -n "/^cmd_stats/,/^}/p" "$LANE"
 rm -rf "$APD"
 
+echo "== 8g. #五-29 词表引用行号指纹(prompt-lint「可解析」升「行号+内容指纹」;#22 状态感知) =="
+FPD="$(mktemp -d)"; mkdir -p "$FPD/kb/索引" "$FPD/repo/app"
+printf '| 转单-9 | x |\n' > "$FPD/kb/索引/wiki-裁定池总表.md"
+printf '| R48 | z |\n' > "$FPD/kb/索引/wiki-红线清单.md"
+printf 'l1\nl2\nl3\n' > "$FPD/repo/app/x.py"
+cat > "$FPD/kb/索引/wiki-消费者词汇表.md" <<'EOF'
+| 场景A | 已收到 | 备注 |
+| 场景B | ~~旧句已废弃~~ 新句上屏 | 替换「旧句已废弃」 |
+| 场景C | ~~彻底废句~~ 现行句 | 无 |
+EOF
+FPE=(env LAIXIN_KB="$FPD/kb" LAIXIN_REPO="$FPD/repo")
+printf '引用 索引/wiki-消费者词汇表.md:1「已收到」 与 转单-9。\n' > "$FPD/fp-ok.md"
+tout "指纹匹配 → 过且零指纹提示" "0 项查无" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-ok.md"
+t "带指纹的词表引用不再触发「未带指纹」提示" bash -c \
+  '! grep -q "未带内容指纹" <<< "$(env LAIXIN_KB="'"$FPD"'/kb" LAIXIN_REPO="'"$FPD"'/repo" "'"$LANE"'" prompt-lint "'"$FPD"'/fp-ok.md" 2>&1)"'
+printf '引用 索引/wiki-消费者词汇表.md:1「等你确认」 与 转单-9。\n' > "$FPD/fp-miss.md"
+tfail "指纹不匹配 → 红并点名行号漂移形态(#五-29 本体)" "内容指纹不匹配" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-miss.md"
+# ⭐ #22 状态感知三形态:删除线剥掉后现行句匹配 / 只命中备注格旧句 / 只命中删除线废句
+printf '引用 索引/wiki-消费者词汇表.md:2「新句上屏」 与 转单-9。\n' > "$FPD/fp-live.md"
+tout "现行句匹配(删除线内容不挡道)→ 过" "0 项查无" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-live.md"
+printf '引用 索引/wiki-消费者词汇表.md:2「旧句已废弃」 与 转单-9。\n' > "$FPD/fp-note.md"
+tfail "指纹只命中备注引文旧句 → 红并点名(旧句=最像的伪锚;⛔ 按格位判——真表列布局不一)" "只命中引号内引文" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-note.md"
+printf '引用 索引/wiki-消费者词汇表.md:3「彻底废句」 与 转单-9。\n' > "$FPD/fp-struck.md"
+tfail "指纹只命中删除线 → 红并点名已废弃" "只命中删除线" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-struck.md"
+# 词表引用未带指纹 → 提示级(迁移推手,⛔ 拦)
+printf '引用 索引/wiki-消费者词汇表.md:1 与 转单-9。\n' > "$FPD/fp-none.md"
+tout "词表引用未带指纹 → ⚠️ 提示并给写法" "未带内容指纹" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-none.md"
+t "未带指纹提示不改退出码(提示级)" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-none.md"
+# 非词表文件带指纹同样核(通用同一性;不带则不提示——提示射程只在词表)
+printf '引用 app/x.py:3「l3」 与 转单-9。\n' > "$FPD/fp-code-ok.md"
+tout "非词表文件指纹匹配 → 过" "0 项查无" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-code-ok.md"
+printf '引用 app/x.py:3「l9」 与 转单-9。\n' > "$FPD/fp-code-bad.md"
+tfail "非词表文件指纹不匹配 → 红" "内容指纹不匹配" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-code-bad.md"
+t "非词表文件不带指纹零提示(提示射程=词表)" bash -c \
+  '! grep -q "未带内容指纹" <<< "$(env LAIXIN_KB="'"$FPD"'/kb" LAIXIN_REPO="'"$FPD"'/repo" "'"$LANE"'" prompt-lint "'"$FPD"'/fp-code-ok.md" 2>&1)"'
+rm -rf "$FPD"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

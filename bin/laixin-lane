@@ -2275,7 +2275,9 @@ cmd_watchdog() {
     stop)
       win_exists "$WATCHDOG_WIN" || { echo "看门狗本就没在跑"; return 0; }
       tmux kill-window -t "$SESSION:$WATCHDOG_WIN"
-      board "看门狗" "已停止"
+      # #45-bis:来源列=动作执行方(手工/dispatch/resurrect…),主语挪进消息——看门狗不会自己停自己,
+      # 原「看门狗|已停止」把被停对象写成了来源,排查「谁杀的看门狗」时看板给不出答案
+      board "$(caller_src)" "看门狗已停止"
       echo "看门狗已停"
       ;;
     status)
@@ -2308,7 +2310,9 @@ vwait_ready() {  # 轮询画面按内容分派按键,直到 claude 输入框就�
     # 不哑等 90s(2026-08-13 实撞:自检 FAIL 致验收窗口没起来,当时只报"启动超时"无原因)
     if echo "$pane" | grep -qE '结果：[1-9][0-9]* fail'; then
       local why; why="$(echo "$pane" | grep -E '^\[FAIL\]' | head -5)"
-      board "事件总线" "⛔ $w 起窗被专线自检拦截:$(echo "$why" | head -1)"
+      # #45-bis:来源=真实调用上下文(vwait_ready 由 dispatch/relay/verify 起窗路径调用,
+      # 与事件总线无关——原硬编码「事件总线」与 :1866 同族,只是拦截/超时条目误导力较低)
+      board "$(caller_src)" "⛔ $w 起窗被专线自检拦截:$(echo "$why" | head -1)"
       die "$w 被专线自检(readiness)拦截,claude 拒绝启动。FAIL 项:
 ${why:-(未捕获到 FAIL 行,peek 看现场)}
 处置:①修专线问题(us-status / bash dns-guard.sh);②窗口已保留供诊断,看完 vdown 回收。**自检拦截是 fail-closed 保护(封号风险>停摆),不要绕过。**"
@@ -2327,7 +2331,7 @@ ${why:-(未捕获到 FAIL 行,peek 看现场)}
     sleep 2; tries=$((tries+1))
   done
   # 90s 仍未就绪:把 pane 末尾带出来,别让调用者盲猜
-  board "事件总线" "⛔ $w 启动超时(90s),pane 末行:$(tmux capture-pane -p -t "$SESSION:$w" -S -5 2>/dev/null | grep -v '^$' | tail -1)"
+  board "$(caller_src)" "⛔ $w 启动超时(90s),pane 末行:$(tmux capture-pane -p -t "$SESSION:$w" -S -5 2>/dev/null | grep -v '^$' | tail -1)"  # #45-bis 来源同上
   return 1
 }
 

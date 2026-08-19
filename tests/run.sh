@@ -1150,6 +1150,21 @@ tout "#58:confirm_briefed 补键前挂正向存活信号(pane_claude_age)" "pane
 tout "#58:pane_claude_age 用 etime(lstart 中文 locale 不可解析)" "etime" \
   sed -n "/^pane_claude_age()/,/^}/p" "$LANE"
 
+echo "== 8c. #45-bis 来源残留(board 来源=真实调用上下文,⛔ 硬编码;批二收尾裁定归停工 B 段) =="
+# 判可执行行(剔注释)——注释里保留了旧写法案底,含注释的包含匹配会被元文本命中(八律第 8 律)
+t "#45-bis:vwait_ready 两处 board 改走 caller_src,零硬编码「事件总线」" bash -c '
+  body="$(sed -n "/^vwait_ready()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  [ "$(grep -c "board \"\$(caller_src)\"" <<< "$body")" = 2 ] || exit 1
+  ! grep -q "board \"事件总线\"" <<< "$body"' "$LANE"
+t "#45-bis:watchdog stop 来源=执行方(caller_src),主语挪进消息" bash -c '
+  body="$(sed -n "/^cmd_watchdog()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  grep -q "board \"\$(caller_src)\" \"看门狗已停止\"" <<< "$body" || exit 1
+  ! grep -q "board \"看门狗\" \"已停止\"" <<< "$body"' "$LANE"
+# ev_loop 内两处 board「事件总线」是真自述(循环体自己在说话),⛔ 被本修波及
+t "#45-bis 射程:ev_loop 循环体内的「事件总线」自述保留(来源即事实)" bash -c '
+  body="$(sed -n "/^ev_loop()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  grep -q "board \"事件总线\"" <<< "$body"' "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

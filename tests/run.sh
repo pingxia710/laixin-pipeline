@@ -437,6 +437,34 @@ tout "升级提醒⛔自动拉起(M1 方案红线)" "不自动拉起" sed -n "/^
 rm -rf "$TMPM"
 rm -rf "$TMPP"
 
+echo "== copy-audit 词表覆盖率审计(#28,fixture 全封闭:临时 git 仓+临时词表) =="
+CAD="$(mktemp -d)"
+t "copy_audit.py 语法" python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())" "$(dirname "$LANE")/copy_audit.py"
+git init -q -b main "$CAD/repo" && mkdir -p "$CAD/repo/frontend/src/lib" "$CAD/kb/索引"
+cat > "$CAD/repo/frontend/src/lib/consumer-copy.ts" <<'EOF'
+// 事实源是「wiki-消费者词汇表」
+export const testLabels: Record<string, string> = {
+  good: "已收到测试句",
+  missing: "这句词表没有登记",
+  dead: "已废弃测试句",
+};
+EOF
+git -C "$CAD/repo" add frontend/src/lib/consumer-copy.ts && git -C "$CAD/repo" -c user.name=t -c user.email=t@t commit -qm fixture
+cat > "$CAD/kb/索引/wiki-消费者词汇表.md" <<'EOF'
+| draft | 已收到测试句 | |
+| old | ~~已废弃测试句~~ 替换后的新句 | |
+EOF
+printf '# 供给侧词汇表(测试,空)\n' > "$CAD/kb/索引/wiki-供给侧词汇表.md"
+tout "已知命中样例给出 表:行(#28)" "消费者词汇表:L1" env LAIXIN_REPO="$CAD/repo" LAIXIN_KB="$CAD/kb" "$LANE" copy-audit
+tout "已知零命中样例标 ⚠️(#28)" "⚠️零命中" env LAIXIN_REPO="$CAD/repo" LAIXIN_KB="$CAD/kb" "$LANE" copy-audit
+# 三约束①绊线:删除线内命中 ⛔ 算正常命中——标废词还在用要单独看得见
+tout "删线行样例归「仅删线行命中」⛔ 混入正常命中(#28 三约束①)" "仅删线行命中 消费者词汇表:L2" \
+  env LAIXIN_REPO="$CAD/repo" LAIXIN_KB="$CAD/kb" "$LANE" copy-audit
+# 三约束②绊线两条:报告非闸门(有零命中仍退出 0——改成非零退出即红);数据源失效必须自曝退非零(⛔ 空报告冒充达标)
+t "有零命中仍退出 0——报告非闸门(#28 三约束②)" env LAIXIN_REPO="$CAD/repo" LAIXIN_KB="$CAD/kb" "$LANE" copy-audit
+tfail "数据源失效自曝退非零(#28 三约束②)" "失效自曝" env LAIXIN_REPO="$CAD/nonexist" LAIXIN_KB="$CAD/kb" "$LANE" copy-audit
+rm -rf "$CAD"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

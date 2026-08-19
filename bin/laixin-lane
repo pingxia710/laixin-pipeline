@@ -36,6 +36,7 @@
 #   laixin-lane facts-fresh          事实表新鲜度(表头 main@commit vs 当前 main)+codegraph sync 顺手跑/被占告警
 #   laixin-lane audit-queue          台账巡检(排队/验收中 × 看板合并记录,揪陈旧行)
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
+#   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
 set -euo pipefail
 
 # ---- 配置(全部可被环境变量或 config 文件覆盖;默认值=来信平台) ----
@@ -1948,6 +1949,13 @@ cmd_vlist() {
   [ -n "$out" ] && echo "$out" || echo "当前没有在跑的验收窗口"
 }
 
+# copy-audit(#28):词表覆盖率审计——逻辑全在 bin/copy_audit.py(检查器三约束见其头注),
+# 这里只做接线:软链启动也要找到兄弟文件(readlink -f 解链,同 AGENTS.md「经软链调用」判据)。
+cmd_copy_audit() {
+  local self; self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  LX_REPO="$DEFAULT_DIR" LX_KB="$KB" python3 "$(dirname "$self")/copy_audit.py" "$@"
+}
+
 # #19-(a) 在班行为续期:派工窗口的日常动作不止 send——持有者跑任一 duty 命令即证明在班。
 # 身份校验在 lock_renew_if_holder 内(调用者==持有者才续),其余窗口跑同名命令零影响。
 case "${1:-}" in
@@ -1966,6 +1974,7 @@ case "${1:-}" in
   daily-report) shift; cmd_daily_report "$@" ;;
   audit-queue) cmd_audit_queue ;;  # 台账巡检:排队/验收中片名×看板合并记录,揪陈旧行(接班/交班各跑一次)
   facts-fresh) cmd_facts_fresh ;;  # 事实表表头 main@commit×当前 main+codegraph sync(kb-commit 涉总表时自动跑;#14)
+  copy-audit) shift; cmd_copy_audit "$@" ;;  # 词表覆盖率审计(#28):三列清单+统计,报告非闸门零命中不改退出码
   backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
   kb-commit) shift; cmd_kb_commit "$@" ;;    # 知识库提交守卫:只收文件路径拒目录旗标(P1-2 互扫防线)
   install-backup) cmd_install_backup ;;      # 每小时备份 launchd

@@ -1599,6 +1599,32 @@ dialog_sweep_win() {
   esac
 }
 
+# #37:派接管指令后回读复核——tmux paste+Enter 与 claude 启动有竞态,Enter 会丢,指令停在
+# 输入框未提交(08-19 08:57 实撞:看门狗重生 dispatch 后该窗空转 5 分钟,人工唤醒才动;
+# 08:29 同路径成功 ⇒ 时序竞态非必现)。与 lane 派工「send 后必 peek」同一条纪律,起窗路径上补齐。
+# 判定=回读画面见活动迹象(Working/Read/Thinking…);未见则**补 Enter**(⛔ 重发文本:文本
+# 已在输入框,重发=翻倍污染;Enter 幂等——输入框已空时回车无害)。有限次仍未见 ⇒ board 大声报。
+# ⚠️ 补 Enter 前必过对话框安检:签名库硬规则「安全键永远不得是 Enter/不得选中默认项」——
+# 画面有对话框时补 Enter 等于替它选默认项(如静默降档模型),此时只告警交对话框扫描处置。
+confirm_briefed() {  # <窗口名> <标签> → 0=确认已提交;1=未确认(已大声报)
+  local w="$1" label="$2" tries=0
+  local shot cls
+  while [ "$tries" -lt 3 ]; do
+    sleep 3
+    shot="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null || true)"
+    if grep -qE 'Working|Explored|Read |Thinking|Ran ' <<< "$(tail -30 <<< "$shot")"; then return 0; fi
+    cls="$(tail -25 <<< "$shot" | dialog_classify)"
+    if [ "$cls" != "none" ]; then
+      board "$(caller_src)" "⚠️ ${label} 接管指令未见提交且画面有对话框(${cls})——⛔ 补 Enter(会选中默认项),交看门狗对话框扫描处置"
+      return 1
+    fi
+    tmux send-keys -t "$SESSION:$w" C-m
+    tries=$((tries+1))
+  done
+  board "$(caller_src)" "⚠️ ${label} 接管指令疑似未提交:回读 ${tries} 轮无活动迹象,已补 ${tries} 次 Enter 仍未见——人工核:laixin-lane attach 看 ${w}"
+  return 1
+}
+
 # 一条轨是否在干活(有 Codex 工作痕迹)
 lane_busy() {
   win_exists "lane-$1" || return 1
@@ -1758,6 +1784,8 @@ cmd_dispatch() {
   tmux delete-buffer -b laixin-dmsg
   sleep 0.5
   tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
+  # #37:回读复核接管指令已提交(后台跑,未提交先补 Enter、仍失败大声上看板;显式脱离 fd 防拖 $( ) 读)
+  ( confirm_briefed "$DISPATCH_WIN" "dispatch" ) >/dev/null 2>&1 &
   printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
   board "$(caller_src)" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
   ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
@@ -1889,6 +1917,8 @@ cmd_relay() {
   tmux delete-buffer -b laixin-rmsg
   sleep 0.5
   tmux send-keys -t "$SESSION:$RELAY_WIN" C-m
+  # #37:回读复核接管指令已提交(dispatch 与 relay 起窗共用此竞态,两处都挂;后台跑,脱离 fd)
+  ( confirm_briefed "$RELAY_WIN" "relay" ) >/dev/null 2>&1 &
   printf '%s\n' "$(date +%s)" > "$RELAY_ENABLED"   # 起窗即开托管:此后看门狗/resurrect/doctor 才管 relay
   board "$(caller_src)" "起中继窗口 $RELAY_WIN(全新上下文,已派接管指令;托管已启用=看门狗开始保活)"
   # 起窗验尸(复盘页#20b 同款):就绪判定可能被过渡画面骗过,15s 后回头核 pane 里跑的真是 claude——

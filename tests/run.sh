@@ -864,6 +864,44 @@ t "#45:caller_src 优先级=LAIXIN_BOARD_SRC>LAIXIN_WINDOW>手工" bash -c '
   rm -rf "$T"
   [ "$a" = 手工 ] && [ "$b" = 派工窗口 ] && [ "$c" = 看门狗 ]' "$LANE"
 
+echo "== 6m. #37 派接管指令后回读复核(Enter 竞态实撞:指令停在输入框,dispatch 空转 5 分钟) =="
+# fixture:抽真实 confirm_briefed+dialog_classify,tmux/sleep/board 为桩,三情景全覆盖
+T37="$(mktemp -d)"
+sed -n "/^confirm_briefed()/,/^}/p" "$LANE" > "$T37/f.sh"
+sed -n "/^dialog_classify()/,/^}/p" "$LANE" >> "$T37/f.sh"
+cat > "$T37/stub.sh" <<'S37'
+sleep(){ :; }
+board(){ printf '%s\n' "$2" >> "$B37"; }
+caller_src(){ echo 测试; }
+SESSION=s
+tmux(){ case "$1" in
+  capture-pane) cat "$PANE37" ;;
+  send-keys)    echo KEY >> "$K37" ;;
+esac; }
+S37
+# 情景 A:已见活动迹象 ⇒ 成功返回,零补 Enter 零告警
+t "#37:已提交(见 Working)⇒ 静默通过,零补 Enter" bash -c '
+  export B37="$1/bA" K37="$1/kA" PANE37="$1/pA"
+  printf "● Working on the takeover\n" > "$PANE37"; : > "$K37"; : > "$B37"
+  bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; confirm_briefed dispatch dispatch" \
+    && [ ! -s "$K37" ] && [ ! -s "$B37" ]' 37 "$T37"
+# 情景 B:卡在输入框且无对话框 ⇒ 补 3 次 Enter 后大声报,rc 非零
+t "#37 绊线:未提交且无对话框 ⇒ 补 3 次 Enter+大声上看板+rc 非零" bash -c '
+  export B37="$1/bB" K37="$1/kB" PANE37="$1/pB"
+  printf "> 你是 laixin 开发流水线的派工窗口(指令停在输入框)\n" > "$PANE37"; : > "$K37"; : > "$B37"
+  bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; confirm_briefed dispatch dispatch" && exit 1
+  [ "$(grep -c KEY "$K37")" = 3 ] && grep -q "疑似未提交" "$B37"' 37 "$T37"
+# 情景 C:画面有对话框 ⇒ ⛔ 补 Enter(签名库硬规则:安全键永不得是 Enter/选中默认项),只告警
+t "#37 绊线:有对话框 ⇒ 零 Enter(防替弹窗选默认项)+告警点名对话框" bash -c '
+  export B37="$1/bC" K37="$1/kC" PANE37="$1/pC"
+  printf "Esc to cancel\nEnter to confirm\n" > "$PANE37"; : > "$K37"; : > "$B37"
+  bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; confirm_briefed dispatch dispatch" && exit 1
+  [ ! -s "$K37" ] && grep -q "对话框" "$B37"' 37 "$T37"
+rm -rf "$T37"
+# 结构绊线:dispatch 与 relay 起窗共用此竞态 ⇒ 两处都必须挂回读(回退任一处即红)
+tout "#37:cmd_dispatch 起窗挂了回读复核" "confirm_briefed \"\$DISPATCH_WIN\"" sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+tout "#37:cmd_relay 起窗挂了回读复核(共用路径同修)" "confirm_briefed \"\$RELAY_WIN\"" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

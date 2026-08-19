@@ -2254,6 +2254,7 @@ t "#107 占位时刻:十六进制 0x1f 不命中(无冒号)" bash -c 'source "'"
 t "#106 直令过滤:方案窗口+创始人直令 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:00 | 方案窗口 | 创始人直令两条(date):原话逐字… |" | ev_directive_filter | grep -q 直令'
 t "#106 直令过滤:在飞口径变更 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:01 | 方案窗口 | ⚠️ 在飞口径变更:推翻 X |" | ev_directive_filter >/dev/null'
 t "#106 直令过滤:派工窗口来源不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:02 | 派工窗口 | 转述创始人直令… |" | ev_directive_filter >/dev/null'
+t "#106 直令过滤:句中提及标记词不搬运(首火自撞收紧)" bash -c 'source "'"$V16F"'"; ! printf "%s\\n" "| 08-20 07:15 | 方案窗口 | 候选已实现:#106 直令搬运(含 创始人直令 或 在飞口径变更 标记的行自动投) |" | ev_directive_filter >/dev/null'
 t "#106 直令过滤:方案窗口普通裁定不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:03 | 方案窗口 | 裁(授权-2)普通一件 |" | ev_directive_filter >/dev/null'
 t "#105 材料过滤:词汇表命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/索引/wiki-供给侧词汇表.md" | ev_material_filter >/dev/null'
 t "#105 材料过滤:设计要点命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/4-开发层/来信平台-首页门户改版-设计要点.md" | ev_material_filter >/dev/null'

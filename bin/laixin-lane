@@ -47,6 +47,10 @@
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
 #   laixin-lane merge-guard <目标commit> [--ref 分支] [--old 旧值]  ref级合并前后核主树是否被甩下(#24)
+#   laixin-lane dmsg --from <来源> <文本>  给派工窗口投**主动**消息(引擎无关)。派工窗口换成
+#                                    codex/kimi 后它没有 SendMessage,而 events 只扫四种**回复类**
+#                                    末行标记 ⇒ 主动消息此前无路可走。强制 --from,⛔ 匿名注入。
+#                                    与 relay-msg 分工:那条是出站(dispatch→别人),这条是入站。
 #   laixin-lane relay-msg --to <目标> <文本>  出站转办(#67②):投给中继窗口代发 SendMessage。**单向**——
 #                                    回程走「对方落盘【中转回复】+ events 投路径指针」,中继无任何反向注入能力。
 #                                    --status 查未见【中转回执】的未销账条目
@@ -1977,7 +1981,7 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
     # #60①:回执与交付同为**事实**(落盘即已发生),dispatch 不在时同走 spool 暂存 ⛔ 丢弃;
     # 只有瞬时告警(卡住/空闲)才丢——回来了再看已无行动价值。
     case "$kind" in
-      交付|回执)
+      交付|回执|消息)   # 「消息」= dmsg 的主动消息:与交付/回执同为**有意图的通信**,⛔ 当瞬时告警丢弃
         { echo "$text"; echo "---"; } >> "$EV_SPOOL"
         ev_log "暂存[$kind] $(echo "$text" | head -1)"
         ;;
@@ -3018,6 +3022,44 @@ cmd_peekr() { tmux capture-pane -p -t "$SESSION:$RELAY_WIN" -S "-${1:-30}"; }
 #    「发进来了、还没转出去、它死了」在发送方眼里与成功完全同形。⇒ 投递**之前**先落盘全文,
 #    等 relay 落盘的【中转回执】销账;超时由 ev_loop 告警并把原文路径一并给出(可原样重发)。
 # ⚠️ relay 不在/已死 ⇒ **响亮失败 ⛔ 静默丢消息**(die 前 outbox 已落盘,事实不丢)。
+# ── dmsg:给派工窗口投一条**主动**消息(2026-08-19 立)──────────────────────────────────
+# 创始人提的组合问题:「dispatch 是 codex 或 kimi 的时候,relay 就要负责跟方案窗口通信」。
+# 背景:派工窗口是 claude 时,别人直接 SendMessage 就找得到它;**一换成 codex/kimi 就没有
+#   SendMessage**。而在此之前,外部唯一能触发 `ev_deliver` 的办法是**落盘带末行标记的文件**,
+#   events 只扫四种标记(交付完成/验收回执/中转回执/转办回复)——**四种全是「回复类」**。
+#   ⇒ **主动消息没有任何通道**:方案窗口或 relay 想主动跟 codex dispatch 说一件事,发不进去。
+#   这个缺口在 dispatch=claude 时完全看不见(那条路根本用不上),**换引擎当天才会露出来**。
+# ⇒ 本命令把 `ev_deliver` 暴露出来:它走 tmux paste-buffer ⇒ **对 claude/codex/kimi 一视同仁**,
+#   ⛔ 为每种引擎各写一套(那正是 #66「两套实现而看板上长得一模一样」的温床)。
+# 🔴 强制 `--from`,⛔ 匿名注入 —— 与 relay-msg 出站标来源同纪律:派工窗口收到的每条消息都要
+#   能追到发起人,否则它无从判断该不该照办。
+# ⚠️ 不进 RELAY_DENY:relay 正是最需要它的席位(dispatch 换非 claude 引擎后它是通信枢纽)。
+#   本命令不增加实质权限(同机窗口本就能 tmux send-keys),但让这条路**可审计、上看板**。
+# 📌 与 relay-msg 的分工:relay-msg=**出站**(dispatch→别人,需对方判断);dmsg=**入站**
+#   (别人→dispatch,主动)。两条都不依赖引擎 ⇒ 换 dispatch 引擎时通信面闭合。
+cmd_dmsg(){  # --from <来源> <正文…>
+  local from=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) from="${2:?--from 需要来源名}"; shift 2 ;;
+      --)     shift; break ;;
+      -*)     die "未知参数:$1(用法:laixin-lane dmsg --from <来源> \"<正文>\")" ;;
+      *)      break ;;
+    esac
+  done
+  [ -n "$from" ] || die "dmsg 必须带 --from <来源>(如 --from 方案窗口 / --from relay)——⛔ 匿名注入派工窗口"
+  local text="$*"
+  [ -n "$text" ] || die "dmsg 需要消息正文"
+  ev_deliver "消息" "【消息】来自 ${from}:
+${text}"
+  board "$(caller_src)" "dmsg→派工窗口(来源=$from):$(head -1 <<< "$text" | cut -c1-70)"
+  if dispatch_alive; then
+    echo "已投递进派工窗口(来源=$from)。⚠️ **注入成功 ⛔ 等于已读** —— 它下一轮才会看到;要确认送达等它的可见回应,⛔ 按本命令成功就判送达(#69 同族)。"
+  else
+    echo "⚠️ 派工窗口不在 ⇒ 已暂存,它起来后由 events 补投(⛔ 丢弃:主动消息与交付/回执同属有意图的通信)。"
+  fi
+}
+
 cmd_relay_msg(){
   local to="" text="" id now
   while [ $# -gt 0 ]; do
@@ -3824,6 +3866,7 @@ case "${1:-}" in
   relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记
   peek-r)     shift; cmd_peekr "$@" ;;
   relay-down) shift; cmd_relay_down "$@" ;;   # 收窗并**关闭托管**(清标记,看门狗从此不管 relay)
+  dmsg)      shift; cmd_dmsg "$@" ;;          # 主动消息→派工窗口(引擎无关:codex/kimi 无 SendMessage 时的入站通道)
   relay-msg)  shift; cmd_relay_msg "$@" ;;    # #67②:出站转办(**单向** dispatch→relay;回程走落盘+events,零扩权)
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;

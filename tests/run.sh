@@ -2236,6 +2236,22 @@ tout "通道:doctor 已接入(⛔ 只有函数没人调)" "channel_verdict" \
   sed -n "/^cmd_doctor()/,/^}$/p" "$LANE"
 rm -rf "$VCH"
 
+# ── dmsg:主动消息通道(2026-08-19;dispatch 换 codex/kimi 后的入站路径)────────────────
+# 缺口成因:events 只扫四种末行标记(交付完成/验收回执/中转回执/转办回复),**四种全是回复类**
+# ⇒ 主动消息无路可走。而这在 dispatch=claude 时完全看不见(直接 SendMessage 就到了),
+# **换引擎当天才露出来** —— 与 #75/#66 同族的「只在切换时刻才显形」的缺口。本组守它不退化。
+tfail "dmsg:缺 --from 必须拒(⛔ 匿名注入派工窗口)" "必须带 --from" "$LANE" dmsg "正文"
+tfail "dmsg:有 --from 无正文必须拒" "需要消息正文" "$LANE" dmsg --from 方案窗口
+tout "dmsg:消息体带来源标记(收方要能追到发起人)" "【消息】来自" sed -n "/^cmd_dmsg()/,/^}$/p" "$LANE"
+tout "dmsg:走 ev_deliver ⛔ 自拼 tmux(引擎无关全靠这一点)" "ev_deliver" sed -n "/^cmd_dmsg()/,/^}$/p" "$LANE"
+t "dmsg:kind=消息 且 ev_deliver 把它归**暂存**档 ⛔ 丢弃档" bash -c '
+  sed -n "/^cmd_dmsg()/,/^}$/p" "'"$LANE"'" | grep -q "ev_deliver \"消息\"" &&
+  sed -n "/^ev_deliver()/,/^}$/p" "'"$LANE"'" | grep -qE "交付\|回执\|消息\)"'
+tout "dmsg:已接入 case 分发(⛔ 只有函数没人调)" "cmd_dmsg" bash -c 'grep "^  dmsg)" "'"$LANE"'"'
+tout "dmsg:回执点明「注入成功⛔等于已读」(#69 同族)" "⛔ 等于已读" sed -n "/^cmd_dmsg()/,/^}$/p" "$LANE"
+t "dmsg:⛔ 进 RELAY_DENY(relay 恰是最需要它的席位)" bash -c '
+  ! grep -q "Bash(laixin-lane dmsg" "'"$LANE"'"'
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

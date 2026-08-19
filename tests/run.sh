@@ -805,6 +805,36 @@ t "设了 LAIXIN_WINDOW 则零提示(不制造噪音)" bash -c \
 t "设了来源时来源字段照原样写入" bash -c 'grep -q "| 派工窗口 | 测试事件丁 |" "'"$L26"'/b.md"'
 rm -rf "$L26"
 
+echo "== 6k. #44 保命循环禁裸调用(wd_loop 执行重生时宿主无声死亡;隔离 fixture,零真实 tmux) =="
+# 08-19 10:56 实撞:杀 relay → 看门狗记「自动重起」→ cmd_relay 内双中继守卫 die(:die=echo+exit)
+# 在**同进程函数调用**形态下 exit 直接终止宿主 wd_loop,`|| board` 兜底接不住 exit,stderr 被吞
+# ⇒ 无声死亡,全线失去看门狗且零告警。绊线驱动 tests/wd44-driver.sh 在沙盒里跑**真实** wd_loop/cmd_relay。
+WDD="$(cd "$(dirname "$0")" && pwd)/wd44-driver.sh"
+# ⭐ 机理自证(照 #20a 例):若此测变红=bash 行为已变,重估本组
+tout "#44 机理自证:函数内 die(exit)穿透 >/dev/null ||兜底 直接杀宿主" "MECH=host-dead-and-fallback-skipped" \
+  bash "$WDD" mech "$LANE"
+# ⭐ 主绊线(执行级,修复回退即红):relay 死+常态拓扑 outside=2,跑真 wd_loop ≥2 拍——
+#   宿主必须存活(回退子 shell 隔离 ⇒ HOST=dead)+ 失败必须大声上看板并附死因末行(回退大声报 ⇒ 缺条)
+#   + 死因不得是「起窗中止」(回退 --resurrect 豁免 ⇒ 常态拓扑被自家守卫拦死,恰好报它)
+t "#44 绊线:relay 死跑 wd_loop 一拍——宿主存活+重生失败大声报+非守卫拦死" bash -c \
+  'out="$(bash "$0" beat "$1")"; grep -q "HOST=alive" <<< "$out" && grep -q "中继重生失败" <<< "$out" && ! grep -q "起窗中止" <<< "$out"' \
+  "$WDD" "$LANE"
+# ⭐ 豁免不泄漏:首起路径(人手跑 relay,无豁免旗)守卫必须照旧拦
+t "#44 绊线:首起路径双中继守卫照旧(无豁免旗,常态拓扑必拦且 rc 非零)" bash -c \
+  'out="$(bash "$0" guard "$1")"; grep -q "GUARD_RC=1" <<< "$out" && grep -q "起窗中止" <<< "$out"' \
+  "$WDD" "$LANE"
+# 模式级:wd_loop 里不许再出现裸的 cmd_relay/cmd_dispatch 调用(重生一律命令替换子 shell 收码)
+t "#44 模式绊线:wd_loop 内无裸 cmd_relay/cmd_dispatch 调用" bash -c \
+  'body="$(sed -n "/^wd_loop()/,/^}/p" "$0")"; ! grep -qE "^[[:space:]]*cmd_(relay|dispatch) " <<< "$body"' "$LANE"
+# dispatch 两分支同族加固在位(死窗重起 + 静默换窗,失败都大声报不再静默/带死宿主)
+tout "#44:dispatch 死窗重起分支子 shell 隔离并大声报" "派工窗口重起失败" sed -n "/^wd_loop()/,/^}/p" "$LANE"
+tout "#44:静默换窗分支失败不再静默吞错(原 || true)" "静默换窗失败" sed -n "/^wd_loop()/,/^}/p" "$LANE"
+# boot 链(resurrect --full)同族:relay 拉起带席位恢复豁免,且 || board 兜底因子 shell 隔离而真正可达
+tout "#44:resurrect --full 的 relay 拉起=恢复既有席位(--resurrect)" "cmd_relay --resurrect" \
+  sed -n "/^cmd_resurrect()/,/^}/p" "$LANE"
+t "#44:resurrect --full 内无裸 cmd_relay/cmd_dispatch/cmd_watchdog 调用" bash -c \
+  'body="$(sed -n "/^cmd_resurrect()/,/^}/p" "$0")"; ! grep -qE "^[[:space:]]*(cmd_relay|cmd_dispatch|cmd_watchdog)[ )]" <<< "$body" && ! grep -qE "\|\| (cmd_relay|cmd_dispatch|cmd_watchdog) " <<< "$body"' "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

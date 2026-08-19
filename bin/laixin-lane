@@ -546,16 +546,23 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
       echo "基础设施已恢复:events 在跑(交付暂存 spool)。引擎点火用:laixin-lane resurrect --full"
       ;;
     --full)
-      cmd_dispatch --force-rival 2>/dev/null || cmd_dispatch
-      win_exists "$WATCHDOG_WIN" || cmd_watchdog start
+      # #44:boot 链是无人值守的重生路径,与 wd_loop 同纪律——cmd_dispatch/cmd_watchdog/cmd_relay
+      # 的调用树里都有 die(die=echo+exit),同进程裸调用时 exit 直接终止本命令,后面的 || 兜底与
+      # 后续席位恢复**全部旁路**(08-19 10:56 wd_loop 同族实撞)⇒ 一律子 shell 隔离,单席位失败
+      # 大声报并继续拉别的席位,⛔ 半途无声退场。
+      ( cmd_dispatch --force-rival ) 2>/dev/null || ( cmd_dispatch ) \
+        || board "看门狗" "⛔ resurrect --full:派工窗口没起成——人工核:laixin-lane dispatch"
+      win_exists "$WATCHDOG_WIN" || ( cmd_watchdog start ) \
+        || board "看门狗" "⛔ resurrect --full:看门狗没起成——人工核:laixin-lane watchdog start"
       # #32:中继席位一并恢复——本命令就是 boot 链(cmd_install_boot_full 的 launchd 调的正是
       # `resurrect --full`)⇒ 改这一处即覆盖开机自动恢复,⛔ 动 plist(unload/load 会碰常驻)。
       # 立项根因正是这里:P0-1 整机重启后 dispatch 自动重生零人工,而中继断档 14 分钟且要人在场。
-      # ⛔ --force-rival:「绝不允许两个中继同时活着」的优先级高于「自动拉起」——被拦下要**大声报**,
-      #    不是静默跳过(静默跳过=拓扑缺一角且零症状,三约束②反向生效族)。
+      # 带 --resurrect:relay_enabled 已判 ⇒ 这是**恢复既有席位**,免双中继守卫;首起守卫照旧
+      # (语义与 08-19 实撞见 cmd_relay 参数注)。失败仍要**大声报**,不是静默跳过
+      # (静默跳过=拓扑缺一角且零症状,三约束②反向生效族)。
       if relay_enabled; then
         if relay_alive; then echo "中继窗口 $RELAY_WIN 已在跑,不重复起"
-        else cmd_relay || board "看门狗" "⚠️ resurrect --full:中继窗口没起成(#32)——托管标记在但起窗失败(可能被双中继守卫拦下),人工核:laixin-lane relay"
+        else ( cmd_relay --resurrect ) || board "看门狗" "⚠️ resurrect --full:中继窗口没起成(#32)——托管标记在但起窗失败,人工核:laixin-lane relay"
         fi
       else
         echo "(中继窗口未启用托管:标记 $RELAY_ENABLED 不存在 ⇒ 跳过。启用方式=手跑一次 laixin-lane relay)"
@@ -1828,6 +1835,13 @@ cmd_relay() {
       --dir)   dir="${2:?--dir 需要路径}"; shift 2 ;;
       --fresh) force=1; shift ;;
       --force-rival) nocheck=1; shift ;;
+      # #44:--resurrect=重生路径专用豁免(看门狗 wd_loop / boot 链 resurrect --full 用,⛔ 人手用)。
+      # 守卫防的是「新开第二中继」;而重生的前提=托管标记在(relay_enabled)且席位已死(relay_alive 假)
+      # ⇒ 这是**恢复既有席位**,不是开新席位。守卫数的是 tmux 外会话数,与 tmux 内死掉的席位无关——
+      # 常态拓扑(创始人窗口+方案窗口)恒 outside=2,不豁免则自动重生在常态下**必被自家守卫拦死**
+      # (08-19 10:56 实撞;当时更糟:守卫 die 的 exit 还把宿主 wd_loop 无声带死)。
+      # **首起路径(人手跑 laixin-lane relay)守卫照旧**;人的逃生口仍是 --force-rival。
+      --resurrect) nocheck=1; shift ;;
       *) die "未知参数:$1" ;;
     esac
   done
@@ -1904,7 +1918,8 @@ wd_loop() {
   while true; do
     sleep "$interval"
     # —— 0. 事件总线也要活着(它给派工窗口喂事件) ——
-    ev_alive || { board "看门狗" "事件总线循环已死(窗口在≠活着),重启"; cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
+    # #44 纪律:cmd_events start/stop 现无 die 路径,但保命循环里的子调用一律子 shell 隔离(防将来加 die)。
+    ev_alive || { board "看门狗" "事件总线循环已死(窗口在≠活着),重启"; ( cmd_events stop ) >/dev/null 2>&1 || true; ( cmd_events start ) >/dev/null 2>&1 || true; }
     # —— 0.5 中继席位保活(#32,2026-08-19) ——
     # 位置**必须在派工分支之前**:下面每个 dispatch 分支都 continue,挂在后面等于「派工窗口一出事
     # 中继就没人管」——而这两件事恰恰最可能同时发生(整机重启)。
@@ -1914,12 +1929,18 @@ wd_loop() {
     #    照搬 dispatch 的静默戳会让误报随「流水线健康」增长——正撞三约束③(噪声必须与目标行为同向)。
     #    只做两件:①窗口死了重起;②对话框扫描——那是**解冻不是催活**(被弹窗挡住的中继看着活着实则聋了,
     #    与静默戳是两回事:前者判「屏幕上有已知签名的模态框」,后者判「多久没动静」)。
-    # ⛔ --force-rival:「绝不允许两个中继同时活着」优先级高于「自动拉起」,被守卫拦下要**大声报**。
+    # #44 通则:**保命循环里不许有裸调用**——cmd_relay/cmd_dispatch 的调用树里有 die(die=echo+exit),
+    # 同进程裸调用时 exit 直接终止宿主循环:`|| board` 兜底根本没机会跑(exit 不是非零返回,|| 接不住),
+    # stderr 又被 >/dev/null 2>&1 吞掉 ⇒ 无声死亡(08-19 10:56 实撞:双中继守卫 :1836 die → wd_loop
+    # 无声退出,看板只剩「自动重起」孤条,全线失去看门狗且零告警)。⇒ 重生调用一律**命令替换子 shell
+    # 隔离+显式收退出码**,失败大声上看板并附死因末行,⛔ 带死宿主。
+    # 重生带 --resurrect=恢复既有席位,免双中继守卫;首起路径守卫照旧(语义与实撞见 cmd_relay 参数注)。
     if relay_enabled; then
       if ! relay_alive; then
         board "看门狗" "⚠️ 中继窗口不在(#32 托管中),自动重起"
-        cmd_relay --fresh >/dev/null 2>&1 \
-          || board "看门狗" "⛔ 中继窗口重起失败(#32)——常见原因=双中继守卫拦下(tmux 外多个活跃 claude 会话)。人工核:laixin-lane relay"
+        local r_rc=0 r_out=""
+        r_out="$(cmd_relay --fresh --resurrect 2>&1)" || r_rc=$?
+        [ "$r_rc" -eq 0 ] || board "看门狗" "⛔ 中继重生失败(rc=${r_rc}):$(tail -1 <<< "$r_out" | cut -c1-160)——循环存活,下一拍重试;人工核:laixin-lane relay"
       else
         dialog_sweep_win "$RELAY_WIN" >/dev/null 2>&1 || true
       fi
@@ -1939,7 +1960,11 @@ wd_loop() {
       restarts=$((restarts+1))
       echo "[$(date '+%F %T')] 派工窗口不在,第 $restarts 次重起" >> "$WD_LOG"
       board "看门狗" "⚠️ 派工窗口不在(第 ${restarts} 次自动重起)"
-      cmd_dispatch --fresh --force-rival >/dev/null 2>&1 || board "看门狗" "重起失败,下轮重试"
+      # #44:同 relay——裸调用会被 cmd_dispatch 树里的 die(起窗超时等)带死宿主 ⇒ 子 shell 隔离收码。
+      # --force-rival 在此合法:上文 rival_holds_dispatch 已判过无对手,守卫的活本循环自己刚做完。
+      local d_rc=0 d_out=""
+      d_out="$(cmd_dispatch --fresh --force-rival 2>&1)" || d_rc=$?
+      [ "$d_rc" -eq 0 ] || board "看门狗" "⛔ 派工窗口重起失败(rc=${d_rc}):$(tail -1 <<< "$d_out" | cut -c1-160)——循环存活,下轮重试"
       last_hash=""; silent=0; nudged=0
       continue
     fi
@@ -1976,7 +2001,12 @@ wd_loop() {
       restarts=$((restarts+1))
       echo "[$(date '+%F %T')] 静默 ${silent}s 且有轨空闲,第 $restarts 次重起" >> "$WD_LOG"
       board "看门狗" "⚠️ 派工窗口静默 $((silent/60)) 分钟且有轨空闲(戳过无效)→ 第 ${restarts} 次换新窗口接管"
-      cmd_dispatch --fresh >/dev/null 2>&1 || true
+      # #44:子 shell 隔离收码(cmd_dispatch 树里有 die)。⛔ 不带 --force-rival:换掉「活着但静默」的
+      # dispatch 时,若派工权正被别人新鲜持有(人工接管形态),必须仍被双派工守卫拦下——
+      # 拦下如今是大声失败上看板,⛔ 再是带死宿主;原 `|| true` 的静默吞错一并升级为大声报。
+      local s_rc=0 s_out=""
+      s_out="$(cmd_dispatch --fresh 2>&1)" || s_rc=$?
+      [ "$s_rc" -eq 0 ] || board "看门狗" "⛔ 静默换窗失败(rc=${s_rc}):$(tail -1 <<< "$s_out" | cut -c1-160)——循环存活,下轮重试"
       last_hash=""; silent=0; nudged=0
     elif [ "$silent" -ge "$nudge_after" ] && [ "$nudged" -eq 0 ]; then
       nudged=1

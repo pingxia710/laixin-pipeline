@@ -1165,6 +1165,22 @@ t "#45-bis 射程:ev_loop 循环体内的「事件总线」自述保留(来源�
   body="$(sed -n "/^ev_loop()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
   grep -q "board \"事件总线\"" <<< "$body"' "$LANE"
 
+echo "== 8d. kb-commit 相对路径错误信息指真因(#27 同形:工具自述把人往错方向引;落卡级) =="
+# 实撞形态:在别的 cwd 用相对路径,文件明明「在」(相对 cwd),错误信息却只说「不是文件」——
+# 排查被引向「文件在不在」,真因是相对路径按 vault 解析不按 cwd
+KRP="$(mktemp -d)"; mkdir -p "$KRP/vault" "$KRP/cwd"
+git -C "$KRP/vault" init -q
+echo x > "$KRP/cwd/真在cwd的文件.md"
+t "kb-commit 被拒时点明「按 vault 解析」+回显解析后路径+给绝对路径出路" bash -c '
+  cd "$1/cwd" || exit 1
+  out="$(env LAIXIN_VAULT="$1/vault" "$2" kb-commit "说明" 真在cwd的文件.md 2>&1)"; rc=$?
+  [ $rc -ne 0 ] || exit 1
+  grep -q "不是文件" <<< "$out" || exit 1
+  grep -q "相对路径按 vault 解析" <<< "$out" || exit 1
+  grep -q "解析为 $1/vault/真在cwd的文件.md" <<< "$out" || exit 1
+  grep -q "绝对路径" <<< "$out"' kb "$KRP" "$LANE"
+rm -rf "$KRP"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

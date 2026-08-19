@@ -671,7 +671,8 @@ cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自�
   if win_exists "$RELAY_WIN"; then tmux kill-window -t "$SESSION:$RELAY_WIN"; cdp_sweep "$RELAY_CDP_PORT"; stopped="$stopped relay"; fi
   # 只清属于托管窗口的锁——外部手开派工窗口的锁不动(halt 不该打开双派工的风险窗口)
   [ "$(lock_holder)" = "$DISPATCH_WIN" ] && rm -f "$DISPATCH_LOCK"
-  board "方案窗口" "halt:三件套停止(${stopped:-本就没在跑});lanes/verify 未动"
+  # #57(#45 族残余):halt 的执行方不总是方案窗口(创始人直令/手工都真实发生过)——来源=真实调用上下文
+  board "$(caller_src)" "halt:三件套停止(${stopped:-本就没在跑});lanes/verify 未动"
   echo "已停:${stopped:-无(三件套本就没在跑)}"
   echo "仍在跑:"; tmux list-windows -t "$SESSION" -F '  #{window_name} [#{pane_current_command}]' 2>/dev/null | grep -vE 'hub' || echo "  (无)"
   return 0
@@ -2120,7 +2121,7 @@ cmd_claim() {
     echo "   (--force:强行接管)"
   fi
   lock_write
-  board "派工窗口" "认领派工权:$(whoami_window)"
+  board "$(caller_src)" "认领派工权:$(whoami_window)"   # #57:claim 是「想成为派工」的动作,来源写角色名=用结论当证据;真实身份已在消息里
   echo "已认领派工权:$(whoami_window)"
   return 0
 }
@@ -2369,7 +2370,7 @@ cmd_relay_down() {
     was=1
   fi
   rm -f "$RELAY_ENABLED"   # 收窗即关托管:标记不在 ⇒ 看门狗/resurrect/doctor 对 relay 完全惰性
-  board "中继窗口" "回收中继窗口 $RELAY_WIN(托管已关闭:看门狗不再保活)"
+  board "$(caller_src)" "回收中继窗口 $RELAY_WIN(托管已关闭:看门狗不再保活)"   # #57:来源=执行方,被收对象已在消息里(#45-bis watchdog stop 同判)
   if [ "$was" = 1 ]; then echo "$RELAY_WIN 已回收;托管已关闭(标记 $RELAY_ENABLED 已清除)"
   else echo "$RELAY_WIN 本就不存在;托管标记已清除(如有)"; fi
   return 0
@@ -2660,7 +2661,9 @@ EOF
   tmux delete-buffer -b laixin-vmsg
   sleep 0.5
   tmux send-keys -t "$SESSION:$w" C-m
-  board "派工窗口" "起验收窗口 $w ← $slice($branch $commit)"
+  # #57(#45 族残余):起窗类条目的来源=真实调用上下文——verify 常由派工窗口调,但方案/创始人窗口
+  # 应急代起真实存在;硬编码「最常见调用方」=为非常规调用制造伪证,而排查恰恰全是非常规调用
+  board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)"
   echo "$w 已起并派单。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
   echo "提示:派工窗口首次 SendMessage 需带 ref,先 ListAgents 查 $w 的 [ref]。"
 }
@@ -2673,7 +2676,7 @@ cmd_vdown() {
     || { echo "$w 本就不存在"; return 0; }
   tmux kill-window -t "$SESSION:$w"
   cdp_sweep "$(cdp_port_verify "$w")"
-  board "派工窗口" "回收验收窗口 $w"
+  board "$(caller_src)" "回收验收窗口 $w"   # #57:同上,来源=执行方
   echo "$w 已回收"
   # #14c(2026-08-19):vdown 是合并邻接动作(收回执→合并→回收)——在此顺手:①事实表新鲜度
   # (表落后 7 片曾差 773 行,人工枚举与陈旧表各有遗漏谁也救不了谁);②总表未提交提醒(整晚零提交

@@ -1484,6 +1484,17 @@ tl_nohook(){ case "$1" in *table-lint*|*表结构断言*) echo TL_LEAK ;; *已�
 tout "非台账族提交零断言噪音(钩挂在台账动作上)" "TL_OK" tl_nohook "$(env LAIXIN_VAULT="$TLV" "$LANE" kb-commit "test: 随笔" 随笔.md 2>&1)"
 rm -rf "$TL" "$TLV"
 
+echo "== 8k. #57 观察者审计——修复组(逐处小修的绊线;结构级见交付报告清单) =="
+# ① #45 族收尾:五处硬编码 board 来源(halt/claim/relay-down/verify/vdown)改走 caller_src。
+#   判可执行行剔注释(八律第 8 律:注释保留旧写法案底,含注释的包含匹配会被元文本命中)
+t "#57a:全脚本可执行行零硬编码「派工窗口/方案窗口/中继窗口」board 来源" bash -c '
+  body="$(grep -v "^[[:space:]]*#" "$0")"
+  ! grep -qE "board \"(派工窗口|方案窗口|中继窗口)\"" <<< "$body"' "$LANE"
+t "#57a:halt/claim/relay_down/verify/vdown 五处都走 caller_src" bash -c '
+  for fn in cmd_halt cmd_claim cmd_relay_down cmd_verify cmd_vdown; do
+    sed -n "/^${fn}()/,/^}/p" "$0" | grep -v "^[[:space:]]*#" | grep -q "board \"\$(caller_src)\"" || exit 1
+  done' "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

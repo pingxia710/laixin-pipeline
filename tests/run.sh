@@ -1301,6 +1301,64 @@ t "非词表文件不带指纹零提示(提示射程=词表)" bash -c \
   '! grep -q "未带内容指纹" <<< "$(env LAIXIN_KB="'"$FPD"'/kb" LAIXIN_REPO="'"$FPD"'/repo" "'"$LANE"'" prompt-lint "'"$FPD"'/fp-code-ok.md" 2>&1)"'
 rm -rf "$FPD"
 
+echo "== 8h. #49 移节漏检机器化(进行中节片名 × 轨道占用;fixture 表+一次性 tmux 会话,测完杀净) =="
+MQ="$(mktemp -d)"; mkdir -p "$MQ/kb/4-开发层"
+MQS="lx49test-$$"
+# 方向二:行在轨不在(bogus 会话=零窗口)——「进行中」挂着行而 lane 窗口整个没了
+cat > "$MQ/kb/4-开发层/来信平台-执行总表.md" <<'EOF'
+## 进行中(= 轨道占用)
+> 引注块要被跳过,⛔ 当表行
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+| **在飞甲片**(括注) | **A** | x | 整改中 |
+
+## 排队
+| 片 | 轨 | 前置 | 状态 |
+|---|---|---|---|
+EOF
+printf '| 08-19 10:00 | 派工窗口 | 无关记录 |\n' > "$MQ/kb/4-开发层/来信平台-流水线看板.md"
+tout "行在而轨不在 → ⚠️ 移节嫌疑点名片与轨" "「进行中」节挂着 「在飞甲片」" \
+  env LAIXIN_SESSION="bogus-$MQS" LAIXIN_KB="$MQ/kb" "$LANE" audit-queue
+# 方向一:轨在干活而节空(一次性 tmux 会话造「lane-a 屏上有活动迹象」;⛔ 碰真 laixin 会话)
+tmux new-session -d -s "$MQS" -n hub 2>/dev/null
+tmux new-window -d -t "$MQS" -n lane-a "bash -c 'echo Working on it; sleep 30'"
+# 条件等待而非盲 sleep:抓屏早于窗口首行输出=竞态假红(等到 Working 上屏才继续,上限 5s)
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  tmux capture-pane -p -t "$MQS:lane-a" 2>/dev/null | grep -q "Working" && break
+  sleep 0.5
+done
+cat > "$MQ/kb/4-开发层/来信平台-执行总表.md" <<'EOF'
+## 进行中(= 轨道占用)
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+
+## 排队
+| 片 | 轨 | 前置 | 状态 |
+|---|---|---|---|
+EOF
+MV_OUT="$(env LAIXIN_SESSION="$MQS" LAIXIN_KB="$MQ/kb" "$LANE" audit-queue 2>&1)"
+tout "轨在干活而节空 → 🔴 移节漏检嫌疑(撞车形态,三十四任实撞)" "移节漏检嫌疑(#49):lane-a 正在干活" echo "$MV_OUT"
+# 一致态:行在且窗口在(嫌疑双向都不触发;lane-a busy + A 行 1 = 方向一不触发)
+cat > "$MQ/kb/4-开发层/来信平台-执行总表.md" <<'EOF'
+## 进行中(= 轨道占用)
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+| **在飞甲片** | **A** | x | 整改中 |
+EOF
+tout "行在且轨在 → ✅ 移节核报绿并自报两向射程(#50 通过态可见)" "✅ 移节核(#49):进行中节片名 × 轨道占用一致(A 行 1 / B 行 0" \
+  env LAIXIN_SESSION="$MQS" LAIXIN_KB="$MQ/kb" "$LANE" audit-queue
+tmux kill-session -t "$MQS" 2>/dev/null || true
+# 空表+零窗口=一致(空比空的相等在这里是真相等:两边都是「无」的事实,零冲突报绿)
+cat > "$MQ/kb/4-开发层/来信平台-执行总表.md" <<'EOF'
+## 进行中
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+EOF
+tout "节空且轨闲 → 报绿(空轨等派是常态,报了=噪声随做对的行为涨)" "✅ 移节核(#49)" \
+  env LAIXIN_SESSION="bogus-$MQS" LAIXIN_KB="$MQ/kb" "$LANE" audit-queue
+t "fixture tmux 会话确已杀净(测试自己不留孤儿)" bash -c '! tmux has-session -t "$1" 2>/dev/null' mv "$MQS"
+rm -rf "$MQ"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

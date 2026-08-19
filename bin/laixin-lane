@@ -38,7 +38,7 @@
 #   laixin-lane daily-report         夜报聚合(看板+守护日志过去24h,早晨汇报用)
 #   laixin-lane install-boot         装开机自恢复(infra 级,launchd)
 #   laixin-lane facts-fresh          事实表新鲜度(表头 main@commit vs 当前 main)+codegraph sync 顺手跑/被占告警
-#   laixin-lane audit-queue          台账巡检(排队/验收中 × 看板合并记录,揪陈旧行)
+#   laixin-lane audit-queue          台账巡检(排队/验收中 × 看板合并记录揪陈旧行;#49 进行中节 × 轨道占用移节核)
 #   laixin-lane audit-pages          底册复查提醒(#五-19):走查底册 🔁 页的「××片」触发点 × 看板合并记录;接班巡检可选项
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
@@ -727,6 +727,41 @@ cmd_audit_queue(){  # 台账巡检(2026-08-18 优化#13):排队/验收中节片�
   [ "$wn" -gt 0 ] && echo "⚠️ 弱嫌疑 $wn 行(片名仅出现在含「合并」的叙述里,多为交叉引用):${weak}——速核即可,⛔ 不必逐行深查"
   if [ "$n" -eq 0 ] && [ "$wn" -eq 0 ]; then echo "✅ 台账巡检:排队/验收中节与看板合并记录零冲突"
   elif [ "$n" -gt 0 ]; then echo "共 $n 行强嫌疑(命中≠定罪,逐行人工核)+ $wn 行弱嫌疑"; fi
+  # ── #49 移节漏检(2026-08-19 停工B段批四):台账行移节(交接进验收/打回整改)漏移的机器闸 ──
+  # 失败样本两例:三十任「整改片交接进验收后忘移行」·三十四任「打回后改状态格发整改 peek 复核过
+  # **但没移节**」——进行中节空着而 lane-a 正跑整改。格式体检抓不到(4 列无竖线无禁止符,
+  # 行只是在错误的节里),而进行中节是 Codex 判发车位的**唯一依据** ⇒ 空着=后任判可发=撞车;
+  # 上次没出事纯因冻结令,那是外部条件不是防线。判据免语义:进行中节片名清单 × 轨道占用,不等即报。
+  # ⚠️ 占用的两个方向用不同事实(⛔ 都用「窗口存在」):
+  #   方向一(节空轨忙)取 lane_busy——窗口在片与片之间常驻,拿「存在」当占用会让误报恰在
+  #   台账做对(行已移走、Codex 空闲等下一片)时增长(三约束③ 噪声必须与目标行为同向);
+  #   方向二(行在轨没)取 win_exists——行挂着而窗口整个不存在,无论忙闲都值得人看一眼。
+  # 命中≠定罪(方向一:刚 up 未派工的轨有屏上残迹也可能命中),报嫌疑由人核。
+  local mvn=0 trl trname inflight_a="" inflight_b="" na=0 nb=0 l
+  while IFS=$'\t' read -r trl trname; do
+    [ -n "$trname" ] || continue
+    case "$trname" in 片|片名*) continue ;; esac
+    case "$trl" in
+      *A*) inflight_a="${inflight_a}「${trname}」"; na=$((na+1)) ;;
+      *B*) inflight_b="${inflight_b}「${trname}」"; nb=$((nb+1)) ;;
+    esac
+  done < <(sed -n "/^## .*进行中/,/^## /p" "$table" | grep '^|' | grep -v '^| *--' \
+           | awk -F' \\| ' 'NR>1 {nm=$1; sub(/^\| */,"",nm); gsub(/[*~]/,"",nm); sub(/[((].*/,"",nm); sub(/ *$/,"",nm); t=$2; gsub(/[* ]/,"",t); printf "%s\t%s\n", t, nm}')
+  for l in a b; do
+    local _rows _cnt
+    if [ "$l" = a ]; then _rows="$inflight_a"; _cnt=$na; else _rows="$inflight_b"; _cnt=$nb; fi
+    if lane_busy "$l" && [ "$_cnt" -eq 0 ]; then
+      echo "🔴 移节漏检嫌疑(#49):lane-$l 正在干活而「进行中」节无该轨行——后任照表判该轨可发会撞车;人工核后把在飞片行补回/移回进行中节"
+      mvn=$((mvn+1))
+    fi
+    if [ "$_cnt" -gt 0 ] && ! win_exists "lane-$l"; then
+      echo "⚠️ 移节嫌疑(#49):「进行中」节挂着 ${_rows}(轨 $(echo "$l" | tr 'ab' 'AB'))而 lane-$l 窗口不存在——行滞后或轨道死了,人工核"
+      mvn=$((mvn+1))
+    fi
+  done
+  if [ "$mvn" -eq 0 ]; then
+    echo "✅ 移节核(#49):进行中节片名 × 轨道占用一致(A 行 $na / B 行 $nb;节空轨忙与行在轨没两向都核过)"
+  fi
   return 0
 }
 

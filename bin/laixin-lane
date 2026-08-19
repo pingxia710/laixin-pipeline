@@ -1647,13 +1647,11 @@ cmd_doctor() {
 
   # 通道一致性(账号隔离):⛔ 放进上面的 has-session 块 —— 会话分区与 tmux 无关,
   # 无 tmux 时(方案窗口 + 手开窗口)分裂同样成立且同样静默。
+  echo "  -- 通道拓扑(账号隔离;软切换期多通道并存属正常) --"
   local _chv _chr
-  _chv="$(session_config_dirs | channel_verdict)"; _chr=$?
-  case "$_chr" in
-    0) ok "$_chv" ;;
-    1) bad "🔴 $_chv —— 先把落单的一方迁到同一配置目录(换账号走包装器入口,⛔ 走 /login)" ;;
-    *) echo "  ℹ️ 通道一致性:$_chv" ;;
-  esac
+  _chv="$(session_seats | channel_verdict)"; _chr=$?
+  printf '%s\n' "$_chv"
+  [ "$_chr" = 1 ] && fail=$((fail+1))
 
   echo "== 5. 发车位硬闸门(A 轨主树必须干净) =="
   if [ -d "$DEFAULT_DIR/.git" ]; then
@@ -2159,8 +2157,24 @@ ev_ack_overdue(){  # M1 纯判定:stdin=pending 台账(epoch|slug|状态),$1=当
   awk -F'|' -v now="$1" -v ack="$EV_ACK" '$3=="P" && (now-$1)>=ack {print}'
 }
 
-ev_alive(){ pgrep -f "laixin-lane ev-loop" >/dev/null 2>&1; }  # 判活只认进程:窗口存在是进程存活的不可靠代理(2026-08-13 实撞:循环死了窗口还在,status/doctor/看门狗全被假绿灯骗过)
-wd_alive(){ pgrep -f "laixin-lane wd-loop" >/dev/null 2>&1; }  # 同上一课的 wd 版(复盘页#20⑤):08-17 崩后窗口挂了一天半,doctor/status 全程报「运行中」——ev 修了自己,wd 的判活漏了同款
+# ── 循环判活(2026-08-19 换探针;原为 pgrep -f,三方判死后改)──────────────────────────
+# 语义不变:**判活只认进程,窗口存在是进程存活的不可靠代理**(2026-08-13 实撞:循环死了窗口还在,
+# status/doctor/看门狗全被假绿灯骗过;复盘页 #20⑤ wd 版=08-17 崩后挂了一天半全程报运行中)。
+# 🔴 换探针的原因(2026-08-19 三方独立读数判死):原 `pgrep -f "laixin-lane wd-loop"` 会命中
+#   **relay 自己的命令行** —— #71 把 RELAY_DENY 由 8 扩到 21 项时写进去的 `Bash(laixin-lane
+#   wd-loop*)`/`Bash(laixin-lane ev-loop*)` 是 deny 列表的**文本形态**,却成了别处探针的被搜对象。
+#   后果两层:①relay 活着时判活恒真 ⇒ 看门狗死了 doctor/status 照样报绿(假绿原样重现,新路径);
+#   ②`cmd_watchdog start` 首行 `wd_alive && die` ⇒ **看门狗一停就再也起不来**,除非先停 relay。
+#   今晚 `resurrect --full` 能成功纯属席位顺序把 watchdog 排在 relay 之前(运气不是设计)。
+# ⇒ 判据改认**解释器行**:真循环是 `/bin/bash …/laixin-lane wd-loop`,deny 列表里是 `Bash(...)`,
+#   两者可分。前缀 `(^|/)bash ` 同时**防 grep 自匹配**(grep 自己的命令行不以 bash 开头)。
+# ⛔ 换成加锚的 pgrep:`ps` 按全表读不受调用位置影响,而 pgrep 在 claude 会话内跑会看不见
+#   自己那个 claude 进程(当日三方对称实证:dispatch/relay/11B 各自都缺自己),relay 正是
+#   因此把污染误判成「没复现」。
+# 判据与取数分离 ⇒ loop_alive_filter 可直接喂行测两个方向(真循环必中 · deny 形态必不中)。
+loop_alive_filter(){ grep -qE "(^|/)bash[^:]*laixin-lane $1( |$)"; }
+ev_alive(){ ps -eo command= 2>/dev/null | loop_alive_filter ev-loop; }
+wd_alive(){ ps -eo command= 2>/dev/null | loop_alive_filter wd-loop; }
 etime_secs(){  # <ps -o etime= 串([[dd-]hh:]mm:ss)> → stdout=秒数
   # macOS ps 无 etimes;lstart 在中文 locale 不可解析(实测「三 8月/19…」)⇒ 手工换算是唯一通路。
   # loop_stale(#20⑥)与 pane_claude_age(#58)共用。
@@ -2204,7 +2218,7 @@ cmd_events(){
   case "${1:-status}" in
     start)
       ensure_session
-      ev_alive && { echo "事件总线已在跑(进程判活:pgrep -f 'laixin-lane ev-loop')"; return 0; }
+      ev_alive && { echo "事件总线已在跑(进程判活:ps 认解释器行 laixin-lane ev-loop)"; return 0; }
       win_exists "$EV_WIN" && tmux kill-window -t "$SESSION:$EV_WIN"  # 残留假绿灯窗口,清掉重起
       dispatch_alive || echo "提示:dispatch 不在——交付事件将暂存(spool),告警将丢弃。通常应由 laixin-lane dispatch 自动带起本总线。"
       mkdir -p "$EV_DIR"
@@ -2658,34 +2672,66 @@ outside_sessions() {
 # 实证:窗口互见(ListAgents)与 SendMessage 寻址按 **CLAUDE_OFFICIAL_CONFIG_DIR 分区** ——
 # 方案窗口 19:3x 在 .claude-b 时看不到尚在 .claude-official 的 dispatch/relay;三件套 19:58
 # 迁入同目录后三方对称互见(dispatch/relay/11B 各见另外两个,且各不含自己)。
-# 🔴 危害形态与 #75/#66 同族:**半切期间两边各自都"一切正常"**,而方案窗口与派工/中继之间
-#   的通道已经断了、零告警 ⇒ 成功与失败长得一模一样。2026-08-19 19:34~19:58 真实发生过一次,
-#   无人察觉,是事后复盘拓扑才发现的 ⇒ **必须由机器判,⛔ 靠人记得"我切全了没"**。
+# ⚠️ **多通道并存不是错误** —— 创始人定的运行形态:两条通道各自独立跑,一条的 token 将尽时
+#   逐步停工、另一条逐步拉起,在流水线上**软切换**(今天是 claude 将尽,下次可能是 claude-b)。
+#   ⇒ 本检查 ⛔ 把"有两个目录"判成错,那会把正常的切换中间态报成故障。
+# 🔴 真正该报的是两种,都无声:①**两个通道同时有 dispatch** —— 违反「绝不允许两个派工窗口
+#   同时活着」,而两条线各自看都正常;②**孤儿席位** —— 某通道里只剩一个 dispatch/relay,
+#   跨通道消息发不到,它没有任何可通信对象,却照样在跑。2026-08-19 19:34~19:58 真实出现过
+#   ②的雏形(方案窗口已切、三件套未切),零告警,是事后复盘拓扑才发现的。
 # ⛔ 用 pgrep 找会话进程:**调用者看不见自己所在会话的 claude 进程**(当日三方对称实证:
 #   dispatch/relay/11B 各自跑 `pgrep -f claude` 都缺自己那个 pid,relay 因此把污染误判为
 #   "没复现")⇒ 走 sock 名即 PID;`ps` 按 pid 读是可靠的(relay 实测读到自己 781 字符命令行)。
-session_config_dirs() {  # → stdout 每行 "<pid> <配置目录>";读不到该变量的会话跳过
-  local sk pid dir
+session_seats() {  # → stdout 每行 "<pid> <配置目录> <席位名|outside>";读不到配置目录的会话跳过
+  local ttys sk pid ptty dir seat
+  # 席位识别与 outside_sessions 同口径:控制终端 ∈ 已知窗口 pane tty 才算 tmux 内席位
+  ttys="$(tmux list-panes -s -t "$SESSION" -F '#{pane_tty} #{window_name}' 2>/dev/null \
+    | awk '$2 ~ /^(dispatch|relay|verify-)/ {print}')"
   for sk in "$CC_SOCKS_DIR"/*.sock; do
     [ -S "$sk" ] || continue
     pid="$(basename "$sk" .sock)"
     ps -p "$pid" >/dev/null 2>&1 || continue
     dir="$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
            | grep -m1 '^CLAUDE_OFFICIAL_CONFIG_DIR=' | cut -d= -f2-)"
-    [ -n "$dir" ] && printf '%s %s\n' "$pid" "$dir"
+    [ -n "$dir" ] || continue
+    ptty="$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')"; seat=""
+    [ -n "$ptty" ] && [ "$ptty" != "??" ] && seat="$(awk -v t="/dev/$ptty" '$1==t {print $2; exit}' <<< "$ttys")"
+    printf '%s %s %s\n' "$pid" "$dir" "${seat:-outside}"
   done
 }
 
 # 判定与取数**分离**:本函数只读 stdin、⛔ 引用任何顶层变量 —— #75 的教训逐字适用
 # (顶层变量不被绊线的函数抽取带走,引用它会在测试里静默撞 set -u)⇒ 两个分支都可直接喂数据测。
-channel_verdict() {  # stdin=每行 "<pid> <配置目录>" → stdout=一行人读结论;rc 0=一致 1=分裂 2=无数据
-  local tally n
-  tally="$(awk '{print $2}' | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')"
-  n="$(wc -w <<< "$tally" | tr -d ' ')"
-  if [ "$n" -eq 0 ]; then echo "未读到任何会话的配置目录 ⇒ 不适用"; return 2; fi
-  if [ "$n" -eq 1 ]; then echo "通道一致:${tally% }"; return 0; fi
-  echo "通道分裂:活跃 claude 会话分处 $n 个配置目录 ⇒ 跨目录 ListAgents 互不可见、SendMessage 发不到(静默断链,⛔ 等人发现)。分布:${tally% }"
-  return 1
+channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行报告;rc 0=健康 1=危险 2=无数据
+  awk '
+    { n++; cnt[$2]++; if ($3!="outside") seats[$2]=seats[$2]" "$3; else ext[$2]++
+      if ($3=="dispatch") disp[$2]=1; if ($3=="relay") rly[$2]=1 }
+    END {
+      if (n==0) { print "  ℹ️ 通道拓扑:未读到任何会话的配置目录 ⇒ 不适用"; exit 2 }
+      nd=0; ndisp=0
+      for (d in cnt) { nd++; if (d in disp) ndisp++ }
+      for (d in cnt) {
+        line = (d in seats ? seats[d] : "")
+        if (ext[d]) line = line " +" ext[d] "个tmux外窗口"
+        printf "  通道 %s:%s (共 %d 会话)\n", d, (line==""?" —":line), cnt[d]
+      }
+      bad = 0
+      # 危险①:派工唯一性是跨通道的硬纪律(锁在文件层,但拓扑层要先看得见)
+      if (ndisp > 1) {
+        print "  🔴 " ndisp " 个通道同时有 dispatch —— 违反「绝不允许两个派工窗口同时活着」;软切换必须旧线先交出派工权"
+        bad = 1
+      }
+      # 危险②:孤儿席位——跨通道 SendMessage 发不到,同通道内没有别的会话即无任何可通信对象
+      for (d in cnt) if ((d in disp || d in rly) && cnt[d] == 1) {
+        print "  🔴 通道 " d " 内只有这一个会话,而它是派工/中继席位 —— 跨通道消息发不到,它没有任何可通信对象(孤儿)"
+        bad = 1
+      }
+      if (bad == 0) {
+        if (nd == 1) print "  ✅ 单通道运行,拓扑完整"
+        else print "  ✅ 软切换态:" nd " 个通道并存(属正常),派工窗口唯一,各通道内均有可通信对象"
+      }
+      exit bad
+    }'
 }
 
 # 防撞:两个派工窗口同时动 lane 会把 Codex 上下文搞乱(2026-08-13 实际险些发生,靠人工提醒才没撞)

@@ -146,7 +146,10 @@ rm -rf "$TMPT"
 echo "== 6. 事件总线守活(2026-08-13 假绿灯实撞后加,静态回归绊线) =="
 tout "ev-loop 循环体禁用 -e/pipefail(监视器不许被空结果带死)" "set +e" sed -n "/^ev_loop/,/^}/p" "$LANE"
 tout "verify 窗口空集扫描有兜底" "done || true" sed -n "/^ev_loop/,/^}/p" "$LANE"
-tout "ev_alive 判活认进程不认窗口" "pgrep -f" sed -n "/^ev_alive/,/^}/p" "$LANE"
+# ⛔ 按字面断言探针实现:本条原写死 "pgrep -f",而 2026-08-19 探针被换掉(见下节)⇒ 那种写法
+#   会在修复落地时误报红,是「判据比缺陷窄」的自撞。改测语义:认进程(枚举命令行)⛔ 认窗口。
+tout "ev_alive 判活认进程(枚举命令行)" "ps -eo command" bash -c 'grep "^ev_alive()" "'"$LANE"'"'
+t   "ev_alive ⛔ 认窗口(体内无 win_exists)" bash -c '! grep "^ev_alive()" "'"$LANE"'" | grep -q win_exists'
 tout "events status 有假绿灯态提示" "窗口在但循环已死" sed -n "/^cmd_events/,/^}/p" "$LANE"
 tout "看门狗巡检用进程判活重启 events" "ev_alive || { board" grep "ev_alive || { board" "$LANE"
 tout "ev_watch_target 的 local 已拆行(同行自引用撞 set -u)" 'local w="\$1"; local sf' grep -F 'local w="$1"; local sf' "$LANE"
@@ -2182,30 +2185,55 @@ t "#60①:outside_sessions 空 sock 报 0 ⛔ 负数(tty 配对 ⛔ 按窗口数
   [ "$(outside_sessions)" = "0" ]'
 rm -rf "$V60"
 
-# ── 通道一致性(账号隔离,2026-08-19;创始人「claude 和 claude-b 分开通道」)────────────────
-# 实撞:19:34~19:58 方案窗口已在 .claude-b 而三件套仍在 .claude-official ⇒ 两侧互不可见、
-# SendMessage 发不到,**而两边各自都"一切正常"、零告警**,是事后复盘拓扑才发现的。
-# ⇒ 判定函数只读 stdin ⛔ 引用顶层变量(#75:顶层不被抽取,set -u 下静默退出)——
-#   下面五条能在**裸 source**(不补任何桩)下跑通,本身就是那条约束的绊线。
+# ── 循环判活探针(2026-08-19 换:pgrep -f → ps 认解释器行)──────────────────────────────
+# 🔴 换因:#71 把 RELAY_DENY 由 8 扩到 21 项,写进 relay 命令行的 `Bash(laixin-lane wd-loop*)`
+#   成了别处探针的被搜对象 ⇒ 原 pgrep 在 relay 活着时**恒真**。后果两层:①看门狗死了
+#   doctor/status 照样报绿(复盘页 #20⑤ 假绿原样重现,走全新路径);②`cmd_watchdog start`
+#   首行 `wd_alive && die` ⇒ **看门狗一停就再也起不来**。三方独立读数判死(11B/dispatch 命中
+#   relay pid;relay 自测"没复现"系假阴性——它看不见自己)。
+VLA="$(mktemp -d)"; VLAF="$VLA/fn.sh"
+sed -n "/^loop_alive_filter()/,/^}/p" "$LANE" > "$VLAF"
+t "判活:真循环行必中(/bin/bash …/laixin-lane wd-loop)" bash -c '
+  source "'"$VLAF"'"; printf "/bin/bash /Users/x/.local/bin/laixin-lane wd-loop\n" | loop_alive_filter wd-loop'
+t "判活:relay 的 deny 形态 Bash(laixin-lane wd-loop*) 必不中(#71 污染)" bash -c '
+  source "'"$VLAF"'"; ! printf "/x/claude-raw --disallowedTools Bash(laixin-lane wd-loop*) Bash(git push*)\n" | loop_alive_filter wd-loop'
+t "判活:ev 与 wd 不串味" bash -c '
+  source "'"$VLAF"'"; ! printf "/bin/bash /x/laixin-lane ev-loop\n" | loop_alive_filter wd-loop'
+t "判活:grep 自身命令行不自匹配(前缀 (^|/)bash 即防线)" bash -c '
+  source "'"$VLAF"'"; ! printf "grep -qE (^|/)bash[^:]*laixin-lane wd-loop( |$)\n" | loop_alive_filter wd-loop'
+tout "判活:文案⛔ 写死探针实现(实现换了文案会骗人)" "ps 认解释器行" bash -c '
+  grep "事件总线已在跑" "'"$LANE"'"'
+rm -rf "$VLA"
+
+# ── 通道拓扑(账号隔离 + 软切换,2026-08-19;创始人「两个通道独立运行、软切换」)──────────
+# 运行形态:claude 与 claude-b 两条通道各自独立跑,一条 token 将尽时逐步停工、另一条逐步拉起。
+# ⇒ **多通道并存是正常中间态,⛔ 判成错** —— 那会把每一次切换都报成故障。
+# 🔴 真正该报的两种都无声:①两通道同时有 dispatch(违反派工唯一,两条线各自看都正常);
+#   ②孤儿席位(某通道只剩一个 dispatch/relay,跨通道消息发不到,它没有任何可通信对象)。
+#   2026-08-19 19:34~19:58 真实出现过②的雏形(方案窗口已切、三件套未切),零告警。
+# 判定只读 stdin ⛔ 引用顶层变量(#75:顶层不被抽取,set -u 下静默退出)⇒ 裸 source 即可测。
 VCH="$(mktemp -d)"; VCHF="$VCH/fn.sh"
-sed -n "/^channel_verdict()/,/^}/p" "$LANE" > "$VCHF"
-tout "通道:同目录判一致" "通道一致" bash -c '
-  source "'"$VCHF"'"; printf "1 /Users/x/.claude-b\n2 /Users/x/.claude-b\n3 /Users/x/.claude-b\n" | channel_verdict'
-tout "通道:跨目录判分裂(半切形态)" "通道分裂" bash -c '
-  source "'"$VCHF"'"; printf "1 /Users/x/.claude-b\n2 /Users/x/.claude-official\n" | channel_verdict'
-tout "通道:分裂结论须点明「静默」⛔ 只说不一致" "静默断链" bash -c '
-  source "'"$VCHF"'"; printf "1 /a\n2 /b\n" | channel_verdict'
-tout "通道:空输入报不适用 ⛔ 报一致(那是假绿)" "不适用" bash -c '
+sed -n "/^channel_verdict()/,/^}$/p" "$LANE" > "$VCHF"
+tout "通道:单通道判完整" "单通道运行" bash -c '
+  source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a relay\n3 /a outside\n" | channel_verdict'
+tout "通道:双通道各有对象=软切换正常态 ⛔ 判错" "软切换态" bash -c '
+  source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b relay\n4 /b outside\n" | channel_verdict'
+t "通道:软切换态 rc=0(⛔ 把正常切换报成故障)" bash -c '
+  source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b relay\n4 /b outside\n" | channel_verdict >/dev/null'
+tout "通道:两通道同时有 dispatch 判危险(派工唯一)" "两个派工窗口同时活着" bash -c '
+  source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b dispatch\n4 /b outside\n" | channel_verdict'
+tout "通道:孤儿席位判危险(跨通道发不到,无可通信对象)" "孤儿" bash -c '
+  source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b relay\n" | channel_verdict'
+t "通道:危险态 rc=1" bash -c '
+  source "'"$VCHF"'"; ! printf "1 /a dispatch\n2 /b dispatch\n3 /b outside\n4 /a outside\n" | channel_verdict >/dev/null'
+tout "通道:空输入报不适用 ⛔ 报健康(那是假绿)" "不适用" bash -c '
   source "'"$VCHF"'"; printf "" | channel_verdict'
-t "通道:rc 三态可分辨(0一致/1分裂/2无数据)" bash -c '
-  source "'"$VCHF"'"
-  printf "1 /a\n2 /a\n" | channel_verdict >/dev/null; [ $? -eq 0 ] || exit 1
-  printf "1 /a\n2 /b\n" | channel_verdict >/dev/null; [ $? -eq 1 ] || exit 1
-  printf "" | channel_verdict >/dev/null; [ $? -eq 2 ] || exit 1'
 tout "通道:取数走 sock 名 ⛔ pgrep(调用者看不见自己那个 claude 进程)" "CC_SOCKS_DIR" \
-  sed -n "/^session_config_dirs()/,/^}/p" "$LANE"
-tout "通道:doctor 已接入该检查(⛔ 只有函数没人调)" "channel_verdict" \
-  sed -n "/^cmd_doctor()/,/^}/p" "$LANE"
+  sed -n "/^session_seats()/,/^}$/p" "$LANE"
+tout "通道:席位识别与 outside_sessions 同口径(tty 配对 ⛔ 猜窗口名)" "pane_tty" \
+  sed -n "/^session_seats()/,/^}$/p" "$LANE"
+tout "通道:doctor 已接入(⛔ 只有函数没人调)" "channel_verdict" \
+  sed -n "/^cmd_doctor()/,/^}$/p" "$LANE"
 rm -rf "$VCH"
 
 echo

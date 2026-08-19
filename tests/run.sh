@@ -210,7 +210,7 @@ mcp_quote_check(){ local o; o="$(lane_mcp_off_flags "")"; case "$o" in *'"'*|*"'
 tout "MCP 关闭参数裸拼零引号(引号 key=codex 整份拒载根因,二批实撞)" "QUOTE_OK" mcp_quote_check
 tout "连字符名裸拼在关闭清单(codex -c 纯字符串切分,无需 TOML 引号)" "mcp_servers.douyin-creator.enabled=false" lane_mcp_off_flags ""
 rm -rf "$TMPM"
-tout "up 有 codex 启动自检(拒载秒退=脚本说成功现场没成功,回头验尸)" "codex 未在跑" sed -n "/^cmd_up/,/^}/p" "$LANE"
+tout "up 有引擎启动自检(拒载秒退=脚本说成功现场没成功,回头验尸;#60② 文案随引擎)" '\${_eng} 未在跑' sed -n "/^cmd_up/,/^}/p" "$LANE"
 tout "启动自检不自动重试(同因重试同死,只会刷屏)" "盲目重试" sed -n "/^cmd_up/,/^}/p" "$LANE"
 # #40 起判定体抽进 send_swallow_check(cmd_send 后台块只留挂点)⇒ 这两条改盯函数本体
 tout "send 有被吞检测(8s 抓屏找活动迹象)" "send 疑似被吞" sed -n "/^send_swallow_check/,/^}/p" "$LANE"
@@ -961,7 +961,7 @@ rm -rf "$V39"
 
 echo "== 7f. #40 send 送达检测附状态(⚖️ 裁定:⛔ 放宽判据 ⛔ 提高阈值,只加状态说明) =="
 T40="$(mktemp -d)"
-sed -n "/^send_swallow_check()/,/^}/p" "$LANE" > "$T40/f.sh"
+{ sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$T40/f.sh"   # #60②:检测分引擎,lane_engine 一并抽出
 cat > "$T40/stub.sh" <<'S40'
 win(){ echo "lane-$1"; }
 target(){ echo "s:lane-$1"; }
@@ -1544,6 +1544,121 @@ tout "#57e:resurrect --infra 按实测宣布 ⛔ 起完就宣布" "⛔ 当作基
 tout "#57f:review-env status 区分「已注册/目录在未注册/不在」三态" "未注册为本仓库 worktree" \
   sed -n "/^cmd_review_env/,/^}/p" "$LANE"
 tout "#57f:prompt-lint 已核行自标「适用即核」⛔ 过度声明" "各项适用即核" sed -n "/^cmd_prompt_lint/,/^}/p" "$LANE"
+
+echo "== 6y. #60② C 轨(Kimi Code CLI / K3;可选轨,每片独立 worktree) =="
+C60="$(mktemp -d)"
+# win 收 c;非法轨仍拒(函数抽出真跑,⛔ 经 cmd_up 触 ensure_session)
+C60W="$C60/win.sh"; { sed -n "/^win()/,/^}/p" "$LANE"; sed -n "/^lane_engine()/,/^}/p" "$LANE"; } > "$C60W"
+t "#60②:win 收 c → lane-c,非法轨照拒" bash -c '
+  source "'"$C60W"'"; die(){ echo "die: $*" >&2; exit 1; }
+  [ "$(win c)" = "lane-c" ] || exit 1
+  ! (win d) 2>/dev/null'
+t "#60②:引擎分派 a/b=codex c=kimi" bash -c '
+  source "'"$C60W"'"; [ "$(lane_engine a)" = codex ] && [ "$(lane_engine b)" = codex ] && [ "$(lane_engine c)" = kimi ]'
+# ⭐ fresh c 必须 --dir(机器执法):不带即拒且**窗口未动**(破坏性动作前置校验);--dir 不存在同拒
+tfail "#60②:fresh c 不带 --dir 被拒(每片独立 worktree,同 B 轨形态)" "fresh c 必须带 --dir" \
+  env LAIXIN_SESSION=lx60c-nonexist "$LANE" fresh c
+tfail "#60②:fresh c --dir 目录不存在照拒(窗口未动)" "目录不存在" \
+  env LAIXIN_SESSION=lx60c-nonexist "$LANE" fresh c --dir "$C60/没有这个worktree"
+t "#60②:fresh c 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx60c-nonexist 2>/dev/null'
+# ⭐ --with-mcp 是 codex 专属语法:C 轨拒收(静默吞掉=调用者以为生效了),且动窗口之前拒
+tfail "#60②:up c --with-mcp 被拒(codex 专属参数 ⛔ 静默吞)" "codex 专属参数" \
+  env LAIXIN_SESSION=lx60c-nonexist "$LANE" up c --with-mcp aliyun-readonly
+t "#60②:up c --with-mcp 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx60c-nonexist 2>/dev/null'
+# ⭐ 起动命令按引擎分派:kimi --auto + -m 显式钉死(防配置漂移);codex 路径原样(MCP 关闭参数仍在)
+t "#60②:cmd_up 起动命令分引擎(kimi --auto -m 钉死 / codex MCP 关闭原样)" bash -c '
+  body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
+  grep -q -- "\$KIMI_BIN\\\\\" --auto -m \$KIMI_MODEL" <<< "$body" || grep -q -- "--auto -m \$KIMI_MODEL" <<< "$body" || exit 1
+  grep -q "codex \$_mcp_off" <<< "$body"' "$LANE"
+KM="$(bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
+tout "#60②:kimi 模型默认钉 kimi-code/k3" "kimi-code/k3" echo "$KM"
+KM2="$(env LAIXIN_KIMI_MODEL=kimi-code/k4 bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
+tout "#60②:kimi 模型可覆盖(LAIXIN_KIMI_MODEL)" "kimi-code/k4" echo "$KM2"
+# ⭐ kimi 画面判据(2026-08-19 临时会话实测):在飞=月相转轮/Running;codex 词表(Explored)⛔ 量 kimi
+C60B="$C60/busy.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^lane_busy()/,/^}/p" "$LANE"; } > "$C60B"
+t "#60②:lane_busy 分引擎——kimi 月相=在飞,codex 词表不误判 kimi" bash -c '
+  source "'"$C60B"'"; SESSION=s; win_exists(){ return 0; }
+  tmux(){ echo " 🌔 · Tip: /sessions to browse"; }
+  lane_busy c || exit 1
+  tmux(){ echo "  Explored codebase"; }
+  lane_busy a || exit 1
+  ! lane_busy c'
+C60S="$C60/swallow.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^win()/,/^}/p" "$LANE"; sed -n "/^target()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$C60S"
+t "#60②:send 被吞检测分引擎——kimi 工作画面不误报,空屏照报" bash -c '
+  source "'"$C60S"'"; SESSION=s; die(){ echo "die: $*" >&2; exit 1; }; board(){ :; }
+  tmux(){ echo "● Running a command"; echo " 🌕 ·"; }
+  out="$(send_swallow_check c 2>&1)"; [ -z "$out" ] || exit 1
+  tmux(){ echo "只有提示符没有活动迹象"; }
+  out="$(send_swallow_check c 2>&1)"; grep -q "疑似被吞" <<< "$out"'
+# ⭐ ev_watch_target lane-c 可选轨语义:从未起过=静默;起过又消失=与 a/b 同级事故(告警带 kimi+--dir 处置)
+C60G="$C60/gone"; mkdir -p "$C60G/n" "$C60G/y"
+C60E="$C60/ev.sh"; { sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; } > "$C60E"
+t "#60②:lane-c 从未起过 → GONE 静默(可选轨 ⛔ 告警)" bash -c '
+  set -eo pipefail; SESSION=laixin测试不存在; EV_DIR="'"$C60G"'/n"; EV_TICK=60; EV_STALL=360
+  source "'"$C60E"'"; ev_deliver(){ printf "%s\n" "$2"; }; set +e; set +o pipefail
+  out="$(ev_watch_target lane-c)"; [ -z "$out" ] && [ ! -f "'"$C60G"'/n/lane-c.gone" ]'
+t "#60②:lane-c 起过又消失 → 告警一次(kimi 已死+fresh c --dir 处置),去重生效" bash -c '
+  set -eo pipefail; SESSION=laixin测试不存在; EV_DIR="'"$C60G"'/y"; EV_TICK=60; EV_STALL=360
+  source "'"$C60E"'"; ev_deliver(){ printf "%s\n" "$2"; }; set +e; set +o pipefail
+  echo "hash 0 0" > "'"$C60G"'/y/lane-c.state"
+  out="$(ev_watch_target lane-c)"
+  grep -q "窗口整个消失" <<< "$out" && grep -q "kimi 已死" <<< "$out" && grep -q "fresh c --dir" <<< "$out" || exit 1
+  out2="$(ev_watch_target lane-c)"; [ -z "$out2" ]'
+tout "#60②:ev-loop 监视含 lane-c" 'ev_watch_target "lane-c"' sed -n "/^ev_loop()/,/^}/p" "$LANE"
+# ⭐ 空闲告警的下一片提示对 C 轨可解析(排队节 轨=C 行;awk 参数化本就该通吃,谁写死 A|B 这条变红)
+C60T="$C60/table.md"
+cat > "$C60T" <<'EOF'
+## 排队(测试)
+| 片 | 轨 | 内容 | 发车状态 |
+|---|---|---|---|
+| **C轨前端片** | **C** | y | prompt ready |
+EOF
+C60N="$C60/nr.sh"; sed -n "/^ev_next_ready/,/^}/p" "$LANE" > "$C60N"
+t "#60②:ev_next_ready 解析 C 轨 ready 片" bash -c '
+  source "'"$C60N"'"; TABLE="'"$C60T"'"; [ "$(ev_next_ready C)" = "C轨前端片" ]'
+# ⭐ 移节核(#49)扩 C:行在轨没报嫌疑;无 C 行且 lane-c 未起=合规不误伤(可选轨)
+C60Q="$C60/kb/4-开发层"; mkdir -p "$C60Q"
+printf '| 08-19 10:00 | 派工窗口 | 无关记录 |\n' > "$C60Q/来信平台-流水线看板.md"
+cat > "$C60Q/来信平台-执行总表.md" <<'EOF'
+## 进行中(= 轨道占用)
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+| **C轨在飞片** | **C** | x | 开发中 |
+
+## 排队
+| 片 | 轨 | 前置 | 状态 |
+|---|---|---|---|
+EOF
+tout "#60②:C 行在而 lane-c 不在 → 移节嫌疑点名轨 C" "「进行中」节挂着 「C轨在飞片」(轨 C)" \
+  env LAIXIN_SESSION=bogus-c60 LAIXIN_KB="$C60/kb" "$LANE" audit-queue
+cat > "$C60Q/来信平台-执行总表.md" <<'EOF'
+## 进行中(= 轨道占用)
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+EOF
+tout "#60②:无 C 行且 lane-c 未起 → 报绿含三轨读数(可选轨不误伤)" "A 行 0 / B 行 0 / C 行 0" \
+  env LAIXIN_SESSION=bogus-c60 LAIXIN_KB="$C60/kb" "$LANE" audit-queue
+# ⭐ doctor 拓扑/watchdog status:lane-c 存在性=可选,不起是 ℹ️/未起 ⛔ wrn
+tout "#60②:doctor 拓扑节报 lane-c 可选轨(两态都含「可选轨」)" "可选轨" "$LANE" doctor
+tout "#60②:watchdog status 报 lane-c 未起=可选 ⛔ 与 a/b 同文案" "lane-c:未起(可选轨" \
+  env LAIXIN_SESSION=bogus-c60 "$LANE" watchdog status
+t "#60②:doctor lane-c 未起 ⛔ 计入 warn(a/b 缺席才是 wrn)" bash -c '
+  body="$(sed -n "/^cmd_doctor()/,/^cmd_stats/p" "$0")"
+  grep -q "ℹ️ lane-c 未起" <<< "$body"' "$LANE"
+# ⭐ 看门狗「正常等待」判定:C 轨起了才算数(在跑且空闲要被过问,没起不挡)
+t "#60②:wd_loop 正常等待判定含 lane-c 条件(起了才算数)" bash -c '
+  body="$(sed -n "/^wd_loop()/,/^}/p" "$0")"
+  grep -q "win_exists \"lane-c\" || lane_busy c" <<< "$body" || exit 1
+  grep -q "lane-c" <<< "$(grep "idle=" <<< "$body")"' "$LANE"
+# ⭐ next-worktree 扩 C(零命中管道击穿绊线:B 有存量掩蔽,C 首用必然零命中——修前函数中途死,C 行根本打不出)
+tout "#60②:next-worktree 给出 C 轨下一号(零命中 ⛔ 经 pipefail 击穿函数)" "C 轨下一可用" "$LANE" next-worktree
+tout "#60②:next-worktree B 轨行照旧" "B 轨下一可用" "$LANE" next-worktree
+# ⭐ cdp_port_lane c 落兜底段(9233 起),不撞 a/b/dispatch,低于 verify 段
+C60P="$C60/port.sh"; sed -n "/^cdp_port_lane/,/^}/p" "$LANE" > "$C60P"
+t "#60②:cdp_port_lane c 落 9233-9292 兜底段(不撞 9230/9231/9232,低于 9300)" bash -c '
+  source "'"$C60P"'"; p="$(cdp_port_lane c)"
+  [ "$p" -ge 9233 ] && [ "$p" -lt 9293 ]'
+rm -rf "$C60"
 
 echo "== 6z. #60① verify 引擎化(默认 codex;claude 路径原样保留) =="
 # 引擎默认与回切(与 4b VERIFY_MODEL 同款 eval 单行赋值)

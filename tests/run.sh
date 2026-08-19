@@ -525,6 +525,56 @@ t "RELAY_CDP_PORT 落在全部派生值域之外(值域判据 ⛔ 占用判据)"
   [ "$rp" -lt "$vb" ] || exit 1'
 rm -rf "$R32"
 
+echo "== 6m. merge-guard ref级合并主树同步闸(#24;fixture 仓真造失配态) =="
+# fixture **真复现**三十一任那个失配态:主树 checkout 在 main 上时用 update-ref 移 main 指针
+# ⇒ HEAD 走了、index/工作树留在原地。⛔ 只做静态 grep:这条的价值全在「判得对不对」。
+M24="$(mktemp -d)"; R24="$M24/repo"
+git init -q -b main "$R24"; git -C "$R24" config user.email t@t; git -C "$R24" config user.name t
+printf 'A\n' > "$R24/f.txt"; git -C "$R24" add f.txt; git -C "$R24" commit -qm A
+A24="$(git -C "$R24" rev-parse HEAD)"
+git -C "$R24" checkout -q -b feat; printf 'B\n' > "$R24/f.txt"; git -C "$R24" commit -qam B
+B24="$(git -C "$R24" rev-parse HEAD)"
+git -C "$R24" checkout -q main                      # 主树停在 main(纪律要求的「释放主树回 main」)
+G24=(env LAIXIN_REPO="$R24")
+# ⭐ 绊线①:主树不在被移动的分支上 ⇒ 不命中(此前从不暴露,正因为条件从不成立)
+git -C "$R24" checkout -q feat
+tout "主树不在被移动分支 ⇒ 不命中(#24)" "✅ 不命中" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main
+git -C "$R24" checkout -q main
+# —— 造失配态:ref 级移动 main 指针,主树正 checkout 在 main 上 ——
+git -C "$R24" update-ref refs/heads/main "$B24"
+# ⭐ 绊线②:命中 + 三件齐 ⇒ 给出 reset --hard 建议
+tout "命中并识别为主树被甩下(#24)" "主树正 checkout 在 main 上" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main --old "$A24"
+tout "三件齐给出 reset --hard 建议(#24)" "三件齐" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main --old "$A24"
+tout "① 反向差异方向核过(index 树==合并前旧树)" "① 反向差异方向 …… ✅" \
+  "${G24[@]}" "$LANE" merge-guard "$B24" --ref main --old "$A24"
+t "三件齐时退 0(#24)" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main --old "$A24"
+# ⭐ 绊线③(本条最要紧的一条):**工具 ⛔ 自己跑 reset --hard**——有真实工作被丢的风险,
+#   它只做判断与提示。跑完之后失配态必须**原样还在**(工作树内容仍是旧的 A)。
+t "⛔ 自动跑 reset --hard(跑完失配态原样还在,#24)" bash -c \
+  '[ "$(cat "'"$R24"'/f.txt")" = "A" ]'
+# ⭐ 绊线④:③ 无未跟踪 不成立 ⇒ 停手排查 + ⛔ 给 reset 建议(未跟踪文件会被 reset --hard 留着,
+#   但它是「归属未认领」的信号,本闸要求先认领)
+printf 'x\n' > "$R24/未跟踪.txt"
+tfail "有未跟踪文件 ⇒ 停手排查(#24)" "停手排查" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main --old "$A24"
+t "停手时 ⛔ 给出 reset --hard 建议(#24)" bash -c \
+  '! grep -q "reset --hard '"$B24"'" <<< "$(env LAIXIN_REPO="'"$R24"'" "'"$LANE"'" merge-guard "'"$B24"'" --ref main --old "'"$A24"'" 2>&1)"'
+rm -f "$R24/未跟踪.txt"
+# ⭐ 绊线⑤:② 工作区与 index 一致 不成立(有人正在改)⇒ 停手,reset --hard 会直接丢掉它
+printf 'A-被人改了\n' > "$R24/f.txt"
+tfail "有未暂存改动 ⇒ 停手排查(#24)" "停手排查" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main --old "$A24"
+git -C "$R24" checkout -q -- f.txt 2>/dev/null || printf 'A\n' > "$R24/f.txt"
+# ⭐ 绊线⑥(三约束②:判不了要停手,⛔ 降级成放行):拿不到合并前旧值 ⇒ ① 判不了 ⇒ 停手,
+#   ⛔ 因为「没核出问题」就当成核过了
+rm -rf "$R24/.git/logs"
+tfail "拿不到旧值时判不了并停手 ⛔ 放行(#24)" "判不了" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main
+# ⭐ 绊线⑦(冒烟当场撞出的误报):**本来就同步**的干净主树不许被判「停手排查」——
+#   失配态的定义是 HEAD 新而 index 旧;index==HEAD 就是没被甩下。误报会随「合并后老实来跑一次」
+#   这个想鼓励的行为增长(三约束③)。
+git -C "$R24" reset -q --hard "$B24"
+tout "已同步的主树报零动作 ⛔ 误报停手(#24)" "没有被甩下" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main
+t "已同步时退 0(#24)" "${G24[@]}" "$LANE" merge-guard "$B24" --ref main
+rm -rf "$M24"
+
 echo "== 6l. kb-commit 追加条目撞号自检(#9;fixture 仓,零真实副作用) =="
 D9="$(mktemp -d)"; mkdir -p "$D9/v/wiki"
 git init -q -b main "$D9/v"; git -C "$D9/v" config user.email t@t; git -C "$D9/v" config user.name t

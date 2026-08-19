@@ -347,6 +347,10 @@ pkill -f "remote-debugging-port=$PORT"
 
 `vdown`/`down`/`fresh`/`halt` 回收窗口时会**机器兜底清扫同端口的 headless**(`cdp_sweep`)——兜底存在不豁免第 4 步,自己关是本分。
 
+⚠️ **本机没有 `setsid`——想让进程脱离会话时 ⛔ 写 `setsid nohup …`,用 `nohup … &` 加 `disown`**(2026-08-19 dispatch 第三十三任实撞报修,中继 relay 第二任实测 `command -v setsid` 零输出后落卡)。`setsid` 是 Linux util-linux 的命令,macOS 不带 ⇒ **失败形态是「整条命令 exit 1、根本没跑」,不是「进程起来了又死了」**,而排查时人会一路往 Chrome/端口/profile 上找。⭐ **这是预防型落卡**:全库与全部技能卡此前对 `setsid` **零命中**(即没有人被它坑过的记录),立它的理由不是纠错,是它属于**「本机没有、但读起来完全合理」**那一类——任何人想让进程活过当前会话都会自然想到它,而它的失败方式有误导性。**成本一行,收益是省掉一次找错方向的排查。**
+
+📌 **相关但不同的一件事(⛔ 混为一谈)**:lane 侧「后台进程活不过命令会话」是**环境级进程回收**,与 `setsid` 存不存在无关——已裁定走 `fresh` 时预起常驻 headless(11B #42;该修法落地时**宪法头第 12 条那段必须同轮改**,否则开发方收尾 `pkill` 会打掉派工方的常驻实例)。上面这条治的是**你写的命令没跑起来**,#42 治的是**跑起来了但活不过命令边界**。
+
 细节疑难查 browser-harness 官方 interaction-skills/connection.md;⛔ 不设 BU_NAME 单给 BU_CDP_URL(daemon 按名单例,会命中别人的默认 daemon——本节案发机理)。
 
 ## 已知边界

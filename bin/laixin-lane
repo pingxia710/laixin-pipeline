@@ -2212,7 +2212,10 @@ loop_stale(){  # <循环名 ev-loop|wd-loop> → 0=在跑的循环比脚本旧(�
   # 从未生效——#1 自己注明「下次重启起效」而重启从未发生。常驻循环的版本升级需要显式换代,
   # 本函数让 status/doctor 看得见「代龄落后」,不再靠人记得。etime 换算抽在 etime_secs。
   local pid et up script_e
-  pid="$(pgrep -f "laixin-lane $1" 2>/dev/null | head -1)"; [ -n "$pid" ] || return 1
+  # ⛔ pgrep -f "laixin-lane $1" | head -1(2026-08-19 晚,relay 第十四任核出、方案窗口第十四任修):宽模式会命中 relay
+  #   的 deny 形态命令行,head -1 按 pid 升序取到谁全凭运气——取错(量成 relay 的年龄)与取对在输出上同形。
+  #   改走 loop_pids(与判活同判据);同族第三处 :355 的 CDP 端口 pkill 模式含端口号前缀,未见误伤,留待 11B 复核。
+  pid="$(loop_pids "$1" | head -1)"; [ -n "$pid" ] || return 1
   et="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"; [ -n "$et" ] || return 1
   up="$(etime_secs "$et")"
   script_e="$(stat -L -f %m "$0" 2>/dev/null)"; [ -n "$script_e" ] || return 1   # -L 必须:$0 经 ~/.local/bin 软链调用,不带 -L 取的是链自身 8月13 的 mtime,永远判不出新

@@ -2364,6 +2364,18 @@ t "边界:#40 的判据⛔ 被顺手放宽(裁定=⛔ 放宽判据)" bash -c '
 tout "空闲告警:首选项改为先 peek,⛔ 直接 fresh+send" "⛔ 直接 fresh+send" bash -c '
   grep "分钟无变化(空闲或卡住)" "'"$LANE"'"'
 
+
+# ── 裸 $name 紧跟非 ASCII(2026-08-20 00:32 实撞:ev-loop M1 升级提醒分支首次走到即 `_ps�: unbound variable` 连崩,
+#    看门狗每分钟重起=事件总线实瘫;bash 3.2 在 zh_CN/en_US.UTF-8 下把全角字符首字节卷进变量名,C locale 反而正常)──
+t "locale 机理:bash 3.2 UTF-8 locale 下裸 \$v」 被吞成变量名(记录现象,失败说明 bash 升级后本规可撤)" bash -c '
+  ! LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 bash -c "set -u; v=x; echo \"\$v」\"" >/dev/null 2>&1'
+t "locale 机理:花括号 \${v}」 在同一 locale 下正常" bash -c '
+  LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 bash -c "set -u; v=x; echo \"\${v}」\"" >/dev/null 2>&1'
+t "全文件:⛔ 裸 \$name 紧跟非 ASCII 字符(一律写 \${name};冷路径首跑即炸且与 locale 相关)" python3 -c '
+import re,sys
+s=open(sys.argv[1],encoding="utf-8").read()
+hits=[(i,m.group(0)) for i,l in enumerate(s.split("\n"),1) for m in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)(?=[^\x00-\x7f])",l)]
+print(hits); sys.exit(1 if hits else 0)' "$LANE"
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

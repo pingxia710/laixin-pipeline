@@ -1485,7 +1485,7 @@ $(head -5 <<< "$dirty")"
     [ -n "$py" ] || continue
     [ -f "$rel_home/$(basename "$py")" ] || missing="$missing $(basename "$py")"
   done <<< "$(git -C "$repo" ls-tree --name-only "HEAD" -- bin/ | grep '\.py$' || true)"
-  [ -z "$missing" ] || { rm -rf "$rel_home"; die "⛔ 发布目录 helper 差集非空:$missing——拒绝换链(#59)"; }
+  [ -z "$missing" ] || { rm -rf "$rel_home"; die "⛔ 发布目录 helper 差集非空:${missing}——拒绝换链(#59)"; }
   [ ! -d "$lbin" ] || die "⛔ $lbin 解析为目录——mv 会移进去而非替换,人工处理"
   mkdir -p "$(dirname "$lbin")" || die "建软链目录失败"
   local old ltmp; old="$(readlink "$lbin" 2>/dev/null || echo "(无/非软链)")"
@@ -2094,7 +2094,10 @@ ev_loop(){
           ev_log "M1 认领销账:$_ps(verify 窗口已见)"; continue
         fi
         if [ "$_pst" = "P" ] && [ $(( _now - _pe )) -ge "$EV_ACK" ]; then
-          board "事件总线" "⚠️ 升级提醒(M1):交付「$_ps」投递 $(( (_now-_pe)/60 )) 分钟无认领——「投了没人接」与「没投」不得同形;dispatch 在处理请看板留痕,断窗则报创始人开窗 ⛔ 不自动拉起"
+          # 🔴 ${_ps} 花括号不能省(2026-08-20 00:32 实撞,ev-loop 连崩两拍进 crashloop,看门狗每分钟重起):bash 3.2 在 zh_CN/en_US.UTF-8
+      #   下把裸 $var 紧跟的全角字符首字节卷进变量名 ⇒ set -u 报 `_ps�: unbound variable` 整条循环退出;本分支是冷路径(投递 ≥EV_ACK
+      #   无认领),上线后首次走到才炸——与 review-env 那处 ${REVIEW_DIR} 同族;绊线已全文件扫「裸 $name 紧跟非 ASCII」为零。
+      board "事件总线" "⚠️ 升级提醒(M1):交付「${_ps}」投递 $(( (_now-_pe)/60 )) 分钟无认领——「投了没人接」与「没投」不得同形;dispatch 在处理请看板留痕,断窗则报创始人开窗 ⛔ 不自动拉起"
           ev_log "M1 升级提醒:$_ps"
           printf '%s|%s|E\n' "$_pe" "$_ps" >> "$EV_PENDING.new"
         else

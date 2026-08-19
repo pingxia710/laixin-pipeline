@@ -216,6 +216,75 @@ tout "启动自检不自动重试(同因重试同死,只会刷屏)" "盲目重�
 tout "send 有被吞检测(8s 抓屏找活动迹象)" "send 疑似被吞" sed -n "/^send_swallow_check/,/^}/p" "$LANE"
 tout "send 被吞检测不自动重发" "盲目重发" sed -n "/^send_swallow_check/,/^}/p" "$LANE"
 
+# ── #68:kimi 起窗卡在 `Trust this folder?`(创始人 2026-08-19 令「kimi 窗口需要修」)────────────
+# 失败样本:`fresh c --dir ~/来信平台-c1` 后 lane-c 卡死在 kimi 信任对话框——两个选项分别是
+# 「Trust this folder(启用 project MCP)」与「Don't trust(**说明逐字=Exit Kimi Code**)」,
+# **默认高亮在 Don't trust**,Esc 亦是 exit ⇒ 三条路全有问题,无人值守时必然卡死。
+# ⛔ 修法走签名库:trust 类对话框「只告警绝不动键」是 2026-08-13 Esc=杀进程实撞后的硬规则,
+#   **守卫的现有行为是对的** ⇒ 唯一修法=让对话框根本不出现(起窗前预写信任记录)。
+TMPK="$(mktemp -d)"
+{ sed -n "/^kimi_wd_key/,/^}/p" "$LANE"; sed -n "/^kimi_project_mcp/,/^}/p" "$LANE";
+  sed -n "/^kimi_trust_prewrite/,/^}/p" "$LANE";
+  echo 'die(){ echo "laixin-lane: $*" >&2; exit 1; }'; echo 'board(){ :; }'; } > "$TMPK/fn.sh"
+source "$TMPK/fn.sh"
+# ⭐ 绊线①②(回退检测,本件的立身之本):判据取自 kimi 二进制里的 encodeWorkDirKey 源码,拿**两个
+#   真实存在的记录**逐字对——谁把 slug 规则或 hash 算法改了(md5/sha1/带换行/不去首尾横线),本行立刻红。
+#   ⚠️ 这两个期望值 ⛔ 由本实现算出来再回填(那是自证);它们是 kimi 自己写在 ~/.kimi-code 里的文件名。
+tout "#68 wd key 命中真实样本一(basename 含中文 ⇒ 塌成 - 后被清除,只剩 c1)" "wd_c1_a237095d359c" \
+  kimi_wd_key "/Users/pingxia/来信平台-c1"
+tout "#68 wd key 命中真实样本二(纯 ASCII basename)" "wd_pingxia_013dee86007c" \
+  kimi_wd_key "/Users/pingxia"
+# ⭐ 绊线③:尾斜杠归一(JS 侧 replace(/\/+$/,"") 在 hash **之前**)——不归一会算出另一个 hash,
+#   表现为「预写了但对话框照出」,而那与「没预写」在现场完全同形。
+tout "#68 尾斜杠归一后与无尾斜杠同键" "wd_c1_a237095d359c" kimi_wd_key "/Users/pingxia/来信平台-c1/"
+# ⭐ 绊线④:slug 全被清空时兜底 "workspace"(源码逐字),⛔ 产出 `wd__<hash>` 这种半截名
+tout "#68 纯中文 basename ⇒ slug 兜底 workspace(⛔ 空 slug)" "wd_workspace_" kimi_wd_key "/Users/pingxia/来信平台"
+# ⭐ 绊线⑤⑥⑦(安全判据本体):trust 语义逐字=「启用 project MCP servers」,而 project 级 stdio 条目
+#   **会话启动即起进程** ⇒ 无条件预写=替使用者按掉一个安全决定。两处 kimi 真读的路径都要查。
+mkdir -p "$TMPK/clean" "$TMPK/local/.kimi-code" "$TMPK/rootrepo/sub"
+: > "$TMPK/local/.kimi-code/mcp.json"
+: > "$TMPK/rootrepo/.mcp.json"; mkdir -p "$TMPK/rootrepo/.git"
+t "#68 干净目录判为无 project MCP 配置" bash -c \
+  '[ -z "$(kimi_project_mcp "'"$TMPK"'/clean")" ]'
+tout "#68 认 project-local <dir>/.kimi-code/mcp.json" "/.kimi-code/mcp.json" kimi_project_mcp "$TMPK/local"
+# ⭐ 只查 dir 自身会漏掉 project-root:worktree 的 .git 是文件、项目根常在上层,漏查=判据说「没有」
+#   而 kimi 那边其实有 ⇒ 失效方向指向「悄悄替人 trust」,正是本判据要防的。
+tout "#68 认上层项目根 .mcp.json(⛔ 只查 dir 自身)" "/rootrepo/.mcp.json" kimi_project_mcp "$TMPK/rootrepo/sub"
+# ⭐ 绊线⑧:干净目录 ⇒ 预写成功,文件名与内容都对(内容与 kimi 自己写的逐字同构:紧凑 JSON、root 在前)
+export KIMI_TRUST_DIR="$TMPK/trust"
+t "#68 干净目录预写成功且文件名=wd key" bash -c \
+  'source "'"$TMPK"'/fn.sh"; KIMI_TRUST_DIR="'"$TMPK"'/trust" kimi_trust_prewrite "'"$TMPK"'/clean" &&
+   [ -f "'"$TMPK"'/trust/$(kimi_wd_key "'"$TMPK"'/clean")" ]'
+t "#68 预写内容含 root 且是紧凑 JSON(与 kimi 自写同构)" bash -c \
+  'source "'"$TMPK"'/fn.sh";
+   grep -q "^{\"root\":\"'"$TMPK"'/clean\",\"trustedAt\":[0-9]\{1,\}}$" \
+     "'"$TMPK"'/trust/$(kimi_wd_key "'"$TMPK"'/clean")"'
+# ⭐ 绊线⑨(安全侧正向):有 project MCP 配置 ⇒ **拒绝并退非零** ⛔ 自动 trust
+tfail "#68 目录有 project MCP 配置 ⇒ 拒绝预写并退非零" "拒绝自动信任" \
+  bash -c 'source "'"$TMPK"'/fn.sh"; KIMI_TRUST_DIR="'"$TMPK"'/trust" kimi_trust_prewrite "'"$TMPK"'/local"'
+t "#68 被拒时确实零写盘(⛔ 先写再报)" bash -c \
+  'source "'"$TMPK"'/fn.sh"; ! [ -f "'"$TMPK"'/trust/$(kimi_wd_key "'"$TMPK"'/local")" ]'
+# ⭐ 绊线⑩:幂等——已有记录不重写(重写只刷新 trustedAt,是无谓写盘且抹掉「何时被信任的」这条事实)
+t "#68 已有记录时幂等不重写(trustedAt 不变)" bash -c \
+  'source "'"$TMPK"'/fn.sh";
+   f="'"$TMPK"'/trust/$(kimi_wd_key "'"$TMPK"'/clean")"; before="$(cat "$f")";
+   KIMI_TRUST_DIR="'"$TMPK"'/trust" kimi_trust_prewrite "'"$TMPK"'/clean";
+   [ "$before" = "$(cat "$f")" ]'
+# ⭐ 绊线⑪(判据 ⛔ 一次性):每次起窗都重跑——仓将来可能新增 MCP 配置,而已有信任记录会让它无声生效。
+t "#68 已有信任记录但目录新增了 MCP 配置 ⇒ 仍然拒绝(判据 ⛔ 一次性)" bash -c \
+  'mkdir -p "'"$TMPK"'/clean/.kimi-code"; : > "'"$TMPK"'/clean/.kimi-code/mcp.json";
+   ! ( source "'"$TMPK"'/fn.sh"; KIMI_TRUST_DIR="'"$TMPK"'/trust" kimi_trust_prewrite "'"$TMPK"'/clean" ) 2>/dev/null;
+   rm -rf "'"$TMPK"'/clean/.kimi-code"'
+# ⭐ 绊线⑫(位置,源码级):预写必须在 **ensure_session/new-window 之前** —— 拒绝时 ⛔ 留下半个死窗口
+#   (#60① 引擎校验前置那一课);判据取「kimi_trust_prewrite 行号 < ensure_session 行号」。
+t "#68 预写调用在动窗口之前(拒绝时 ⛔ 留下半个死窗口)" bash -c \
+  'b="$(sed -n "/^cmd_up/,/^}/p" "'"$LANE"'")";
+   p="$(grep -n "kimi_trust_prewrite" <<< "$b" | head -1 | cut -d: -f1)";
+   e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)";
+   [ -n "$p" ] && [ -n "$e" ] && [ "$p" -lt "$e" ]'
+unset KIMI_TRUST_DIR
+rm -rf "$TMPK"
+
 echo "== 6g. kb-commit 台账钩+facts-fresh(2026-08-18 复盘页#13/#14:挂在人一定会做的动作上的机器检查) =="
 TMPG="$(mktemp -d)"
 # vault=git 仓库兼 fixture 知识库(总表/看板都在里面,KB/TABLE/BOARD 全指进来)

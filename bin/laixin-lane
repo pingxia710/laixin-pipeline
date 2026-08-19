@@ -2,6 +2,7 @@
 # laixin-lane — laixin开发流水线的信使脚本(tmux 编排多轨 worker + 看板自动记录)
 # 用法:
 #   laixin-lane up <a|b|c> [--dir DIR]   确保该轨窗口存在并启动引擎(a/b=codex;c=kimi/K3 前端位,#60②;默认 DIR=~/来信平台)
+#                                    C 轨起窗前预写 kimi 信任记录免 trust 对话框(#68);该目录有 project 级 MCP 配置则拒绝起窗
 #   laixin-lane fresh <a|b|c> [--dir DIR]  重启该轨(down+up,全新上下文;每片派工前用;**c 必须 --dir**=每片独立 worktree)
 #   laixin-lane send <a|b|c> <文本>  向该轨输入框粘贴文本并回车(多行走 stdin)
 #   laixin-lane peek <a|b|c> [N]     看该轨最近 N 行输出(默认 60)
@@ -139,6 +140,81 @@ lane_engine(){  # <轨> → 引擎名(#60②):a/b=codex;c=kimi(K3 前端位)。�
   case "$1" in c) echo kimi ;; *) echo codex ;; esac
 }
 
+# ── #68:kimi 起窗卡在 `Trust this folder?`(创始人 2026-08-19 17:1x 令「kimi 窗口需要修」)──────
+# 失败样本(委派方真环境实撞):`fresh c --dir ~/来信平台-c1` 后 lane-c 卡在 kimi 信任对话框,
+# 两选项 `Trust this folder`(启用 project MCP)/ `Don't trust`(说明逐字=**Exit Kimi Code**),
+# **默认高亮在 Don't trust**,Esc 亦是 exit ⇒ 三条路全有问题,无人值守时 lane-c 必然卡死。
+# ⛔ **修法走签名库**:SKILL.md:237 与本文件 dialog_classify 逐字「trust 对话框与未知对话框只告警
+#   绝不动键」(trust 上 Esc=杀进程,2026-08-13 实撞);kimi 签名不匹配 ⇒ 落 alert:unknown-dialog,
+#   同样不动键。**守卫的现有行为是对的,⛔ 为 C 轨放宽它** ⇒ 唯一修法=让对话框根本不出现。
+# 判据**取自 kimi 二进制里的源码**(0.37.2 `strings` 提取 `encodeWorkDirKey`/`slugifyWorkDirName`
+# 逐字实现)⛔ 由样本反推猜:
+#   key = "wd_" + slug(basename(去尾斜杠的路径)) + "_" + sha256(该路径).hex[:12]
+#   slug: toLowerCase → /[^a-z0-9._-]+/ 换 "-" → 去首尾 "-" → 截 40 → 再去首尾 "-";
+#         空/"."/".." → "workspace"
+# 两个真实样本逐字复核通过:`/Users/pingxia/来信平台-c1` → wd_c1_a237095d359c(basename 含中文,
+# 整段非 ASCII 塌成一个 "-" 后被首尾清除,故只剩 c1);`/Users/pingxia` → wd_pingxia_013dee86007c。
+# ⚠️ 失效方向:slug 算错只会让文件名对不上 kimi 的查找键 ⇒ **退回今天的行为**(对话框照出、守卫照告警),
+#   ⛔ 可能给错误的目录发信任——哈希是对**完整路径**取的,张冠李戴在结构上不可能。
+KIMI_TRUST_DIR="${LAIXIN_KIMI_TRUST_DIR:-$HOME/.kimi-code/workspace-trust}"
+
+kimi_wd_key(){   # <绝对路径> → kimi 的 workspace-trust 记录名(纯函数,可独测)
+  # LC_ALL=C:按字节判类,与 JS 侧「非 [a-z0-9._-] 一律塌成 -」在本用例上等价且确定
+  # (CJK 无大小写映射,ASCII 小写化两侧一致);slug 完成后是纯 ASCII,cut -c 即字符数。
+  local p="$1" base slug hash
+  p="${p%"${p##*[!/]}"}"                       # 去尾部斜杠(JS: replace(/\/+$/,""));全 "/" 时留空
+  base="${p##*/}"
+  slug="$(LC_ALL=C printf '%s' "$base" | LC_ALL=C tr 'A-Z' 'a-z' \
+          | LC_ALL=C sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' \
+          | LC_ALL=C cut -c1-40 | LC_ALL=C sed -E 's/^-+//; s/-+$//')"
+  case "$slug" in ""|"."|"..") slug="workspace" ;; esac
+  hash="$(printf '%s' "$p" | shasum -a 256 | cut -c1-12)"
+  printf 'wd_%s_%s\n' "$slug" "$hash"
+}
+
+kimi_project_mcp(){  # <绝对路径> → 逐行打印**存在的** project 级 MCP 配置路径;零输出=没有
+  # 路径同样取自 kimi 源码 resolveMcpJsonPaths:project-root `<最近 .git 祖先>/.mcp.json`
+  # 与 project-local `<cwd>/.kimi-code/mcp.json`(user-global `~/.kimi-code/mcp.json` 不是
+  # **按目录**的决定,不在本判据射程)。⛔ 只查 `<dir>/.mcp.json`:worktree 的 .git 是文件,
+  # 项目根可能在上层,漏查=判据说「没有」而 kimi 那边其实有。
+  local d="$1" root=""
+  [ -f "$d/.kimi-code/mcp.json" ] && echo "$d/.kimi-code/mcp.json"
+  root="$d"
+  while :; do
+    if [ -e "$root/.git" ]; then break; fi
+    case "$root" in ""|"/") root=""; break ;; esac
+    root="$(dirname "$root")"
+  done
+  [ -n "$root" ] && [ -f "$root/.mcp.json" ] && echo "$root/.mcp.json"
+  return 0
+}
+
+kimi_trust_prewrite(){  # <绝对路径> —— 起窗**之前**预写信任记录;有 project MCP 配置则拒绝并告警
+  # ⚠️ **⛔ 无条件预写**:trust 的语义逐字就是「启用 project MCP servers」,而 project 级 stdio
+  #   条目在会话启动时**直接起进程** ⇒ 无条件预写 = 替使用者把一个安全决定按掉。
+  # ⚠️ 该判据**每次起窗都跑 ⛔ 一次性**:仓将来可能新增 MCP 配置,而已有信任记录会让它无声生效。
+  local d="$1" key f mcp
+  mcp="$(kimi_project_mcp "$d" || true)"
+  if [ -n "$mcp" ]; then
+    board "lane-c" "⛔ 拒绝预写 kimi 信任记录:$d 有 project 级 MCP 配置($(echo "$mcp" | tr '\n' ' '))"
+    die "⛔ 拒绝自动信任 $d:发现 project 级 MCP 配置——
+$(echo "$mcp" | sed 's/^/     /')
+   kimi 的 trust 语义逐字是「启用 project MCP servers」,而 project 级 stdio 条目**会话启动即起进程**
+   ⇒ 自动预写等于替你按掉一个安全决定(#68 判据,⛔ 无条件预写)。
+   要起 C 轨:先人工确认这些 MCP 条目可信,再手动在 kimi 里选 Trust(或删掉该配置)。"
+  fi
+  key="$(kimi_wd_key "$d")"
+  f="$KIMI_TRUST_DIR/$key"
+  # 幂等:已有记录不重写——重写只会刷新 trustedAt,是无谓写盘且抹掉「何时被信任的」这条事实
+  if [ -f "$f" ]; then return 0; fi
+  mkdir -p "$KIMI_TRUST_DIR" && chmod 700 "$KIMI_TRUST_DIR" 2>/dev/null || true
+  # 内容与 kimi 自己写的逐字同构(真实样本 67 字节实测:紧凑 JSON、root 在前、**无尾换行**)
+  printf '{"root":"%s","trustedAt":%s}' "$d" "$(python3 -c 'import time;print(int(time.time()*1000))')" > "$f"
+  chmod 600 "$f" 2>/dev/null || true
+  board "lane-c" "预写 kimi 信任记录 $key(#68:⛔ 让 trust 对话框出现——守卫对 trust 类只告警不动键)"
+  return 0
+}
+
 ensure_session() {
   tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n "hub" -c "$HOME"
 }
@@ -165,6 +241,12 @@ cmd_up() {
   # 生效了(工具自述与行为不同步族);动窗口之前拒,⛔ 起了窗再报
   if [ "$(lane_engine "$lane")" = "kimi" ] && [ -n "$mcp_keep" ]; then
     die "--with-mcp 是 codex 专属参数,C 轨(kimi)不接受——kimi 的 MCP 取舍在其自家 config"
+  fi
+  # #68:kimi 的 trust 对话框预防——**动窗口之前**(同 #60① 引擎校验一课:拒绝时 ⛔ 留下半个死窗口)。
+  # 路径取物理绝对路径(pwd -P):kimi 哈希的是它自己的 process.cwd(),POSIX 上那是解过符号链接的
+  # 物理路径 ⇒ 拿字面 --dir 值去算会在有软链的路径上静默算错键(算错=对话框照出,不是错误信任)。
+  if [ "$(lane_engine "$lane")" = "kimi" ]; then
+    kimi_trust_prewrite "$(cd "$dir" && pwd -P)"
   fi
   ensure_session
   if has_window "$lane"; then

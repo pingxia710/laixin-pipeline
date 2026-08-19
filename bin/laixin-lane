@@ -10,7 +10,9 @@
 #   laixin-lane attach [a|b]         进入会话观看(人用;Ctrl-b d 退出)
 #   laixin-lane down <a|b>           关闭该轨窗口
 #   laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径 [--to 派工窗口名]
-#                                    起一次性验收窗口(全新 claude,验完即弃);派工窗口用
+#                                    起一次性验收窗口(验完即弃);派工窗口用。引擎=LAIXIN_VERIFY_ENGINE
+#                                    (codex|claude,默认 codex,#60①):codex 回执走落盘契约(末行
+#                                    【验收回执】,events 投递),claude 路径原样保留(SendMessage 回执)
 #   laixin-lane vdown <片名>         回收该验收窗口(收到回执后调,与 worktree 回收同理)
 #   laixin-lane vlist                列出在跑的验收窗口
 #   laixin-lane dispatch [--fresh]   起(或换新)托管的派工窗口;看门狗要靠它才能重生流水线
@@ -59,6 +61,11 @@ BOARD="${LAIXIN_BOARD:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开�
 # 谁在方案窗口 /model 换模型并"保存为默认",都不该静默改变验收/派工的模型与成本(实撞:切 Fable 5 后
 # 下一个验收窗口将以双倍价格起)。验收=核查+测试+走查,Opus 5(agentic coding 主力档)是对的档位。
 VERIFY_MODEL="${LAIXIN_VERIFY_MODEL:-claude-opus-5}"
+# #60①(2026-08-19 创始人拍板,临时形态):验收窗口引擎化,**默认 codex**——验收烧 GPT 额度不烧
+# Claude(Claude 周额度告急+Codex 当 worker 已验证数百片纪律,风险序 worker<派工<验收 里它资历最深)。
+# claude 路径**原样保留**零行为变化,LAIXIN_VERIFY_ENGINE=claude 即回切;是否回切归创始人。
+# VERIFY_MODEL 只在 claude 引擎下参与起窗(doctor §6 的显示同步适配,⛔ 旧文案误导)。
+VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-codex}"
 DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
 # 中继窗口(裁定缺口路由)同档钉死(2026-08-19 创始人直裁,#32):中继做的是**核库快裁**——
 # 要的是可靠核查不是极限推理,与 dispatch/verify 同档。⛔ 继承 /model:中继窗口此前由创始人
@@ -1359,11 +1366,20 @@ cmd_doctor() {
   else bad "主树不是 git 仓库:$DEFAULT_DIR"; fi
 
   echo "== 6. 模型钉死(流水线不继承 /model 副作用) =="
-  ok "验收窗口钉:$VERIFY_MODEL  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_VERIFY_MODEL/LAIXIN_DISPATCH_MODEL)"
+  # #60①:引擎=codex 时 VERIFY_MODEL 不参与起窗——照旧显示「验收窗口钉:claude-…」会误导读者
+  # 以为验收还在烧 Claude(#27 工具自述与实际防线不同步族,⛔ 让旧文案误导);haiku/ctx 分母
+  # 冲突检查同步只看还真在用 claude 的档位。claude 引擎下两行输出与旧版逐字一致。
+  if [ "$VERIFY_ENGINE" = "claude" ]; then
+    ok "验收窗口钉:$VERIFY_MODEL  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_VERIFY_MODEL/LAIXIN_DISPATCH_MODEL)"
+  else
+    ok "验收引擎:codex(#60① 临时形态,VERIFY_MODEL 不适用;回切:LAIXIN_VERIFY_ENGINE=claude)  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_DISPATCH_MODEL)"
+  fi
   local gmodel
   gmodel="$(python3 -c "import json;print(json.load(open('$HOME/.claude-official/settings.json')).get('model','未设'))" 2>/dev/null || echo 未知)"
   echo "  ℹ️ claude 全局默认:$gmodel(只影响方案窗口/手开窗口,不影响流水线)"
-  case "$gmodel${VERIFY_MODEL}" in
+  local _mstack="$gmodel"
+  [ "$VERIFY_ENGINE" = "claude" ] && _mstack="$gmodel${VERIFY_MODEL}"
+  case "$_mstack" in
     *haiku*) if [ "${LAIXIN_CTX_WINDOW:-1000000}" -gt 200000 ]; then
       wrn "检测到 haiku 系模型而 ctx 分母>200K——交班闸门会静默失效,设 LAIXIN_CTX_WINDOW=200000"
       else ok "haiku 系模型且 ctx 分母已相应收窄(交班闸门有效)"; fi ;;
@@ -1570,12 +1586,15 @@ ev_hb_cutoff(){  # 心跳截止线(2026-08-18 优化推动清单#1,防重扫假�
 }
 
 ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能再触发;验收方追加结论后自然退出集合)
+  # #60①:验收回执(codex 验收窗口无 SendMessage,回执走落盘契约)与交付报告**同机制**监听——
+  # 末行行首标记+mtime 判新旧,心跳截止线/seen 基线/spool 对两种形态一体适用(同构扩展 ⛔ 另起一套);
+  # 投递文案在 ev_loop 按末行分流(回执的下一步是核数字+合并,不是 verify-from)。
   local f
   for f in "$KB/4-开发层/记录"/*.md; do
     [ -f "$f" ] || continue
     # 用 if 不用 &&:glob 最后一个文件无标记时,&& 列表的失败会成为循环乃至函数的退出码,
     # 在 set -e/pipefail 调用方处炸掉——此前没炸只是文件排序的运气(执行级绊线抓出)
-    if tail -1 "$f" | grep -q '^【交付完成】'; then printf '%s|%s\n' "$f" "$(stat -f %m "$f")"; fi
+    if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】'; then printf '%s|%s\n' "$f" "$(stat -f %m "$f")"; fi
   done | sort
   return 0
 }
@@ -1622,17 +1641,25 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
     sleep 0.4
     tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
     ev_log "投递[$kind] $(echo "$text" | head -1)"
+    # #60①:回执 ⛔ 进 M1 台账——M1 的销账判据是「该片 verify-* 窗口存在」,而回执落盘时该窗口
+    # **恰好还在**(vdown 在合并后才跑)⇒ 一登记即被误销账,台账只会说谎;回执无人接由
+    # 卡住告警(verify-* 静默监视)+人工巡检兜,⛔ 复用一个判据方向相反的机制。
     if [ "$kind" = "交付" ]; then   # M1:登记待认领(slug 取报告名同 verify-from 口径)
       local _slug; _slug="$(echo "$text" | grep -oE '[^/]+\.md' | head -1 | sed -E 's/\.md$//; s/(验收记录|-?交付报告)$//; s/^来信平台-//' | tr ' /' '--' | cut -c1-24)"
       [ -n "$_slug" ] && printf '%s|%s|P\n' "$(date +%s)" "$_slug" >> "$EV_PENDING"
     fi
   else
-    if [ "$kind" = "交付" ]; then
-      { echo "$text"; echo "---"; } >> "$EV_SPOOL"
-      ev_log "暂存[交付] $(echo "$text" | head -1)"
-    else
-      ev_log "丢弃[$kind](dispatch 不在,瞬时告警无行动者) $(echo "$text" | head -1)"
-    fi
+    # #60①:回执与交付同为**事实**(落盘即已发生),dispatch 不在时同走 spool 暂存 ⛔ 丢弃;
+    # 只有瞬时告警(卡住/空闲)才丢——回来了再看已无行动价值。
+    case "$kind" in
+      交付|回执)
+        { echo "$text"; echo "---"; } >> "$EV_SPOOL"
+        ev_log "暂存[$kind] $(echo "$text" | head -1)"
+        ;;
+      *)
+        ev_log "丢弃[$kind](dispatch 不在,瞬时告警无行动者) $(echo "$text" | head -1)"
+        ;;
+    esac
   fi
 }
 
@@ -1725,9 +1752,18 @@ ev_loop(){
         continue
       fi
       lastline="$(tail -1 "$f")"
-      ev_deliver "交付" "【事件】交付落盘:$f
+      # #60①:按末行分流两种事实形态——交付报告(下一步=起验收)与验收回执(下一步=核数字+合并);
+      # 扫描/基线/心跳截止线全共用,只有投递文案与 M1 登记不同(回执 ⛔ 进 M1,见 ev_deliver 注)。
+      case "$lastline" in
+        【验收回执】*)
+          ev_deliver "回执" "【事件】验收回执落盘:$f
 末行:$lastline
-下一步:laixin-lane verify-from \"$f\" --prompt <该片prompt路径> --to dispatch;同轮内派该轨下一片(合并不是终点,派工才是)。"
+下一步:laixin-lane evidence <片名> 复查回执数字(grep 不到即退回重验)→ 通过则按 laixin-pipeline 卡合并(merge-guard 收尾)+ vdown 回收;打回则转发该轨整改(方向性打回=挂起该轨报方案窗口)。" ;;
+        *)
+          ev_deliver "交付" "【事件】交付落盘:$f
+末行:$lastline
+下一步:laixin-lane verify-from \"$f\" --prompt <该片prompt路径> --to dispatch;同轮内派该轨下一片(合并不是终点,派工才是)。" ;;
+      esac
     done
     echo "$cur" > "$EV_SEEN"
     # 2) spool 补投(dispatch 刚起来)
@@ -2175,18 +2211,27 @@ cmd_whoholds() {
   return 0
 }
 
-# 活跃 claude 会话(socket 名即 PID,能与进程对上);排除 tmux 内已知窗口 ⇒ 剩下的是"手开的窗口"
+# 活跃 claude 会话(socket 名即 PID,能与进程对上);排除 tmux 内已知窗口的会话 ⇒ 剩下的是"手开的窗口"
+# #60①:验收引擎默认 codex 后,verify-* 窗口 pane 同样是 node 但**不产 cc-sock**——原「按窗口数减」
+# 会把无 sock 的 codex 验收窗口也减掉:计数可为负,且恰在「真有第二个手开 claude」时把它减没
+# (检查失效恰好指向它要防的双派工风险,三约束② 反向)。⇒ 改按 **tty 精确配对**:sock 进程的
+# 控制终端 ∈ 已知窗口 pane tty 才算「tmux 内」——引擎无关、窗口数无关(2026-08-19 真机逐对核过:
+# dispatch/relay/verify 三窗 pane_tty 与其 claude 进程 ps -o tty= 一一吻合)。配对取不到 tty 时
+# 该会话算「外部」(多算朝告警侧,⛔ 少算朝掩蔽侧)。
+CC_SOCKS_DIR="${LAIXIN_CC_SOCKS:-/tmp/cc-socks}"   # 可覆盖:绊线测试用 fixture 目录
 outside_sessions() {
-  local in_tmux total
-  in_tmux="$(tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_current_command}' 2>/dev/null \
-    | grep -cE '^(dispatch|relay|verify-).*(node|claude)' || true)"
-  total=0
-  for sk in /tmp/cc-socks/*.sock; do
+  local ttys sk pid ptty total=0 inside=0
+  ttys="$(tmux list-panes -s -t "$SESSION" -F '#{window_name} #{pane_tty}' 2>/dev/null \
+    | awk '$1 ~ /^(dispatch|relay|verify-)/ {print $2}')"
+  for sk in "$CC_SOCKS_DIR"/*.sock; do
     [ -S "$sk" ] || continue
-    local pid; pid="$(basename "$sk" .sock)"
-    ps -p "$pid" >/dev/null 2>&1 && total=$((total+1))
+    pid="$(basename "$sk" .sock)"
+    ps -p "$pid" >/dev/null 2>&1 || continue
+    total=$((total+1))
+    ptty="$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')"
+    if [ -n "$ptty" ] && [ "$ptty" != "??" ] && grep -q "/dev/${ptty}\$" <<< "$ttys"; then inside=$((inside+1)); fi
   done
-  echo $(( total - ${in_tmux:-0} ))
+  echo $(( total - inside ))
 }
 
 # 防撞:两个派工窗口同时动 lane 会把 Codex 上下文搞乱(2026-08-13 实际险些发生,靠人工提醒才没撞)
@@ -2616,6 +2661,33 @@ ${why:-(未捕获到 FAIL 行,peek 看现场)}
   return 1
 }
 
+vwait_ready_codex() {  # <窗口名> —— codex 引擎的就绪判据(#60①):与 claude 的画面文案不同,分引擎处理
+  # 就绪=画面出现「OpenAI Codex」横幅(2026-08-19 临时 tmux 会话实测 0.147.0:横幅含 model/
+  # directory/permissions 三行,输入框 › 与横幅同屏出现,可直接粘贴派单)。
+  # 失败判据参照 lane 起窗验尸惯例(cmd_up #50/#11-③):pane 掉回登录 shell=codex 秒退(config
+  # 拒载族),带现场末行即死 ⛔ 哑等 90s;起步期 pane 可为 bash/us-run(经包装器启动),
+  # 故 shell 回落判据只在 10s(5 tick)之后生效,⛔ 抢在包装器接手前误判。
+  # 「Update available」三选菜单(0.147.0→0.148.0 起窗实测撞上):默认项=全局升级(npm install -g),
+  # 按 dialog_classify 签名库硬规则安全键 ⛔ Enter ⛔ 默认项;Esc 已于 2026-08-19 人工实测安全
+  # (关闭菜单不升级,横幅随即出现)——照「新增签名先人工实测安全键」纪律入库。
+  local w="$1" pane pc tries=0
+  while [ "$tries" -lt 45 ]; do
+    pane="$(tmux capture-pane -p -t "$SESSION:$w" -S -60 2>/dev/null || true)"
+    if grep -q "OpenAI Codex" <<< "$pane"; then return 0; fi
+    if grep -q "Update available" <<< "$pane"; then tmux send-keys -t "$SESSION:$w" Escape; fi
+    if [ "$tries" -ge 5 ]; then
+      pc="$(pane_cmd "$w")"
+      if [ "$pc" = "$(basename "${SHELL:-/bin/zsh}")" ]; then
+        board "$(caller_src)" "⛔ $w codex 启动即退(pane 已掉回 shell)——⛔ 盲目重试,peek-v 查现场"
+        die "$w codex 启动即退(pane=$pc),现场末行:$(grep -v '^[[:space:]]*$' <<< "$pane" | tail -1 | cut -c1-160)——多半 config 拒载/命令不存在;⛔ 盲目重试(同因重试同死)"
+      fi
+    fi
+    sleep 2; tries=$((tries+1))
+  done
+  board "$(caller_src)" "⛔ $w codex 启动超时(90s),pane 末行:$(tmux capture-pane -p -t "$SESSION:$w" -S -5 2>/dev/null | grep -v '^$' | tail -1)"
+  return 1
+}
+
 vwin() {  # 验收窗口名(片名里的空格/斜杠换成 -)
   local slug; slug="$(echo "$1" | tr ' /' '--' | cut -c1-24)"
   [ -n "$slug" ] || die "片名不能为空"
@@ -2641,6 +2713,8 @@ cmd_verify() {
     || die "四项交接信息缺一不可:--branch --commit --report --prompt"
   [ -f "$report" ] || die "交付报告不存在:$report"
   [ -f "$prompt" ] || die "prompt 不存在:$prompt"
+  # #60① 引擎校验在动窗口**之前**(破坏性动作前置校验,同 fresh --dir 一课):值打错不该留下半个死窗口
+  case "$VERIFY_ENGINE" in codex|claude) : ;; *) die "未知验收引擎:$VERIFY_ENGINE(LAIXIN_VERIFY_ENGINE 只接受 codex|claude)" ;; esac
 
   local w; w="$(vwin "$slice")"
   local slug_e; slug_e="$(echo "$slice" | tr ' /' '--' | cut -c1-24)"
@@ -2653,24 +2727,27 @@ cmd_verify() {
 
   tmux new-window -t "$SESSION" -n "$w" -c "$dir"
   sleep 0.5
-  local allow deny
-  allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
-  deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
-  ensure_headless_settings
   # 每窗口一条专属 CDP 通道(2026-08-17 创始人裁定「每个一个通道」):
   # BU_NAME=按窗口派生唯一 daemon 名(ASCII,片名可含中文故用 cksum)——daemon 按名单例,
   # 不注入则多窗共用默认 daemon,BU_CDP_URL 因"来晚了"失效,标签串台(当日两实撞);
   # BU_CDP_URL=预分配端口(创始人 2026-08-17 划定:9230 往上整段归流水线;dispatch=9230,lane=9231/9232,
   # verify=9300-9999 按窗口名派生)——窗口起 headless 用这个端口,⛔ 自挑端口 ⛔ 连共享 Chrome;
   # 端口无人监听时 harness 报错即 fail-closed,不会退回共享 Chrome。
+  # 两引擎共用同一套 BU_NAME/端口派生与 verify-<片名> 窗口名(#60①)——vdown/cdp_sweep/vlist 零改动。
   local bu port; bu="v$(printf '%s' "$w" | cksum | awk '{print $1}')"
   port="$(cdp_port_verify "$w")"
+  local receipt="$KB/4-开发层/记录/${slice}-验收回执.md"
+  local msg
+  if [ "$VERIFY_ENGINE" = "claude" ]; then
+  local allow deny
+  allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
+  deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
+  ensure_headless_settings
   tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --allowedTools $allow --disallowedTools $deny" C-m
   vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-v $slice 40"
   sleep 1
 
   # 交接只传客观信息;不含任何预期暗示(派工窗口写了 prompt,它的预期就是污染源)
-  local msg
   msg="$(cat <<EOF
 你是本片的**一次性验收窗口**(验完即弃,不复用)。起手式:调 Skill laixin-pipeline,认领"验收窗口"角色,然后按 laixin-acceptance 七步做独立验收。
 
@@ -2698,6 +2775,52 @@ commit:$commit
 看板事件用 laixin-lane vlog "..." 记(带 env 前缀的命令不匹配工具白名单)。回执发出后你的活就结束了。
 EOF
 )"
+  else
+  # ── codex 引擎(#60①,默认):起动形态参照 lane(cmd_up)——MCP 全量关闭(⛔ 引号 key,见
+  # lane_mcp_off_flags 注释)、BU_NAME/BU_CDP_URL 照旧注入;窗口名/端口派生与 claude 完全同构。
+  # 派单差异三点:①开场第一句=通读 laixin-acceptance SKILL.md 全文(单点源实体,codex 不走 Skill 调用);
+  # ②回执从 SendMessage 改**落盘契约**(codex 无 SendMessage):<片名>-验收回执.md 末行行首【验收回执】,
+  #   events 复用交付监听同机制投递 dispatch;③红线约束进指令本体——codex 无 disallowedTools 等价物,
+  #   ⛔ push/merge/reset --hard/动 lane 靠指令明写+dispatch 合并侧校验(evidence 复查+merge-guard)兜底。
+  local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
+  tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" codex $_mcp_off" C-m
+  vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-v $slice 40"
+  sleep 1
+
+  # 交接只传客观信息;五项客观信息与 claude 版完全同构(片名/prompt/分支/commit/报告路径)
+  msg="$(cat <<EOF
+你是本片的**一次性验收窗口**(引擎=Codex,验完即弃,不复用)。开场第一件事:通读
+/Users/pingxia/.codex/skills/laixin-acceptance/SKILL.md 全文(独立验收卡单点源),然后按它的七步做独立验收。
+
+片名:$slice
+prompt:$prompt
+分支:$branch
+commit:$commit
+交付报告(=验收记录):$report
+
+硬要求:
+1. 先重读 prompt 与交付报告,再动手;报告没提的验证项就是最该亲手跑的;
+2. 全量测试自己跑,判据是"全部 passed 且 zero failed",不是测试数相等;
+3. 验收隔离:主树可能被开发轨占用,一律用独立验收 worktree 或 ref 级操作,禁止在共享工作树 checkout/merge;
+4. **最后一步必须**:rebase 到当时 main,并在 rebase 后的状态上复跑全量——"验的就是合的";
+5. **证据必须落盘**:凡结论要引用的输出,一律加 "2>&1 | tee $evid/<名字>.log" 落到该目录再引用——
+   全量两次 → pytest-1.log / pytest-2.log;迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
+   证据目录:$evid
+   结论里每个数字、每处代码引用,必须能在这些文件里逐字 grep 到;记不起的重新跑工具,**不得凭印象写**。
+   派工窗口会用 laixin-lane evidence $slice 复查,对不上即退回重验;
+6. **回执=落盘契约(⛔ SendMessage,本引擎没有)**:写完验收记录(追加"验收方独立验收结论"节)后,把回执写入
+   $receipt
+   **最后一行行首固定为**(事件总线按此契约投递派工窗口,不落盘=验收未完成):
+   通过 → 【验收回执】通过 <verify分支名> <其commit> <所基于的main commit>
+   打回 → 【验收回执】打回 <类型:方向性|工程>(正文给逐条可复现的问题清单+是否需升级创始人);
+7. ⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ 动 lane(laixin-lane send/fresh/up/down)——
+   本引擎没有 claude 的 disallowedTools 工具层禁令,以上红线以本指令为准,派工窗口在合并侧
+   核验(evidence 复查+merge-guard)兜底;越线即整片验收作废。打回也由派工窗口转发,你不直接指挥开发轨。
+
+看板事件用 laixin-lane vlog "..." 记。回执落盘后你的活就结束了。
+EOF
+)"
+  fi
   printf '%s' "$msg" | tmux load-buffer -b laixin-vmsg -
   tmux paste-buffer -p -b laixin-vmsg -t "$SESSION:$w"
   tmux delete-buffer -b laixin-vmsg
@@ -2705,9 +2828,13 @@ EOF
   tmux send-keys -t "$SESSION:$w" C-m
   # #57(#45 族残余):起窗类条目的来源=真实调用上下文——verify 常由派工窗口调,但方案/创始人窗口
   # 应急代起真实存在;硬编码「最常见调用方」=为非常规调用制造伪证,而排查恰恰全是非常规调用
-  board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)"
-  echo "$w 已起并派单。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
-  echo "提示:派工窗口首次 SendMessage 需带 ref,先 ListAgents 查 $w 的 [ref]。"
+  board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)引擎=$VERIFY_ENGINE"
+  echo "$w 已起并派单(引擎=$VERIFY_ENGINE)。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
+  if [ "$VERIFY_ENGINE" = "claude" ]; then
+    echo "提示:派工窗口首次 SendMessage 需带 ref,先 ListAgents 查 $w 的 [ref]。"
+  else
+    echo "回执契约:$receipt 末行行首【验收回执】——事件总线监听落盘并投递 dispatch(#60①,⛔ 等 SendMessage)。"
+  fi
 }
 
 cmd_vdown() {

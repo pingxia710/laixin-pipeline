@@ -1545,6 +1545,101 @@ tout "#57f:review-env status 区分「已注册/目录在未注册/不在」三�
   sed -n "/^cmd_review_env/,/^}/p" "$LANE"
 tout "#57f:prompt-lint 已核行自标「适用即核」⛔ 过度声明" "各项适用即核" sed -n "/^cmd_prompt_lint/,/^}/p" "$LANE"
 
+echo "== 6z. #60① verify 引擎化(默认 codex;claude 路径原样保留) =="
+# 引擎默认与回切(与 4b VERIFY_MODEL 同款 eval 单行赋值)
+E60="$(bash -c "eval \"\$(grep '^VERIFY_ENGINE=' '$LANE')\"; echo \"\$VERIFY_ENGINE\"")"
+tout "#60①:验收引擎默认 codex(创始人令:验收烧 GPT 额度不烧 Claude)" "codex" echo "$E60"
+E60C="$(env LAIXIN_VERIFY_ENGINE=claude bash -c "eval \"\$(grep '^VERIFY_ENGINE=' '$LANE')\"; echo \"\$VERIFY_ENGINE\"")"
+tout "#60①:引擎可回切 claude(备用路径保留)" "claude" echo "$E60C"
+# ⭐ 未知引擎在**动窗口之前**被拒(破坏性动作前置校验,同 fresh --dir 一课)——拒后零 tmux 副作用
+V60="$(mktemp -d)"; touch "$V60/r.md" "$V60/p.md"
+tfail "#60①:未知引擎被拒且指明合法值" "只接受 codex|claude" \
+  env LAIXIN_VERIFY_ENGINE=gpt5 LAIXIN_SESSION=lx60-nonexist "$LANE" verify 某片 --branch b --commit c --report "$V60/r.md" --prompt "$V60/p.md"
+t "#60①:未知引擎被拒时零 tmux 副作用(⛔ 留下半个死会话)" bash -c '! tmux has-session -t lx60-nonexist 2>/dev/null'
+# ⭐ claude 路径**原样保留**:起窗命令与 SendMessage 回执语仍在(谁把 claude 路径顺手删了,这条变红)
+t "#60①:claude 起窗命令与 SendMessage 回执语原样保留" bash -c '
+  body="$(sed -n "/^cmd_verify()/,/^}/p" "$0")"
+  grep -q -- "--model \$VERIFY_MODEL --permission-mode auto" <<< "$body" || exit 1
+  grep -q "SendMessage 回派工窗口" <<< "$body"' "$LANE"
+# ⭐ codex 派单契约四要素:①开场第一句读验收卡单点源全文;②回执落盘路径+末行【验收回执】双分支;
+#   ③红线明写(codex 无 disallowedTools 等价物);④合并侧校验兜底点名 merge-guard+evidence
+t "#60①:codex 派单含验收卡单点源+回执落盘契约双分支" bash -c '
+  body="$(sed -n "/^cmd_verify()/,/^}/p" "$0")"
+  grep -q "/Users/pingxia/.codex/skills/laixin-acceptance/SKILL.md" <<< "$body" || exit 1
+  grep -q -- "-验收回执.md" <<< "$body" || exit 1
+  grep -q "【验收回执】通过" <<< "$body" && grep -q "【验收回执】打回" <<< "$body"' "$LANE"
+t "#60①:codex 派单红线明写且点名合并侧兜底(⛔ 依赖不存在的工具层禁令)" bash -c '
+  body="$(sed -n "/^cmd_verify()/,/^}/p" "$0")"
+  grep -q "⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ 动 lane" <<< "$body" || exit 1
+  grep -q "merge-guard" <<< "$body" && grep -q "disallowedTools" <<< "$body"' "$LANE"
+# ⭐ vwait_ready_codex 行为绊线(stub tmux+sleep,真跑判定逻辑;sleep 置空免 90s 真等)
+V60F="$V60/fns.sh"
+{ sed -n "/^pane_cmd()/,/^}/p" "$LANE"; sed -n "/^vwait_ready_codex()/,/^}/p" "$LANE"; } > "$V60F"
+t "#60①:codex 就绪判据=OpenAI Codex 横幅(实测 0.147.0 画面)" bash -c '
+  source "'"$V60F"'"; SESSION=s; sleep(){ :; }
+  tmux(){ case "$1" in capture-pane) echo "│ >_ OpenAI Codex (v0.147.0) │";; display-message) echo node;; esac; }
+  board(){ :; }; caller_src(){ echo t; }; die(){ echo "die: $*" >&2; exit 1; }
+  vwait_ready_codex w'
+t "#60①:Update 菜单安全键=Esc ⛔ Enter(默认项=全局升级,签名库硬规则)" bash -c '
+  source "'"$V60F"'"; SESSION=s; sleep(){ :; }; LOG="'"$V60"'/keys.log"
+  tmux(){ case "$1" in
+    capture-pane) if [ -f "$LOG.esc" ]; then echo "OpenAI Codex"; else printf "✨ Update available! 0.147.0 -> 0.148.0\nPress enter to continue\n"; fi ;;
+    send-keys) echo "$*" >> "$LOG"; case "$*" in *Escape*) : > "$LOG.esc" ;; esac ;;
+    display-message) echo node ;; esac; }
+  board(){ :; }; caller_src(){ echo t; }; die(){ echo "die: $*" >&2; exit 1; }
+  vwait_ready_codex w || exit 1
+  grep -q Escape "$LOG" && ! grep -q "C-m" "$LOG"'
+t "#60①:pane 掉回 shell=秒退即死带现场(lane 验尸判据惯例,⛔ 哑等 90s)" bash -c '
+  source "'"$V60F"'"; SESSION=s; SHELL=/bin/zsh; sleep(){ :; }
+  tmux(){ case "$1" in capture-pane) echo "zsh: command not found: codex";; display-message) echo zsh;; esac; }
+  board(){ :; }; caller_src(){ echo t; }; die(){ echo "die: $*" >&2; exit 1; }
+  out="$(vwait_ready_codex w 2>&1)"; rc=$?
+  [ $rc -ne 0 ] && grep -q "启动即退" <<< "$out" && grep -q "command not found" <<< "$out"'
+t "#60①:始终未就绪走超时返 1(⛔ 假绿)" bash -c '
+  source "'"$V60F"'"; SESSION=s; sleep(){ :; }
+  tmux(){ case "$1" in capture-pane) echo "还在转圈";; display-message) echo node;; esac; }
+  board(){ echo "board: $*"; }; caller_src(){ echo t; }; die(){ echo "die: $*" >&2; exit 1; }
+  out="$(vwait_ready_codex w 2>&1)"; rc=$?
+  [ $rc -eq 1 ] && grep -q "启动超时" <<< "$out"'
+# ⭐ 回执监听=交付监听同机制(#60①):末行行首【验收回执】进扫描集合;无标记文件不进
+V60K="$V60/kb/4-开发层/记录"; mkdir -p "$V60K"
+printf 'x\n【交付完成】b z\n' > "$V60K/甲片-交付报告.md"
+printf 'y\n【验收回执】通过 verify/b abc1234 def5678\n' > "$V60K/甲片-验收回执.md"
+printf 'z\n没有标记\n' > "$V60K/乙片笔记.md"
+V60S="$V60/scan.sh"; sed -n "/^ev_scan_deliveries()/,/^}/p" "$LANE" > "$V60S"
+t "#60①:ev 扫描认【验收回执】末行(与【交付完成】同机制,⛔ 另起一套)" bash -c '
+  set -eo pipefail; KB="'"$V60"'/kb"; source "'"$V60S"'"; out="$(ev_scan_deliveries)"
+  grep -q "甲片-验收回执" <<< "$out" && grep -q "甲片-交付报告" <<< "$out" && ! grep -q "乙片笔记" <<< "$out"'
+# ⭐ ev_loop 按末行分流文案:回执的下一步=核数字+合并 ⛔ 再 verify-from 一遍
+t "#60①:ev_loop 对回执投「核数字+合并」⛔ 对它 verify-from" bash -c '
+  body="$(sed -n "/^ev_loop()/,/^}/p" "$0")"
+  grep -q "【验收回执】\*)" <<< "$body" || exit 1
+  grep -q "验收回执落盘" <<< "$body" && grep -q "verify-from" <<< "$body"' "$LANE"
+# ⭐ 回执是事实:dispatch 不在时走 spool 暂存 ⛔ 丢弃;瞬时告警仍丢
+V60D="$V60/dead"; mkdir -p "$V60D"
+V60E="$V60/ev.sh"; sed -n "/^ev_deliver()/,/^}/p" "$LANE" > "$V60E"
+t "#60①:dispatch 不在时回执 spool 暂存(事实 ⛔ 丢),告警仍丢" bash -c '
+  source "'"$V60E"'"; EV_SPOOL="'"$V60D"'/spool"; EV_PENDING="'"$V60D"'/pending"
+  dispatch_alive(){ return 1; }; ev_log(){ :; }
+  ev_deliver 回执 "【事件】验收回执落盘:x"
+  ev_deliver 告警 "【告警】某轨卡住"
+  grep -q "验收回执落盘" "$EV_SPOOL" && ! grep -q "某轨卡住" "$EV_SPOOL"'
+# ⭐ 回执 ⛔ 进 M1 认领台账——M1 销账判据=verify 窗口存在,而回执落盘时窗口恰好还在,一登记即误销账
+t "#60①:M1 登记仍只收交付(回执进台账=立即被误销账)" bash -c \
+  'sed -n "/^ev_deliver()/,/^}/p" "$0" | grep -q "if \[ \"\$kind\" = \"交付\" \]"' "$LANE"
+# ⭐ doctor §6 引擎适配:codex 报引擎行(VERIFY_MODEL 不适用),claude 旧文案逐字保留(#27 自述同步族)
+tout "#60①:doctor 引擎=codex 报引擎行 ⛔ 旧文案误导" "验收引擎:codex" "$LANE" doctor
+tout "#60①:doctor 引擎=claude 旧文案逐字保留" "验收窗口钉:claude-opus-5  派工窗口钉" \
+  env LAIXIN_VERIFY_ENGINE=claude "$LANE" doctor
+# ⭐ outside_sessions 改 tty 精确配对:codex 验收窗 pane 同为 node 但不产 cc-sock,按窗口数减会把
+#   计数减成负、且恰在真有第二个手开 claude 时把它减没(失效指向要防的风险,三约束②)
+OS60="$V60/socks-empty"; mkdir -p "$OS60"
+V60O="$V60/os.sh"; { grep '^CC_SOCKS_DIR=' "$LANE"; sed -n "/^outside_sessions()/,/^}/p" "$LANE"; } > "$V60O"
+t "#60①:outside_sessions 空 sock 报 0 ⛔ 负数(tty 配对 ⛔ 按窗口数减)" bash -c '
+  LAIXIN_CC_SOCKS="'"$OS60"'"; SESSION=laixin; source "'"$V60O"'"
+  [ "$(outside_sessions)" = "0" ]'
+rm -rf "$V60"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

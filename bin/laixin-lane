@@ -155,6 +155,7 @@ cmd_up() {
   tmux send-keys -t "$(target "$lane")" "BU_NAME=\"lane-$lane\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" codex $_mcp_off" C-m
   board "lane-$lane" "启动 codex @ $dir"
   echo "$(win "$lane") 已在 $dir 启动 codex。观看:laixin-lane attach $lane"
+  echo "(10s 启动验尸已挂后台:届时零告警=验过且 codex 确在跑,#50)"
   # 启动自检「codex 实际在跑」(2026-08-18 复盘页#11-③):二批 MCP 引号 key 曾致 codex 拒载 config
   # 秒退——脚本报"已启动"而现场只剩 shell 提示符,告警形态与「Codex 崩了」同形,浅读必误判。
   # 与「fresh --dir 目录不存在先报错」同族:脚本说成功、现场没成功 ⇒ 启动类动作要回头验尸。
@@ -249,6 +250,7 @@ cmd_send() {
   local head1; head1="$(echo "$text" | head -1 | cut -c1-80)"
   board "lane-$lane" "← 收到:${head1}"
   echo "已发送到 $(win "$lane")(${head1}…)"
+  echo "(8s 送达复核已挂后台:届时零告警=复核跑过且见活动迹象,#50——检查存在要可见)"
   # send 被吞机器检测(2026-08-18 生产级 P1-1):MCP 启动刷屏曾吞掉 send,peek 复核此前靠自觉。
   # 8 秒后抓屏找活动迹象;未见=大声警告+记看板。⛔ 不自动重发(重发曾被裁定有搞乱 Codex 上下文风险)。
   # 判定与文案在 send_swallow_check(#40:附后台任务状态说明;判据与 8s 阈值都未动)。
@@ -546,6 +548,8 @@ if re.search(r'admin|管理台|工作台|后台界面|顾问端|顾问面|商会
 for w in warns: print(f"  ⚠️ {w}")
 for e in errs: print(f"  ❌ {e}")
 print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无或指纹不符" + (f",{len(warns)} 项提示" if warns else ""))
+# #50:已核清单一行——零报警≠零检查(样本:grep 输出零命中被读成「没有这项检查」)
+print("  已核:①文件:行号 ②裁定编号 ③R编号 · 内容指纹(#五-29,带「」才核) · 词表占位符(#11/#22a) · 消费点提示(#18a) · 供给侧半面提示(#22b)")
 sys.exit(1 if errs else 0)
 PYEOF
 }
@@ -575,7 +579,7 @@ cmd_report_lint() {  # #18b(2026-08-19):交付报告举证 lint——举证毛�
   if grep -q '^【交付完成】' <<< "$last" && ! grep -qE '达标' "$f"; then
     echo "  ❌ 缺 commit 数达标自证行(「commit 数 N,任务数 M,达标/未达标+理由」,宪法头 10 条)"; errs=$((errs+1))
   fi
-  echo "report-lint: $(basename "$f") — ${errs} 项缺陷,${warns} 项提示"
+  echo "report-lint: $(basename "$f") — ${errs} 项缺陷,${warns} 项提示(已核:末行契约 · 输出块计数 · 逐字带锚 · 达标自证行——零报警=四项都跑过且过了,#50)"
   [ "$errs" -eq 0 ]
 }
 
@@ -913,13 +917,14 @@ PLIST
 KB_QUEUE_PAT="${LAIXIN_QUEUE_PAT:-运行复盘与优化推动}"
 kb_dup_num_check(){   # kb_dup_num_check <vault> <文件绝对路径>...
   local vault="$1"; shift
-  local f added line n cnt maxn hit=0
+  local f added line n cnt maxn hit=0 scanned=0
   for f in "$@"; do
     case "$f" in *"$KB_QUEUE_PAT"*) : ;; *) continue ;; esac
     [ -f "$f" ] || continue
     # 新增行里行首带编号的(⛔ 用 grep -c:零命中退出码 1,AGENTS.md 已载)
     added="$(git -C "$vault" diff HEAD -- "$f" 2>/dev/null | grep -E '^\+[0-9]' || true)"
     [ -n "$added" ] || continue
+    scanned=1
     maxn="$(grep -oE '^[0-9]{1,3}' "$f" 2>/dev/null | sort -n | tail -1 || true)"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -936,6 +941,10 @@ kb_dup_num_check(){   # kb_dup_num_check <vault> <文件绝对路径>...
     done <<< "$added"
   done
   [ "$hit" -eq 0 ] || echo "   ⛔ 未阻断提交(命中≠定罪):撞号已落库也能改,但**错误指针不过夜**——改完顺手把引用它的消息/回执一并更正。"
+  # #50:检查真跑过且过了要说一声(只在真扫了新增编号行时打印;未涉队列文件=不适用,静默是实话)
+  if [ "$hit" -eq 0 ] && [ "$scanned" -eq 1 ]; then
+    echo "✅ 撞号自检(#9):本次新增的编号条目与既有条目零撞号"
+  fi
   return 0
 }
 
@@ -1048,6 +1057,7 @@ $(head -5 <<< "$dirty")"
   echo "     旧 → $old"
   echo "     新 → $(readlink "$lbin")"
   echo "   运行中的旧进程握旧 inode 不受影响;常驻循环(ev/wd)换代仍需 stop && start(#20⑥)"
+  echo "   已核:工作树干净(已提交态) · bash -n 语法 · 同目录原子换链(#50 通过态可见)"
 }
 
 cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史
@@ -1172,9 +1182,12 @@ cmd_doctor() {
   local vf="$EV_DIR/tool-versions" vnow vold
   vnow="claude=$(claude --version 2>/dev/null | head -1) codex=$(codex --version 2>/dev/null | head -1)"
   vold="$(cat "$vf" 2>/dev/null || true)"
+  # #50:通过态也要一行——「没有报警」与「没有这项检查」不得同形(样本:grep doctor 零命中被读成「没有代龄检查」)
   if [ -n "$vold" ] && [ "$vnow" != "$vold" ]; then
     wrn "上游 CLI 版本已变化:$vold → $vnow ——留意新模态对话框(dialog_classify 签名库可能要补),首个新起窗口盯 90 秒"
     board "doctor" "⚠️ 上游版本变化:$vnow(留意新对话框,签名库或需补)"
+  elif [ -n "$vold" ]; then ok "上游 CLI 版本未变化($vnow)"
+  else echo "  ℹ️ 上游 CLI 版本基线首记($vnow)——下次 doctor 起比对"
   fi
   mkdir -p "$EV_DIR"; printf '%s' "$vnow" > "$vf"
 
@@ -1195,11 +1208,14 @@ cmd_doctor() {
     if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
     else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
     if wd_alive; then ok "看门狗运行中(进程判活)"
-      loop_stale wd-loop && wrn "看门狗循环代龄落后(脚本比循环新,修复未生效)——watchdog stop && start 换代(#20⑥)"
+      # #50:代龄比对的通过态要可见——grep 零命中曾被读成「doctor 没有这项检查」(#46 镜像误登记的祸根)
+      if loop_stale wd-loop; then wrn "看门狗循环代龄落后(脚本比循环新,修复未生效)——watchdog stop && start 换代(#20⑥)"
+      else ok "看门狗循环代龄一致(循环不老于脚本,修复已生效)"; fi
     elif win_exists "$WATCHDOG_WIN"; then wrn "看门狗窗口在但循环已死(假绿形态,复盘页#20⑤)——laixin-lane watchdog stop && start"
     else wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"; fi
     if ev_alive; then ok "事件总线运行中(进程判活)"
-      loop_stale ev-loop && wrn "事件总线循环代龄落后(脚本比循环新,修复未生效)——events stop && start 换代(#20⑥)"
+      if loop_stale ev-loop; then wrn "事件总线循环代龄落后(脚本比循环新,修复未生效)——events stop && start 换代(#20⑥)"
+      else ok "事件总线循环代龄一致(循环不老于脚本,修复已生效)"; fi
     elif win_exists "$EV_WIN"; then wrn "⛔ events 窗口在但循环已死(假绿灯)——events stop && events start;交付事件正在漏,优先处理"
     else wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"; fi
     local vs; vs="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^verify-' || true)"
@@ -1221,7 +1237,9 @@ cmd_doctor() {
   echo "  ℹ️ claude 全局默认:$gmodel(只影响方案窗口/手开窗口,不影响流水线)"
   case "$gmodel${VERIFY_MODEL}" in
     *haiku*) if [ "${LAIXIN_CTX_WINDOW:-1000000}" -gt 200000 ]; then
-      wrn "检测到 haiku 系模型而 ctx 分母>200K——交班闸门会静默失效,设 LAIXIN_CTX_WINDOW=200000"; fi ;;
+      wrn "检测到 haiku 系模型而 ctx 分母>200K——交班闸门会静默失效,设 LAIXIN_CTX_WINDOW=200000"
+      else ok "haiku 系模型且 ctx 分母已相应收窄(交班闸门有效)"; fi ;;
+    *) ok "ctx 分母与模型档位无冲突(非 haiku 系)" ;;   # #50:通过也说一声,零输出≠零检查
   esac
   echo
   echo "== 7. 已知工程债 =="
@@ -1230,6 +1248,8 @@ cmd_doctor() {
       ok "迁移 0014 已带幂等检查"
     else
       wrn "迁移 0014 仍无幂等检查 ⇒ create_all+upgrade head 会在此断,任何片照模板验迁移都被挡"; fi
+  else
+    ok "迁移 0014 债项不适用(文件不在当前树)"   # #50:此前文件不在时整段零输出,与「没有这项检查」同形
   fi
 
   echo
@@ -1664,7 +1684,9 @@ cmd_events(){
     status)
       if ev_alive; then
         echo "事件总线:运行中(进程判活)"
-        loop_stale ev-loop && echo "⚠️ 循环代龄落后:脚本比在跑的循环新——修复不会自动生效(#20⑥,ev-loop 曾带旧代码跑一天半),建议 events stop && start 换代"
+        # #50:代龄比对通过也留一行——「没有报警」与「没有这项检查」不得同形
+        if loop_stale ev-loop; then echo "⚠️ 循环代龄落后:脚本比在跑的循环新——修复不会自动生效(#20⑥,ev-loop 曾带旧代码跑一天半),建议 events stop && start 换代"
+        else echo "循环代龄一致(循环不老于脚本)"; fi
       elif win_exists "$EV_WIN"; then echo "事件总线:⛔ 窗口在但循环已死(假绿灯态)——laixin-lane events stop && laixin-lane events start"
       else echo "事件总线:未运行"; fi
       if [ -s "$EV_SPOOL" ]; then echo "spool 暂存:$(grep -c '^【事件】' "$EV_SPOOL") 条待投"; else echo "spool:空"; fi
@@ -2103,7 +2125,10 @@ cmd_dispatch() {
       board "$(caller_src)" "⚠️ dispatch 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
     fi
   ) >/dev/null 2>&1 &   # 显式脱离 stdout/stderr:#44 后 wd_loop 用命令替换收本函数输出,后台块握着继承的 fd 会把 $( ) 读拖到 15s 后才返回
-  echo "$DISPATCH_WIN 已起并接管。复核:laixin-lane peek-d 30"
+  # #50/#57:守卫状态如实回显——被 --force-rival 跳过时 ⛔ 让输出读起来像「核过了」
+  local _guard="双派工守卫已核:无对手"
+  [ -n "$nocheck" ] && _guard="双派工守卫被 --force-rival 跳过(未核,风险自担)"
+  echo "$DISPATCH_WIN 已起并接管(${_guard};15s 验尸+接管回读复核已挂后台,异常上看板)。复核:laixin-lane peek-d 30"
 }
 
 cmd_peekd() { tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" -S "-${1:-30}"; }
@@ -2187,7 +2212,7 @@ cmd_relay() {
       # 常态拓扑(创始人窗口+方案窗口)恒 outside=2,不豁免则自动重生在常态下**必被自家守卫拦死**
       # (08-19 10:56 实撞;当时更糟:守卫 die 的 exit 还把宿主 wd_loop 无声带死)。
       # **首起路径(人手跑 laixin-lane relay)守卫照旧**;人的逃生口仍是 --force-rival。
-      --resurrect) nocheck=1; shift ;;
+      --resurrect) nocheck=resurrect; shift ;;
       *) die "未知参数:$1" ;;
     esac
   done
@@ -2235,7 +2260,12 @@ cmd_relay() {
       board "$(caller_src)" "⚠️ relay 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
     fi
   ) >/dev/null 2>&1 &   # 显式脱离 stdout/stderr:#44 后 wd_loop 用命令替换收本函数输出,后台块握着继承的 fd 会把 $( ) 读拖到 15s 后才返回
-  echo "$RELAY_WIN 已起并接管(托管已启用)。复核:laixin-lane peek-r 30"
+  # #50/#57:守卫状态如实回显(--resurrect 与 --force-rival 都跳守卫但语义不同,分开说——
+  # 回显要在非常规调用下仍真,⛔ 让「跳过」读起来像「核过」)
+  local _rguard="双中继守卫已核:无对手"
+  if [ "$nocheck" = "resurrect" ]; then _rguard="双中继守卫按 --resurrect 豁免(恢复既有席位,非新开)"
+  elif [ -n "$nocheck" ]; then _rguard="双中继守卫被 --force-rival 跳过(未核,人工自担)"; fi
+  echo "$RELAY_WIN 已起并接管(托管已启用;${_rguard};15s 验尸+接管回读复核已挂后台)。复核:laixin-lane peek-r 30"
 }
 
 cmd_relay_down() {
@@ -2393,6 +2423,10 @@ cmd_watchdog() {
       ;;
     status)
       if wd_alive; then echo "看门狗:运行中(进程判活)"
+        # #50:与 events status 对齐补代龄比对+通过态(此前 watchdog status 连这项检查都没有,
+        # doctor 有——同名 status 两处射程不齐,读者以其一推断其二必错)
+        if loop_stale wd-loop; then echo "⚠️ 循环代龄落后:脚本比在跑的循环新——watchdog stop && start 换代(#20⑥)"
+        else echo "循环代龄一致(循环不老于脚本)"; fi
       elif win_exists "$WATCHDOG_WIN"; then echo "看门狗:⛔ 窗口在但循环已死(假绿形态)——stop 清窗再 start"
       else echo "看门狗:未运行"; fi
       if dispatch_alive; then echo "派工窗口:托管中($(pane_cmd "$DISPATCH_WIN"))"; else echo "派工窗口:不在托管状态"; fi

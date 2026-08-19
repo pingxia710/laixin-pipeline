@@ -607,8 +607,13 @@ git -C "$D9/v" reset -q --hard "$BASE9"
 #   改一条同时产生 +N. 与 -N.,文件里该号仍只有一行 ⇒ 不该报。误报若随「正常编辑」增长,
 #   这个检查器很快就会被所有人忽略(三约束③ 噪声必须与目标行为同向)。
 printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的,今天改了措辞)\n' > "$Q9"
+# #50 后判据收窄到误报形态本身(⚠️ 编号 告警):通过态一行「零撞号」是新增的合法输出,
+# 原「输出含'撞号'即败」的宽判据会把「查过了且没撞」误当误报——意图(零误报)不变
 t "改既有条目零误报(#9 三约束③)" bash -c \
-  '! grep -q "撞号" <<< "$(env LAIXIN_VAULT="'"$D9"'/v" LAIXIN_BOARD="'"$D9"'/board.md" "'"$LANE"'" kb-commit "改措辞" "wiki/运行复盘与优化推动-20260818.md" 2>&1)"'
+  '! grep -q "⚠️ 编号" <<< "$(env LAIXIN_VAULT="'"$D9"'/v" LAIXIN_BOARD="'"$D9"'/board.md" "'"$LANE"'" kb-commit "改措辞" "wiki/运行复盘与优化推动-20260818.md" 2>&1)"'
+printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的,再改一次)\n' > "$Q9"
+tout "改既有条目仍报「查过了」(#50:零告警≠零检查)" "零撞号" \
+  "${KB9[@]}" "$LANE" kb-commit "改措辞2" "wiki/运行复盘与优化推动-20260818.md"
 git -C "$D9/v" reset -q --hard "$BASE9"
 # ⭐ 绊线⑤(射程,⛔ 扩到全库):非队列文件零噪音——撞号只发生在有自增编号的队列里
 printf '# 普通笔记\n\n1. 甲\n1. 乙\n' > "$D9/v/wiki/普通笔记.md"
@@ -1358,6 +1363,46 @@ tout "节空且轨闲 → 报绿(空轨等派是常态,报了=噪声随做对的
   env LAIXIN_SESSION="bogus-$MQS" LAIXIN_KB="$MQ/kb" "$LANE" audit-queue
 t "fixture tmux 会话确已杀净(测试自己不留孤儿)" bash -c '! tmux has-session -t "$1" 2>/dev/null' mv "$MQS"
 rm -rf "$MQ"
+
+echo "== 8i. #50 检查器「通过」态必须可见(「没有报警」与「没有这项检查」不得同形;样本=代龄 grep 零命中被读成没这项检查) =="
+# —— 功能级:真跑两遍 doctor,第二遍版本未变必须报 ok(⛔ 只在变化时说话) ——
+"$LANE" doctor >/dev/null 2>&1 || true
+tout "doctor:上游版本未变化时也留一行" "上游 CLI 版本未变化" "$LANE" doctor
+# —— 静态:分支在停工期不可达(wd/ev 未跑),grep 判 else 分支存在 ——
+tout "doctor:看门狗代龄一致有通过行" "看门狗循环代龄一致" sed -n "/^cmd_doctor/,/^cmd_stats/p" "$LANE"
+tout "doctor:事件总线代龄一致有通过行" "事件总线循环代龄一致" sed -n "/^cmd_doctor/,/^cmd_stats/p" "$LANE"
+tout "doctor:模型档位无冲突有通过行(§6 此前非 haiku 整段零输出)" "ctx 分母与模型档位无冲突" sed -n "/^cmd_doctor/,/^cmd_stats/p" "$LANE"
+tout "doctor:工程债不适用有通过行(§7 此前文件不在整段零输出)" "债项不适用" sed -n "/^cmd_doctor/,/^cmd_stats/p" "$LANE"
+tout "events status:代龄一致有通过行" "循环代龄一致" sed -n "/^cmd_events/,/^}/p" "$LANE"
+tout "watchdog status:补上代龄比对+通过行(此前该 status 连这项检查都没有)" "循环代龄一致" sed -n "/^cmd_watchdog/,/^}/p" "$LANE"
+# —— lint 类:总结行报「已核清单」,零报警≠零检查 ——
+P50="$(mktemp -d)"; mkdir -p "$P50/kb/索引"
+printf '| 转单-9 | x |\n' > "$P50/kb/索引/wiki-裁定池总表.md"
+printf '| R48 | z |\n' > "$P50/kb/索引/wiki-红线清单.md"
+printf '引用 转单-9。\n' > "$P50/p.md"
+tout "prompt-lint 报已核清单" "已核:①文件:行号" env LAIXIN_KB="$P50/kb" "$LANE" prompt-lint "$P50/p.md"
+printf '报告\n```\n输出\n```\ncommit 数 1,任务数 1,达标\n【交付完成】b t\n' > "$P50/r.md"
+tout "report-lint 总结行报已核四项" "已核:末行契约" "$LANE" report-lint "$P50/r.md"
+rm -rf "$P50"
+# —— kb-commit 撞号自检:真扫过且零撞号要说一声(未涉队列文件仍静默=不适用是实话) ——
+D50="$(mktemp -d)"; mkdir -p "$D50/v/wiki"
+git init -q -b main "$D50/v"; git -C "$D50/v" config user.email t@t; git -C "$D50/v" config user.name t
+printf '## 清单\n\n23. 廿三条\n' > "$D50/v/wiki/运行复盘与优化推动-测试.md"
+git -C "$D50/v" add -A; git -C "$D50/v" commit -qm seed
+printf '24. 新条不撞号\n' >> "$D50/v/wiki/运行复盘与优化推动-测试.md"
+tout "撞号自检真扫过且零撞号 → ✅ 一行" "撞号自检(#9):本次新增的编号条目与既有条目零撞号" \
+  env LAIXIN_VAULT="$D50/v" "$LANE" kb-commit "test: 追加" wiki/运行复盘与优化推动-测试.md
+NQ_OUT="$(env LAIXIN_VAULT="$D50/v" bash -c 'printf "x\n" > "'"$D50"'/v/普通笔记.md"; "'"$LANE"'" kb-commit "test: 非队列" 普通笔记.md' 2>&1)"
+nq_check(){ case "$1" in *撞号自检*) echo NQ_LEAK ;; *已提交*) echo NQ_OK ;; *) echo NQ_BAD ;; esac; }
+tout "非队列文件不打撞号行(不适用≠通过,静默是实话)" "NQ_OK" nq_check "$NQ_OUT"
+rm -rf "$D50"
+# —— 后台检查的存在要在前台说一声(send 8s 复核/up 10s 验尸/起窗守卫状态) ——
+tout "send 回显预告 8s 送达复核" "8s 送达复核已挂后台" sed -n "/^cmd_send/,/^}/p" "$LANE"
+tout "up 回显预告 10s 启动验尸" "10s 启动验尸已挂后台" sed -n "/^cmd_up/,/^}/p" "$LANE"
+tout "dispatch 回显守卫已核态" "双派工守卫已核:无对手" sed -n "/^cmd_dispatch/,/^}/p" "$LANE"
+tout "dispatch 回显在 --force-rival 下如实说「跳过未核」⛔ 装作核过" "跳过(未核,风险自担)" sed -n "/^cmd_dispatch/,/^}/p" "$LANE"
+tout "relay 回显区分 --resurrect 豁免与 --force-rival 跳过(两种非常规调用语义不同)" "按 --resurrect 豁免" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
+tout "release 成功回显已核清单" "已核:工作树干净" sed -n "/^cmd_release/,/^}/p" "$LANE"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

@@ -2741,6 +2741,20 @@ RELAY_DENY=(
   "Bash(git push*)" "Bash(git merge*)" "Bash(git reset --hard*)"
   "Bash(laixin-lane send*)" "Bash(laixin-lane fresh*)" "Bash(laixin-lane up*)" "Bash(laixin-lane down*)"
   "Bash(laixin-lane claim*)"
+  # 2026-08-19 创始人明令补全(#67 代理报出三项,创始人窗口 b7 逐一核全部子命令后扩到十三项):
+  # 原八项只禁「动 lane」,而 relay 实际还能 `dispatch --fresh` **杀掉并重起派工窗口** —— 比注入一条消息重得多;
+  # 同理还能 halt 整条流水线、release 换代、停 watchdog/events。⛔ 只补代理报的那三项(那正是判据比缺陷窄)。
+  # ⚠️ relay-msg 有意 ⛔ 入列:它有 whoami_window 机器闸(只允许 dispatch 调),且绊线钉死它不在本列表里。
+  # ⚠️ ⛔ 用 "laixin-lane relay*" 通配:会误伤 relay-msg;起自己(`relay`)风险低(等于自杀,看门狗会处理)故不禁。
+  "Bash(laixin-lane dispatch*)"                              # 杀重起派工窗口
+  "Bash(laixin-lane halt*)" "Bash(laixin-lane resurrect*)"   # 暂停/恢复整条流水线
+  "Bash(laixin-lane release*)"                               # 换代
+  "Bash(laixin-lane watchdog*)" "Bash(laixin-lane events*)"  # 停守护循环
+  "Bash(laixin-lane ev-loop*)" "Bash(laixin-lane wd-loop*)"  # 循环本体
+  "Bash(laixin-lane verify*)" "Bash(laixin-lane vdown*)"     # 起/收验收窗(dispatch 的活)
+  "Bash(laixin-lane relay-down*)"                            # 关自己
+  "Bash(laixin-lane install-*)"                              # 装 boot 链/备份
+  "Bash(laixin-lane evid-gc*)"                               # 清证据
 )
 
 relay_enabled() { [ -f "$RELAY_ENABLED" ]; }

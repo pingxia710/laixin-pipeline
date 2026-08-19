@@ -1088,10 +1088,16 @@ t "#67② relay-msg 的 tmux 目标只有 RELAY_WIN(⛔ 参数化 ⛔ 出现 dis
    [ "$n" -gt 0 ] && [ "$n" = "$r" ] && ! grep -q "SESSION:\$DISPATCH_WIN" <<< "$b" &&
    ! grep -q "SESSION:lane-" <<< "$b"'
 # ⭐ 绊线⑧🔴:中继的 deny 列表**一字未改**——本批不靠放宽它换功能(换个名字不改变它是同一个动作)
-t "#67 RELAY_DENY 一字未放宽(七条原样,且 relay-msg 未被塞进去当例外)" bash -c \
-  'b="$(sed -n "/^RELAY_DENY=(/,/^)/p" "'"$LANE"'")";
+# ⚠️ 提取时必须滤掉注释行:本列表的注释里要说明「relay-msg 有意 ⛔ 入列」,而末句断言正是 grep relay-msg
+#    ⇒ 判据串同时是机器判据与人会书写讨论的对象 ⇒ 包含匹配必被讨论它的文本污染(第 8 律扩展;
+#    2026-08-19 b7 补 RELAY_DENY 时当轮实撞,而它当轮刚把该律的射程从「台账行」扩到「一切被归档的文本」)。
+t "#67 RELAY_DENY 一字未放宽(原八条 + 创始人明令补的破坏性五族,且 relay-msg 未被塞进去当例外)" bash -c \
+  'b="$(sed -n "/^RELAY_DENY=(/,/^)/p" "'"$LANE"'" | grep -v "^[[:space:]]*#")";
    for k in "git push" "git merge" "git reset --hard" "laixin-lane send" "laixin-lane fresh" \
-            "laixin-lane up" "laixin-lane down" "laixin-lane claim"; do
+            "laixin-lane up" "laixin-lane down" "laixin-lane claim" \
+            "laixin-lane dispatch" "laixin-lane halt" "laixin-lane resurrect" "laixin-lane release" \
+            "laixin-lane watchdog" "laixin-lane events" "laixin-lane verify" "laixin-lane vdown" \
+            "laixin-lane relay-down" "laixin-lane install-" "laixin-lane evid-gc"; do
      grep -q "$k" <<< "$b" || exit 1; done;
    ! grep -q "relay-msg" <<< "$b"'
 # ⭐ 绊线⑨:调用方机器校验(⛔ 靠约定)——本命令是一条向窗格注入文本的路径,谁能用必须可被逐条核

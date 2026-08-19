@@ -117,6 +117,26 @@ def anchored(line, anchor):
     """锚匹配:行首(容行首空白)是锚 ⇒ 命中。⛔ 行内包含,见 AUTO_ANCHOR 注释。"""
     return line.lstrip().startswith(anchor)
 
+
+# ── #61 (a) 形态 B:锚句**自己就是三级标题** ────────────────────────────────────
+# 裁定原文把判据写成「`###` 子节 body 含行首锚句」(=形态 A),而 `git show 2bfa98b -- <复盘页>`
+# 逐字证明 **#61 立项时的原始失败样本是形态 B**:`### 未消化摩擦 → 候选(准入=…)` —— 锚句本身
+# 被写成三级标题,子节 body 里一个锚字都没有 ⇒ 形态 A 的两条判据整体落空,**闸对着自己的立项样本
+# 不响**。判据窄于缺陷是裁定的问题,不是实现的问题;本补丁只补射程,⛔ 动切节逻辑与四段判据链。
+# ⚠️ 形态 B 的危害不是「静默」而是**指错方向**,比 A 更需要闸:`###` 一切节,`未消化摩擦 → 候选`
+#   就成了一个独立的未知节,条目照样解析得出 ⇒ 走 #41 B 的降级分支,报「⚠️ 未登记 … 请显式登记进
+#   WHITE 或 BLACK」。**照提示做就把一个违规写法固化成合法节**(委派方 2026-08-19 给 §十二 补
+#   WHITE 时差点这么做)—— 工具把「病灶」讲成了「欠一笔登记」,读者的正确动作被反向诱导。
+# 判据仍免语义、仍是结构判据:锚文本**由 AUTO_ANCHOR 派生** ⛔ 另写一份字面量(两份会各改各的,
+# 正是 #59「自述与判据不同宽」那一族);容标题里带粗体记号,`### **未消化摩擦 → 候选(…)**`
+# 与裸写法同判 —— 粗体只是记号,不改变「锚被写成了标题」这个事实。
+ANCHOR_TEXT = AUTO_ANCHOR.lstrip("*")
+
+
+def anchored_heading(title):
+    """形态 B:`###` 标题行**自身**就是锚句 ⇒ 命中(⛔ 要求锚出现在子节 body 里)。"""
+    return title.lstrip().lstrip("*").lstrip().startswith(ANCHOR_TEXT)
+
 # ── #65:半销判据「认形态 ⛔ 认符号」(2026-08-19 创始人窗口 b7 登记并当轮自核改写修法)────
 # 原判据是裸 `"✅" in ln`,而那是**有意的保守档不是疏忽**:设计者早已预见自指命中(见头注 ①),
 # 所以**销号**判据用了「标题划线」;半销留裸 ✅ 的理由是「误判半销只会让人多看一眼,误判销号才会
@@ -184,15 +204,21 @@ def clean_title(text):
 # 行号是本闸的交付物,而现有 sections 结构不带行号 ⇒ 独立函数走 enumerate 重扫一遍,**零侵入**既有
 # ①BLACK→②WHITE→③行首锚→④推断 判据链(改判据链=拿本工具唯一还在正确工作的部分去冒险)。
 def inventory_cut_check(lines):
-    """返回 [(## 节名, ## 行号, ### 子节名, ### 行号, 锚句行号), ...];空列表 = 未命中。"""
+    """返回 [(## 节名, ## 行号, ### 子节名, ### 行号, 违规行号, 形态), ...];空列表 = 未命中。
+
+    形态 A = 锚句是子节 body 里的行首粗体行(违规行 = 锚句行);
+    形态 B = 锚句**自己就是 ### 标题**(违规行 = 该标题行本身,#61 立项时的原始样本)。
+    ⚠️ 行号必须指到**真正违规的那一行**:形态 B 的子节 body 里根本没有锚,把行号指进 body
+       等于把人推去看一段不存在的文本 —— 本闸的全部交付物就是「改哪一行」。
+    """
     hits, sec, sub = [], None, None
 
     def close(s):
         if not s or s[2]:            # s[2] = ## 自身 body 的条目数;>0 ⇒ 锚没被切走,不是本闸的事
             return
-        for sub_name, sub_ln, anchor_ln in s[3]:
+        for sub_name, sub_ln, anchor_ln, form in s[3]:
             if anchor_ln:
-                hits.append((s[0], s[1], sub_name, sub_ln, anchor_ln))
+                hits.append((s[0], s[1], sub_name, sub_ln, anchor_ln, form))
 
     for no, ln in enumerate(lines, 1):
         m = HEADING.match(ln)
@@ -201,7 +227,11 @@ def inventory_cut_check(lines):
                 close(sec)
                 sec, sub = [strip_paren(m.group(2)), no, 0, []], None
             elif sec is not None:                       # ### ⇒ 开子节(挂在当前 ## 下)
-                sec[3].append([strip_paren(m.group(2)), no, 0])
+                # 形态 B 在**开子节这一刻**就判定完:违规行 = 标题行自己(no),⛔ 留给下面的
+                # body 扫描去找 —— body 里没有锚,那条路径只会得出「没命中」。
+                bform = anchored_heading(m.group(2))
+                sec[3].append([strip_paren(m.group(2)), no,
+                               no if bform else 0, "B" if bform else "A"])
                 sub = sec[3][-1]
             continue
         if sec is None:                                 # 页首(第一个 ## 之前)不参与
@@ -237,14 +267,23 @@ def main():
     #    下面那份统计**漏了一整节** —— 警告排在数字后面,读数的人不必读到它就能拿走偏乐观的结论
     #    (#20⑤ doctor 假绿 / #41 掩蔽性同族;那一课的结论是「警示要长在人一定会读到的位置」)。
     cut = inventory_cut_check(lines)
+    # 形态 B 的 ### 标题会被下面的切节逻辑切成一个**独立的节**,节名就是 strip_paren 后的标题
+    # ⇒ 拿它去消解「一边报违规、一边劝去 WHITE 登记」的自相矛盾(见下方未知节清单)。
+    cut_b = {h[2] for h in cut if h[5] == "B"}
     if cut:
         print("⛔ 锚句被三级标题切走(收班卡「盘点节 ⛔ 三级标题」;#53 落卡、#61 裁定机器闸)"
               "——该 ## 节自身零条目,锚句与其后条目被 ### 切进子节 ⇒ **整节不进下面的统计**,"
               "而页面看起来完全合法、写的人零报错:")
-        for _name, _ln, _sub, _sln, _aln in cut:
-            print(f"    ## {_name}(第 {_ln} 行)自身零条目;锚句落在 ### {_sub}"
-                  f"(第 {_sln} 行)之下的第 {_aln} 行")
-        print("   修法:锚句与其后条目移回 ## 节自身正文,子标题改加粗行 ⛔ 用 ###。")
+        for _name, _ln, _sub, _sln, _aln, _form in cut:
+            if _form == "B":
+                # ⚠️ 行号指标题行本身:形态 B 的锚**就是**那行 ###,子节 body 里没有第二处可指。
+                print(f"    ## {_name}(第 {_ln} 行)自身零条目;锚句**自己就是三级标题**——"
+                      f"违规行=第 {_sln} 行 `### {_sub}…`(形态 B,#61 立项时的原始样本)")
+            else:
+                print(f"    ## {_name}(第 {_ln} 行)自身零条目;锚句落在 ### {_sub}"
+                      f"(第 {_sln} 行)之下的第 {_aln} 行")
+        print("   修法:锚句与其后条目移回 ## 节自身正文,子标题改加粗行 ⛔ 用 ###"
+              "(形态 B=把 `### 未消化摩擦 → 候选(…)` 那一行本身改成加粗行)。")
         print()
 
     # ── 按 ##/### 切节。### 也切:§五之二 是 ### 且挂在 §五 之下,不切就会把它的
@@ -311,13 +350,24 @@ def main():
     #    这行就得跟着改,否则读的人会按「有 ✅ 就算半销」去理解一份并非如此的数。
     print("   销号=标题划线;⚖️半销=✅ 紧跟「已/完成」但标题没划线(子件完成、条目未闭)⛔ 并进销号;未销=两者皆无。")
     print("   (#65:叙述性 ✅ ⛔ 算半销;行内代码格里的 ✅ 是被引用的形态样本,先剥再判。)")
-    if unreg:
+    # 形态 B 的节也走 inferred 分支,但它**不是「未登记」**(见 mark 处注释)⇒ 自述按各自的
+    # 实际构成打,⛔ 让一句话同时替两种含义说话(#59:自述必须与判据同宽)。
+    unreg_plain = [n for n in unreg if n not in cut_b]
+    unreg_cutb = [n for n in unreg if n in cut_b]
+    unknown_plain = [n for n in unknown if n not in cut_b]
+    unknown_cutb = [n for n in unknown if n in cut_b]
+    if unreg_plain:
         print("   ⚠️ 未登记=该节未登记白/黑名单但解析出了条目 ⇒ 按推断计入并标记(⛔ 整队丢弃)。")
+    if unreg_cutb or unknown_cutb:
+        print("   ⛔ #61 违规节=锚句被写成了 ### 标题(形态 B)⇒ 它是**违规写法本身 ⛔ 待登记的新节**。")
     print()
     g_total = g_sold = g_half = 0
     degraded = False
     for name, inferred, total, sold, half, unsold in rows:
-        mark = "  ⚠️ 未登记" if inferred else ""
+        # ⚠️ 形态 B ⛔ 标「未登记」:本工具里「未登记」的动作含义是**去 WHITE/BLACK 补一笔**,
+        #    而对它正确动作恰恰相反(登记 = 把违规写法固化成合法节)。同一个词导向相反动作
+        #    ⇒ 换词,与 #41 挑判据时「两节取值相同而正确动作相反 ⇒ 换判据」同一条。
+        mark = ("  ⛔ #61 违规节" if name in cut_b else "  ⚠️ 未登记") if inferred else ""
         if total == 0:
             # 「一条都没有」与「没解析出来」外观相同 ⇒ 显 ? 不显 0,并退非零
             print(f"{name}{mark}  共 ? / 销号 ? / 半销 ? / 未销 ?   ⚠️ 白名单节解析出 0 条——判为解析失效,⛔ 当作「全销号」")
@@ -335,10 +385,14 @@ def main():
     # ⚠️ 掩蔽性(与 #20⑤ doctor 假绿同族):警告只打在末尾时,**读数的人不必读到它就能拿走结论**
     #    ——而跑本工具的人正是来看「优化做完了吗」的。⇒ 警示必须长在合计行本身,⛔ 只在末尾说。
     caveat = ""
-    if unreg:
-        caveat += f"   ⚠️ 含 {len(unreg)} 个未登记节(已按推断计入)"
-    if unknown:
-        caveat += f"   ⚠️ 另有 {len(unknown)} 个未知节零条目未计入"
+    if unreg_plain:
+        caveat += f"   ⚠️ 含 {len(unreg_plain)} 个未登记节(已按推断计入)"
+    if unknown_plain:
+        caveat += f"   ⚠️ 另有 {len(unknown_plain)} 个未知节零条目未计入"
+    # ⚠️ 与「未登记」分列 ⛔ 合并计数:合计行是读数的人一定会读到的位置(#41 掩蔽性那一课),
+    #    把违规节数混进「未登记节」里,等于在最显眼的地方仍旧劝人去登记。
+    if unreg_cutb or unknown_cutb:
+        caveat += f"   ⛔ 含 {len(unreg_cutb) + len(unknown_cutb)} 个 #61 违规节(⛔ 登记,见页首病灶告警)"
     if rows and not degraded:
         print(f"合计  共 {g_total} / 销号 {g_sold} / 半销 {g_half} / 未销 {g_total - g_sold - g_half}"
               f"{caveat}   (⚠️ 跨节编号不可比,合计只作总量参考)")
@@ -349,10 +403,24 @@ def main():
     if unreg or unknown:
         print()
         print("⛔ 未知节(既不在白名单也不在黑名单)——新开的节请显式登记进 bin/opt_status.py 的 WHITE 或 BLACK:")
+        # ⚠️ 消解自相矛盾:形态 B 的「节」不是新开的节,是被 ### 切走的锚句本身 ⇒ 上面那句通用指引
+        #    对它是**反的**。⛔ 靠读者自己在两条冲突提示间取舍(委派方本人差点照通用指引去登记),
+        #    ⛔ 把它从清单里消音(三约束② 要的是「大声报」,不是「不报」)⇒ 保留点名 + 就地翻转指引。
+        cut_b_hint = ("   ⛔ #61 违规节(形态 B):它不是新开的节,是被 ### 切走的**锚句本身**"
+                      " ⇒ **⛔ 登记进 WHITE/BLACK**(登记=把违规写法固化成合法节);"
+                      "修法=把那行 ### 改回加粗行,改完本行自动消失。行号见报告最前面的病灶告警")
+        if cut_b & (set(unreg) | set(unknown)):
+            print("   ⚠️ 例外:下面标「⛔ #61 违规节」的**不要登记** —— 对它们上面这句通用指引是反的。")
         for n in unreg:
-            print(f"    {n}   ⚠️ 未登记,节内解析出条目 ⇒ **已按推断计入**并在上面标出(⛔ 当它已登记)")
+            if n in cut_b:
+                print(f"    {n}{cut_b_hint}")
+            else:
+                print(f"    {n}   ⚠️ 未登记,节内解析出条目 ⇒ **已按推断计入**并在上面标出(⛔ 当它已登记)")
         for n in unknown:
-            print(f"    {n}   ⛔ 零条目 ⇒ **没有进统计**,上面的数不含它")
+            if n in cut_b:
+                print(f"    {n}{cut_b_hint}")
+            else:
+                print(f"    {n}   ⛔ 零条目 ⇒ **没有进统计**,上面的数不含它")
         print("   ⛔ 默默跳过:漏掉的节越多报告越像「优化都做完了」,失效方向恰好指向它要防的风险。")
         rc = 2
     if broken:

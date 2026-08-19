@@ -525,6 +525,28 @@ t "RELAY_CDP_PORT 落在全部派生值域之外(值域判据 ⛔ 占用判据)"
   [ "$rp" -lt "$vb" ] || exit 1'
 rm -rf "$R32"
 
+echo "== 6i. log 未标来源要有反馈(#26;fixture 看板,零真实副作用) =="
+L26="$(mktemp -d)"; printf '# 看板\n' > "$L26/b.md"
+# ⭐ 绊线①:未设 LAIXIN_WINDOW 必须**明确提示且告诉你该设什么**——原缺陷是零反馈,连错 18 条
+tout "未设 LAIXIN_WINDOW 时提示该设什么(#26)" "LAIXIN_WINDOW=派工窗口" \
+  env -u LAIXIN_WINDOW LAIXIN_BOARD="$L26/b.md" "$LANE" log "测试事件甲"
+tout "提示里点名验收窗口有专用 vlog(#26)" "vlog" \
+  env -u LAIXIN_WINDOW LAIXIN_BOARD="$L26/b.md" "$LANE" log "测试事件乙"
+# ⭐ 绊线②(方向性,本条的立项要害):提示 ⛔ 升级成拒绝执行——打断记录比来源字段错更贵,
+#   提示不得惩罚「记看板」这个想鼓励的行为(三约束③)。退出码必须仍是 0,且记录必须真落盘。
+t "未设来源仍退出 0(提示 ⛔ 拒绝执行,#26)" \
+  env -u LAIXIN_WINDOW LAIXIN_BOARD="$L26/b.md" "$LANE" log "测试事件丙"
+t "未设来源时记录照常落盘(不打断记看板)" bash -c 'grep -q "测试事件丙" "'"$L26"'/b.md"'
+# ⭐ 绊线③:兜底来源 ⛔ 叫「窗口」——那是个看着像正常来源的名字,把缺陷伪装成合法记录
+#   (三约束② 失效必须降级 ⛔ 反向)。必须是自曝的「未标注来源」,stats 来源统计里一眼可见。
+t "兜底来源自曝为「未标注来源」⛔ 伪装成「窗口」" bash -c \
+  'grep -q "| 未标注来源 | 测试事件丙 |" "'"$L26"'/b.md" && ! grep -q "| 窗口 | 测试事件丙 |" "'"$L26"'/b.md"'
+# ⭐ 绊线④:设了来源就**零提示**——噪音不得随正确用法增长
+t "设了 LAIXIN_WINDOW 则零提示(不制造噪音)" bash -c \
+  '! grep -q "未设 LAIXIN_WINDOW" <<< "$(env LAIXIN_WINDOW=派工窗口 LAIXIN_BOARD="'"$L26"'/b.md" "'"$LANE"'" log "测试事件丁" 2>&1)"'
+t "设了来源时来源字段照原样写入" bash -c 'grep -q "| 派工窗口 | 测试事件丁 |" "'"$L26"'/b.md"'
+rm -rf "$L26"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

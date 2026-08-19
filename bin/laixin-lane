@@ -39,6 +39,7 @@
 #   laixin-lane install-boot         装开机自恢复(infra 级,launchd)
 #   laixin-lane facts-fresh          事实表新鲜度(表头 main@commit vs 当前 main)+codegraph sync 顺手跑/被占告警
 #   laixin-lane audit-queue          台账巡检(排队/验收中 × 看板合并记录,揪陈旧行)
+#   laixin-lane audit-pages          底册复查提醒(#五-19):走查底册 🔁 页的「××片」触发点 × 看板合并记录;接班巡检可选项
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
 #   laixin-lane merge-guard <目标commit> [--ref 分支] [--old 旧值]  ref级合并前后核主树是否被甩下(#24)
@@ -699,6 +700,46 @@ cmd_audit_queue(){  # 台账巡检(2026-08-18 优化#13):排队/验收中节片�
   return 0
 }
 
+cmd_audit_pages(){  # 底册复查提醒(#五-19,2026-08-19 停工B段批四):页面走查底册的「复查触发点」此前靠人记
+  # ——底册状态 🔁=「相关片合入后复查」,而「片合入了」这个事实只出现在看板合并记录里,两处从无机器交叉。
+  # audit-queue 同族:🔁 页的「下轮关注」格抽「××片」触发名 × 看板「合并」记录,命中报提醒。
+  # 命中≠定罪(同名词可能出现在别片的合并叙述里),报「嫌疑」由人核;接班巡检**可选项**,⛔ 常驻循环。
+  # 射程自标:只抽字面带「片」的触发点(「××片合入后复查」形态);不带「片」字的触发描述(如「T1 换装后复查」)
+  # 机器判不了归属,仍靠人——本命令是提醒不是全集。
+  local ledger="${LAIXIN_PAGES_LEDGER:-$KB/索引/wiki-页面走查底册.md}" board_f="$BOARD"
+  { [ -f "$ledger" ] && [ -f "$board_f" ]; } || die "底册/看板读不到(核对 LAIXIN_PAGES_LEDGER / LAIXIN_BOARD)"
+  local merged; merged="$(grep '合并' "$board_f" || true)"   # 零命中是合法状态(audit-queue 同款兜底)
+  local n=0 wn=0 pages=0 trigs=0 weak="" page st focus seg name
+  while IFS=$'\t' read -r page st focus; do
+    [ -n "$page" ] || continue
+    case "$page" in 页面*|~~*) continue ;; esac         # 表头行;划线行=已废弃记录(状态感知,⛔ 扫案底)
+    case "$st" in *🔁*) ;; *) continue ;; esac          # 只有 🔁(待复查)才有复查触发点
+    pages=$((pages+1))
+    # 触发名抽取:去空格/粗体星号→去括注→按分隔符切段→段内取首个「片」字之前的名(纯 bash,免多字节 grep 类)
+    while IFS= read -r seg; do
+      case "$seg" in *~*) continue ;; esac              # 划线触发段=已作废记录(状态感知,⛔ 扫案底)
+      case "$seg" in *片*) ;; *) continue ;; esac
+      name="${seg%%片*}"
+      [ -n "$name" ] || continue
+      [ "${#name}" -ge 3 ] || continue                  # 太短的名当子串必然误命中(audit-queue 同款下限)
+      trigs=$((trigs+1))
+      if printf '%s\n' "$merged" | grep -qF -- "合并 $name" || printf '%s\n' "$merged" | grep -qF -- "合并$name"; then
+        echo "🔴 底册复查提醒:「${page}」的复查触发片「${name}」已见格式合并记录——人工核实后复走查该页并更新底册状态(🔁→✅)"
+        n=$((n+1))
+      elif printf '%s\n' "$merged" | grep -qF -- "$name"; then
+        weak="${weak}「${page}←${name}」"; wn=$((wn+1))
+      fi
+    done < <(printf '%s\n' "$focus" | tr -d ' *' | sed 's/([^)]*)//g; s/([^)]*)//g' | tr ';;,,+·' '\n')
+  done < <(grep '^|' "$ledger" | grep -v '^| *--' | awk -F' \\| ' 'NF>=7 {p=$1; sub(/^\| */,"",p); f=$NF; sub(/ *\|? *$/,"",f); printf "%s\t%s\t%s\n", p, $3, f}')
+  [ "$wn" -gt 0 ] && echo "⚠️ 弱嫌疑 $wn 项(触发名仅作子串出现在含「合并」的叙述里):${weak}——速核即可"
+  if [ "$n" -eq 0 ] && [ "$wn" -eq 0 ]; then
+    echo "✅ 底册复查提醒:🔁 页 ${pages} 个 / 带「片」触发点 ${trigs} 个 × 看板合并记录零命中(不带「片」字的触发描述不在射程,仍靠人)"
+  elif [ "$n" -gt 0 ]; then
+    echo "共 $n 项复查提醒(命中≠定罪,逐项人工核)+ $wn 项弱嫌疑"
+  fi
+  return 0
+}
+
 cmd_facts_fresh(){  # 事实表与 CodeGraph 新鲜度(2026-08-18 复盘页#14):合并后刷新此前靠 dispatch 人工认领
   # ——「靠人记住的口子,失效静默」:事实表停更后一切看起来正常,读到的却是旧事实(当日实撞:
   # 某报告吃了无源 commit 字段的静态审计文档,漏掉当日新键)。检测点=生成表表头
@@ -1289,6 +1330,7 @@ PY
   echo
   echo "== 台账巡检(排队/验收中 × 看板合并记录;同一实现=audit-queue) =="
   cmd_audit_queue
+  echo "(接班可选:laixin-lane audit-pages——走查底册复查触发点 × 合并记录,#五-19;⛔ 常驻)"
   return 0
 }
 
@@ -2735,7 +2777,7 @@ cmd_review_env(){
 # #19-(a) 在班行为续期:派工窗口的日常动作不止 send——持有者跑任一 duty 命令即证明在班。
 # 身份校验在 lock_renew_if_holder 内(调用者==持有者才续),其余窗口跑同名命令零影响。
 case "${1:-}" in
-  send|peek|peek-d|peek-v|log|stats|ctx|evidence|verify|verify-from|vdown|vlist|handoff|kb-commit|next-migration|next-worktree|audit-queue|facts-fresh) lock_renew_if_holder ;;
+  send|peek|peek-d|peek-v|log|stats|ctx|evidence|verify|verify-from|vdown|vlist|handoff|kb-commit|next-migration|next-worktree|audit-queue|audit-pages|facts-fresh) lock_renew_if_holder ;;
 esac
 case "${1:-}" in
   events)   shift; cmd_events "$@" ;;
@@ -2749,6 +2791,7 @@ case "${1:-}" in
   uptime)   shift; cmd_uptime ;;
   daily-report) shift; cmd_daily_report "$@" ;;
   audit-queue) cmd_audit_queue ;;  # 台账巡检:排队/验收中片名×看板合并记录,揪陈旧行(接班/交班各跑一次)
+  audit-pages) cmd_audit_pages ;;  # 底册复查提醒(#五-19):🔁 页触发片×合并记录;接班巡检可选项 ⛔ 常驻
   facts-fresh) cmd_facts_fresh ;;  # 事实表表头 main@commit×当前 main+codegraph sync(kb-commit 涉总表时自动跑;#14)
   copy-audit) shift; cmd_copy_audit "$@" ;;  # 词表覆盖率审计(#28):三列清单+统计,报告非闸门零命中不改退出码
   merge-guard) shift; cmd_merge_guard "$@" ;;  # ref级合并主树同步闸(#24):只判不动手,⛔ 代跑 reset --hard

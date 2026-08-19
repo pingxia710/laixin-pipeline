@@ -1237,6 +1237,33 @@ t "down 后 worktree 目录确已不在" bash -c '[ ! -e "$1" ]' rv "$RV_WT"
 t "down 后 git 无残留注册(worktree list 干净)" bash -c '! git -C "$1/repo" worktree list --porcelain | grep -qx "worktree $2"' rv "$RVD" "$RV_WT"
 rm -rf "$RVD"; rm -rf "$RV_WT" 2>/dev/null || true
 
+echo "== 8f. #五-19 audit-pages 底册复查提醒(fixture 底册+看板;audit-queue 同族,命中≠定罪) =="
+APD="$(mktemp -d)"; mkdir -p "$APD/kb/索引" "$APD/kb/4-开发层"
+cat > "$APD/kb/索引/wiki-页面走查底册.md" <<'EOF'
+| 页面 | 路由 | 状态 | 最近走查 | 裁定指针 | 截图 | 下轮关注 |
+|---|---|---|---|---|---|---|
+| 付款页 | /pay | ✅ 🔁 | 08-18 | §12 | shot | **付款指引机制片**后复查 |
+| 聚单页 | /agg | ✅ 🔁 | 08-18 | §12 | shot | 标题基座片合入后复查 |
+| 名片页 | /m | ✅ 🔁 | 08-18 | §12 | shot | 履约区撤除片;「在线」真实性观察 |
+| 首页 | / | ✅ | 08-18 | §12 | shot | 标题基座片合入后复查 |
+EOF
+printf '| 08-19 10:00 | 派工窗口 | 合并 付款指引机制 abc123,100 绿 |\n| 08-19 11:00 | 派工窗口 | 合并 别的片(prompt 里顺带提及标题基座词) |\n' > "$APD/kb/4-开发层/来信平台-流水线看板.md"
+APE=(env LAIXIN_KB="$APD/kb" LAIXIN_BOARD="$APD/kb/4-开发层/来信平台-流水线看板.md")
+AP_OUT="$("${APE[@]}" "$LANE" audit-pages 2>&1)"
+tout "触发片有格式合并记录 → 🔴 复查提醒点名页与片" "「付款页」的复查触发片「付款指引机制」" echo "$AP_OUT"
+tout "触发名仅在叙述里 → 弱嫌疑一行速核(⛔ 拿误报换漏报)" "弱嫌疑 1 项" echo "$AP_OUT"
+tout "弱嫌疑点名页←片" "「聚单页←标题基座」" echo "$AP_OUT"
+ap_scope_check(){ case "$1" in *首页*) echo SCOPE_LEAK ;; *) echo SCOPE_OK ;; esac; }
+tout "非 🔁 页不报(✅ 页的触发点已复查过,报了=噪声随做对的行为涨)" "SCOPE_OK" ap_scope_check "$AP_OUT"
+ap_miss_check(){ case "$1" in *履约区撤除*) echo MISS_LEAK ;; *) echo MISS_OK ;; esac; }
+tout "未合并的触发片零输出(零命中≠零检查——总结行会报查了几个)" "MISS_OK" ap_miss_check "$AP_OUT"
+printf '| 08-19 10:00 | 派工窗口 | 无关记录 |\n' > "$APD/kb/4-开发层/来信平台-流水线看板.md"
+tout "零命中时报绿且自报射程(🔁 页数/触发点数,#50 通过态可见)" "🔁 页 3 个 / 带「片」触发点 3 个 × 看板合并记录零命中" \
+  "${APE[@]}" "$LANE" audit-pages
+tfail "底册读不到时自曝 ⛔ 静默当零命中(三约束②)" "底册/看板读不到" env LAIXIN_KB="$APD/nokb" LAIXIN_BOARD="$APD/kb/4-开发层/来信平台-流水线看板.md" "$LANE" audit-pages
+tout "stats 尾部挂接班可选项提示(⛔ 常驻,只是可发现)" "audit-pages" sed -n "/^cmd_stats/,/^}/p" "$LANE"
+rm -rf "$APD"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

@@ -2241,6 +2241,40 @@ t "loop_pids:真循环出 pid、deny 形态不出(ps 桩)" bash -c '
   source "'"$VLPF"'"; ps(){ printf "%s\n" "101 /bin/bash /x/laixin-lane ev-loop" "202 /x/claude-raw --disallowedTools Bash(laixin-lane ev-loop*)" "303 /bin/bash /x/laixin-lane wd-loop"; }
   [ "$(loop_pids ev-loop | tr "\n" " ")" = "101 " ]'
 rm -rf "$VLP"
+
+# ── #105-#108(复盘页 §十六,2026-08-20 创始人直令实现):四条判据函数纯化直测 ──
+V16="$(mktemp -d)"; V16F="$V16/fn.sh"
+grep -E '^PH_TIME_RE=' "$LANE" > "$V16F"
+for fn in ph_time_hits ev_directive_filter ev_material_filter handover_unpaired; do
+  sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$V16F"; done
+t "#107 占位时刻:22:4x 命中" bash -c 'source "'"$V16F"'"; printf "%s" "创始人确认复工(22:4x,方案窗口问得)" | ph_time_hits | grep -q "22:4x"'
+t "#107 占位时刻:23:xx 命中" bash -c 'source "'"$V16F"'"; printf "%s" "大约 23:xx 起" | ph_time_hits >/dev/null'
+t "#107 占位时刻:真时刻 22:45 不命中" bash -c 'source "'"$V16F"'"; ! printf "%s" "22:45:03 实测" | ph_time_hits >/dev/null'
+t "#107 占位时刻:十六进制 0x1f 不命中(无冒号)" bash -c 'source "'"$V16F"'"; ! printf "%s" "地址 0x1f 与 hex" | ph_time_hits >/dev/null'
+t "#106 直令过滤:方案窗口+创始人直令 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:00 | 方案窗口 | 创始人直令两条(date):原话逐字… |" | ev_directive_filter | grep -q 直令'
+t "#106 直令过滤:在飞口径变更 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:01 | 方案窗口 | ⚠️ 在飞口径变更:推翻 X |" | ev_directive_filter >/dev/null'
+t "#106 直令过滤:派工窗口来源不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:02 | 派工窗口 | 转述创始人直令… |" | ev_directive_filter >/dev/null'
+t "#106 直令过滤:方案窗口普通裁定不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:03 | 方案窗口 | 裁(授权-2)普通一件 |" | ev_directive_filter >/dev/null'
+t "#105 材料过滤:词汇表命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/索引/wiki-供给侧词汇表.md" | ev_material_filter >/dev/null'
+t "#105 材料过滤:设计要点命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/4-开发层/来信平台-首页门户改版-设计要点.md" | ev_material_filter >/dev/null'
+t "#105 材料过滤:看板与执行总表不命中(⛔ 全 vault 广播)" bash -c 'source "'"$V16F"'"; ! printf "%s\n%s\n" "项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md" "项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md" | ev_material_filter >/dev/null'
+cat > "$V16/board" <<'BEOF'
+| 08-20 03:27 | 方案窗口 | 方案窗口第十四任 pingxia-fb 交班(六步…) |
+| 08-19 19:17 | 中继窗口 | 收班完成 中继窗口 relay 第五任(…) |
+| 08-20 05:22 | 派工窗口 | 交班 dispatch 第三十九任 → 第四十任 |
+BEOF
+cat > "$V16/page" <<'PEOF'
+## 十四、中继窗口 relay 第五任收班盘点(2026-08-19)
+## 十六、方案窗口第十四任 pingxia-fb 收班盘点(2026-08-20)
+PEOF
+t "#108 配对:两窗口盘点齐全零输出" bash -c 'source "'"$V16F"'"; [ -z "$(handover_unpaired "'"$V16"'/board" "'"$V16"'/page")" ]'
+t "#108 配对:删掉方案窗口盘点节即报其名" bash -c 'source "'"$V16F"'"; grep -v 方案窗口 "'"$V16"'/page" > "'"$V16"'/page2"; handover_unpaired "'"$V16"'/board" "'"$V16"'/page2" | grep -q "方案窗口第十四任"'
+t "#108 配对:dispatch 交班不在射程(复盘页无其节也不报)" bash -c 'source "'"$V16F"'"; ! handover_unpaired "'"$V16"'/board" "'"$V16"'/page" | grep -q 派工'
+t "#106 接线:ev_loop 含直令搬运游标" bash -c 'grep -q "EV_BOARD_POS" "'"$LANE"'" && grep -q "ev_directive_filter | while" "'"$LANE"'"'
+t "#105 接线:ev_loop 含 vault HEAD 基线" bash -c 'grep -q "EV_VAULT_HEAD" "'"$LANE"'" && grep -q "ev_material_filter | sort -u" "'"$LANE"'"'
+t "#107 接线:cmd_log 与 kb-commit 各挂一处 ph_time_hits" bash -c '[ "$(grep -c "ph_time_hits 2>/dev/null" "'"$LANE"'")" -ge 2 ]'
+t "#108 接线:doctor 第 8 节存在" bash -c 'grep -q "== 8. 交班配对" "'"$LANE"'"'
+rm -rf "$V16"
 t "loop_stale:取 pid 走 loop_pids ⛔ 宽 pgrep(量错对象与量对同形)" bash -c '! sed -n "/^loop_stale()/,/^}/p" "'"$LANE"'" | grep -vE "^[[:space:]]*#" | grep -q "pgrep -f"'
 t "loop_stale:逐字 loop_pids" bash -c 'sed -n "/^loop_stale()/,/^}/p" "'"$LANE"'" | grep -q "loop_pids \"\$1\""'
 

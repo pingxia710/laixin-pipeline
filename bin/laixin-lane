@@ -465,6 +465,10 @@ cmd_log() {
     echo "   下次带来源前缀,例:LAIXIN_WINDOW=派工窗口 laixin-lane log \"...\"" >&2
     echo "   常用值:派工窗口 / 方案窗口 / 中继窗口 / 创始人窗口;验收窗口有专用命令 laixin-lane vlog(免前缀)。" >&2
   fi
+  # #107:正文疑含占位时刻(22:4x 形态)只警不拦——拦截会在窗口死前丢内容(失效方向与竖线转义同裁定);
+  #   规则「先 date」已立仍三窗口 6 例复发 ⇒ 检查点绑到产物上。
+  local _pht; _pht="$(printf '%s' "$*" | ph_time_hits 2>/dev/null | head -3 | tr '\n' ' ')" || true
+  [ -n "${_pht:-}" ] && echo "⚠️ 正文疑含占位时刻(${_pht}):先跑 date 取实测值再写(#107;已照常记录,不打断)。" >&2
   board "$src" "$*"
   echo "已记录到看板"
 }
@@ -1402,6 +1406,14 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   # 叙述行/老缺格——不该让每次正常提交都变黄,三约束③ 噪声必须与目标行为同向)。⛔ 阻断:
   # 提交已落库,报警形态与分桶钩一致(修好再 kb-commit 一次);写盘脚本要闸门就在写盘时直调 table-lint。
   if [ "$committed" -eq 1 ]; then
+    # #107 半边:新增行含占位时刻形态即警(全部提交文件;只警不拦,理由同 cmd_log 处)
+    local _pf _ph
+    for _pf in "${args[@]}"; do
+      _ph="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | ph_time_hits 2>/dev/null | head -3 | tr '\n' ' ')" || true
+      [ -n "${_ph:-}" ] && echo "⚠️ #107 占位时刻:$(basename "$_pf") 本次新增行含 ${_ph}——先 date 取实测值,改完再 kb-commit 一次(提交已落库 ⛔ 回滚)"
+    done
+  fi
+  if [ "$committed" -eq 1 ]; then
     local _tf _lines
     for _tf in "${args[@]}"; do
       case "$_tf" in *执行总表*|*注册表*|*看板*|*走查底册*) : ;; *) continue ;; esac
@@ -1736,6 +1748,16 @@ cmd_doctor() {
     ok "迁移 0014 债项不适用(文件不在当前树)"   # #50:此前文件不在时整段零输出,与「没有这项检查」同形
   fi
 
+  echo "== 8. 交班配对(#108:交班条已见而复盘页无盘点节=交班卡第 6 步疑漏) =="
+  local _rp _hp
+  _rp="$(ls "$HOME"/Obsidian/项目入口/laixin开发流水线/知识库/wiki/运行复盘与优化推动-*.md 2>/dev/null | sort | tail -1)"
+  if [ -n "$_rp" ] && [ -f "$BOARD" ]; then
+    _hp="$(tail -400 "$BOARD" 2>/dev/null | handover_unpaired /dev/stdin "$_rp")"
+    if [ -n "$_hp" ]; then
+      while IFS= read -r _l; do wrn "$_l 交班条已见,复盘页无「收班盘点」节(刚交班未补写属正常,由人核;⛔ 静默)"; done <<< "$_hp"
+    else ok "近 400 条看板交班条与复盘页盘点节全配对"; fi
+  else wrn "复盘页或看板不可读,本项跳过(跳过 ⛔ 当通过)"; fi
+
   echo
   echo "体检结果:$fail 个错误 / $warn 个警告"
   [ "$fail" -eq 0 ] && echo "可以开工。" || echo "先修错误再开工。"
@@ -1922,6 +1944,9 @@ EV_ACK="${LAIXIN_EV_ACK:-2700}"           # 无认领升级阈值(秒,45min 取 
 EV_STALL="${LAIXIN_EV_STALL:-360}"   # 无变化多少秒判卡住/空闲(默认 6 分钟)
 EV_TICK="${LAIXIN_EV_TICK:-60}"
 EV_HB="$EV_DIR/heartbeat"            # 循环每 tick 写 epoch;重启时它就是「陈旧/新交付」的分界线
+EV_BOARD_POS="$EV_DIR/board.pos"    # #106 直令搬运:已扫描的看板行数基线(看板只追加 ⇒ 行数单调,回退即异常)
+EV_VAULT="${LAIXIN_VAULT:-$HOME/Obsidian}"
+EV_VAULT_HEAD="$EV_DIR/vault.head"  # #105 材料广播:已扫描的 vault HEAD 基线(首启记当前,⛔ 回放历史)
 
 ev_log(){ echo "[$(date '+%F %T')] $*" >> "$EV_LOG"; }
 
@@ -1991,6 +2016,34 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
         print substr(nm,1,60); exit
       }
     }' "$TABLE" "$TABLE" 2>/dev/null | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
+}
+
+# ── #105/#106/#107/#108(复盘页 §十六,方案窗口第十四任收班盘点;创始人 2026-08-20 07:0x 直令实现)──
+# 四条共同的形状:把「靠人记得」的搬运/自查换成机器可见——判据函数全部纯化(stdin→stdout),绊线直测。
+PH_TIME_RE='[0-9]{1,2}:([0-9]x|xx?)([^0-9A-Za-z]|$)'   # 22:4x / 23:x / 23:xx;不碰 22:45 与 0x1f(无冒号)
+ph_time_hits(){  # stdin=文本 → stdout=命中的占位时刻;零命中退 1(#107:「x 占位看着像已标不精确,其实是没测」)
+  grep -oE "$PH_TIME_RE" | sed -E 's/[^0-9x:]+$//' | sort -u | grep .
+}
+ev_directive_filter(){  # stdin=看板新增行 → stdout=要机器搬运给 dispatch 的口径行(#106)
+  # 只认 方案窗口/创始人窗口 来源 + 两个显式标记——订阅面窄进宽出(三约束③:噪声必须与目标行为同向)
+  grep -E '^\| [0-9: -]+ \| (方案窗口|创始人窗口) \| ' | grep -E '创始人直令|在飞口径变更'
+}
+ev_material_filter(){  # stdin=vault 变更文件路径列表 → stdout=订阅命中(#105:词汇表 + 设计要点)
+  # 失败样本=片⑥ r3:词表 aac8eff 02:55 落库晚于交付 02:41,开发方拿不到「材料到了」信号 ⇒ 白烧一轮验收。
+  # ⛔ 全 vault 无差别广播;要扩订阅面改本行 pattern(一行),⛔ 在 ev_loop 里再长 if。
+  grep -E '(索引/wiki-[^/]*词汇表[^/]*\.md|4-开发层/[^/]*设计要点[^/]*\.md)$'
+}
+handover_unpaired(){  # <看板尾部文件> <复盘页文件> → stdout=有交班条而复盘页无「…收班盘点」节的 窗口+任次;全配对时零输出(#108)
+  # 失败样本=方案窗口第十四任 03:27 交班六步漏第 6 步,看板上「漏做」与「做完」同形,靠创始人人工抓出。
+  # 只核 方案窗口/中继窗口(dispatch 的交接包在执行总表,不在复盘页射程);命中≠定罪——刚交班尚未补写属正常,由人核。
+  local b="$1" p="$2" line win ren
+  grep -E '^\|[^|]+\| (方案窗口|中继窗口) \|' "$b" 2>/dev/null | grep -E '交班|收班完成' \
+    | grep -oE '(方案窗口|中继窗口)[^|]{0,40}第[一二三四五六七八九十]+任' \
+    | sed -E 's/(方案窗口|中继窗口)[^第]*第/\1 第/' | sort -u \
+    | while IFS=' ' read -r win ren; do
+        [ -n "$win" ] && [ -n "$ren" ] || continue
+        grep '^## ' "$p" 2>/dev/null | grep "$win" | grep "$ren" | grep -q '收班盘点' || printf '%s%s\n' "$win" "$ren"
+      done
 }
 
 ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付(事实)暂存,告警(瞬时)丢弃
@@ -2085,6 +2138,9 @@ ev_loop(){
   mkdir -p "$EV_DIR"
   # 基线只在首次建立;重启保留旧基线 ⇒ 死亡/重启期间落盘的交付会在下一 tick 被 diff 出来补投,不再永久丢失
   [ -s "$EV_SEEN" ] || ev_scan_deliveries > "$EV_SEEN"
+  # #105/#106 基线只在首次建立:材料广播与直令搬运都从「现在」起算,⛔ 回放历史(与 EV_SEEN 同哲学)
+  [ -s "$EV_BOARD_POS" ] || wc -l < "$BOARD" | tr -d ' ' > "$EV_BOARD_POS"
+  [ -s "$EV_VAULT_HEAD" ] || git -C "$EV_VAULT" rev-parse HEAD > "$EV_VAULT_HEAD" 2>/dev/null || true
   # 心跳截止线在基线之外再加一道:即使 EV_SEEN 丢失/漂移,mtime 早于上次心跳的报告也不会被当新交付
   local hb_cutoff; hb_cutoff="$(ev_hb_cutoff)"
   ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份 心跳截止=$(date -r "$hb_cutoff" '+%F %T')"
@@ -2180,6 +2236,35 @@ $(echo "$_ovd" | sed 's/^/  /')
         grep -vxF -f <(echo "$_ovd") "$RELAY_OUTBOX" > "$RELAY_OUTBOX.new" 2>/dev/null
         mv -f "$RELAY_OUTBOX.new" "$RELAY_OUTBOX"
       fi
+    fi
+    # 2.6) #106 直令/在飞口径变更搬运:方案窗口只写一次看板,机器投递 dispatch——三重手工分发退役。
+    #      看板只追加(协作流程 :279)⇒ 行数单调,行数基线即游标;回退=有人整文件重写,重置基线大声记 ⛔ 补投。
+    _bl_now="$(wc -l < "$BOARD" 2>/dev/null | tr -d ' ')"
+    _bl_pos="$(cat "$EV_BOARD_POS" 2>/dev/null | tr -d ' ')"
+    if [ -n "$_bl_now" ] && [ -n "$_bl_pos" ] 2>/dev/null; then
+      if [ "$_bl_now" -lt "$_bl_pos" ] 2>/dev/null; then
+        ev_log "⚠️ #106 看板行数回退(${_bl_pos}→${_bl_now}):违反只追加纪律的信号;基线重置不补投"
+      elif [ "$_bl_now" -gt "$_bl_pos" ] 2>/dev/null; then
+        sed -n "$((_bl_pos+1)),${_bl_now}p" "$BOARD" 2>/dev/null | ev_directive_filter | while IFS= read -r _dl; do
+          [ -n "$_dl" ] || continue
+          ev_deliver "指令" "【事件】创始人直令/在飞口径变更已落看板(#106 机器搬运,原文以看板为准):
+$(printf '%s' "$_dl" | cut -c1-360)…
+下一步:读看板该条**全文**,按新口径调整在飞片与排队;受影响的在飞窗口由你广播(照 main 前进广播形态)。"
+        done
+      fi
+      printf '%s\n' "$_bl_now" > "$EV_BOARD_POS"
+    fi
+    # 2.7) #105 材料更新广播:词表/设计要点落库(kb-commit)⇒ 投 dispatch——片⑥ r3 白烧一轮的根治半边。
+    _vh_now="$(git -C "$EV_VAULT" rev-parse HEAD 2>/dev/null)"
+    _vh_old="$(cat "$EV_VAULT_HEAD" 2>/dev/null)"
+    if [ -n "$_vh_now" ] && [ "$_vh_now" != "$_vh_old" ]; then
+      if [ -n "$_vh_old" ]; then
+        _mf="$(git -C "$EV_VAULT" log --name-only --format= "${_vh_old}..${_vh_now}" 2>/dev/null | ev_material_filter | sort -u)"
+        [ -n "$_mf" ] && ev_deliver "材料" "【事件】词表/设计要点已更新(vault $(printf '%s' "$_vh_old" | cut -c1-7)→$(printf '%s' "$_vh_now" | cut -c1-7),#105):
+$_mf
+下一步:判哪些在飞片/在跑验收窗引用这些材料,向它们广播「材料已更新,rebase 认知」(照 main 前进广播形态)——材料到位而实现不知道,正是片⑥ r3 白烧一轮的形态。"
+      fi
+      printf '%s\n' "$_vh_now" > "$EV_VAULT_HEAD"
     fi
     # 3) 卡住/空闲监视(lane + 全部验收窗口)
     ev_watch_target "lane-a"

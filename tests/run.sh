@@ -1495,6 +1495,22 @@ t "#57a:halt/claim/relay_down/verify/vdown 五处都走 caller_src" bash -c '
     sed -n "/^${fn}()/,/^}/p" "$0" | grep -v "^[[:space:]]*#" | grep -q "board \"\$(caller_src)\"" || exit 1
   done' "$LANE"
 
+# ② 版本探针修真:包装器横幅在首行、真版本在末行——head -1 抓横幅=版本变化检测全盲
+tout "#57b:版本探针取末行(⛔ head -1 抓包装器横幅=检测全盲)" 'claude --version 2>/dev/null | tail -1' \
+  sed -n "/^cmd_doctor/,/^cmd_stats/p" "$LANE"
+t "#57b:doctor 里不再有 head -1 取版本" bash -c \
+  '! sed -n "/^cmd_doctor/,/^cmd_stats/p" "$0" | grep -v "^[[:space:]]*#" | grep -q -- "--version 2>/dev/null | head -1"' "$LANE"
+# ③ uptime 判活口径与 doctor/status 对齐(窗口存在=假绿形态,#20⑤)
+tout "#57c:uptime watchdog 用进程判活并区分假绿" "窗口在但循环已死" sed -n "/^cmd_uptime/,/^}/p" "$LANE"
+t "#57c:uptime 不再拿窗口存在当 watchdog 活着" bash -c \
+  'sed -n "/^cmd_uptime/,/^}/p" "$0" | grep -v "^[[:space:]]*#" | grep -q "! wd_alive" ' "$LANE"
+
+# ④ uptime 零命中计数畸形(grep -c 零命中先打 0 再退 1,|| echo 0 叠打成断行;审计真机实测抓出)
+t "#57d:uptime 今日事件行是完整一行(零命中 ⛔ 断行成两行)" bash -c '
+  out="$("$0" uptime 2>&1 | grep "今日事件")"
+  [ "$(wc -l <<< "$out" | tr -d " ")" = 1 ] || exit 1
+  grep -q "投递 [0-9]* · 暂存 [0-9]* · 看门狗动作 [0-9]*$" <<< "$out"' "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

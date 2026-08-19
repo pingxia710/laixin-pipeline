@@ -764,7 +764,13 @@ cmd_uptime() {  # 三件套连续运行时长与今日事件计数(持续运行�
   local now; now="$(date +%s)"
   for pair in "watchdog:$WD_LOG" "events:$EV_LOG"; do
     local name="${pair%%:*}" f="${pair#*:}"
-    if [ "$name" = watchdog ] && ! win_exists "$WATCHDOG_WIN"; then echo "watchdog: 未运行"; continue; fi
+    # #57c:watchdog 判活曾用窗口存在——循环死窗口在的假绿形态(#20⑤)会让 uptime 报「连续运行
+    # N 小时」,与 doctor/status 的进程判活口径不齐;读者以其一推断其二必错。改 wd_alive 并区分假绿。
+    if [ "$name" = watchdog ] && ! wd_alive; then
+      if win_exists "$WATCHDOG_WIN"; then echo "watchdog: ⛔ 窗口在但循环已死(假绿形态)——watchdog stop && start"
+      else echo "watchdog: 未运行(进程判活)"; fi
+      continue
+    fi
     if [ "$name" = events ]   && ! ev_alive;                   then echo "events:   未运行(进程判活)"; continue; fi
     local start
     start="$(grep -E '启动' "$f" 2>/dev/null | tail -1 | sed -E 's/^\[([^]]+)\].*/\1/' || true)"  # 日志无"启动"行时 grep 返 1,不兜底会在 set -e 下把整个 uptime 中途击穿(只打印第一行)
@@ -777,7 +783,10 @@ cmd_uptime() {  # 三件套连续运行时长与今日事件计数(持续运行�
   done
   dispatch_alive && echo "dispatch: 托管中" || echo "dispatch: 未托管"
   local today; today="$(date '+%F')"
-  echo "今日事件:投递 $(grep -c "^\[$today.*投递" "$EV_LOG" 2>/dev/null || echo 0) · 暂存 $(grep -c "^\[$today.*暂存" "$EV_LOG" 2>/dev/null || echo 0) · 看门狗动作 $(grep -c "^\[$today" "$WD_LOG" 2>/dev/null || echo 0)"
+  # #57d(真机实测抓出):grep -c 零命中会**先打印 0 再退 1**,`|| echo 0` 兜底再打一个 ⇒ 输出成
+  # 「暂存 0\n0 · …」断行畸形——兜底只该管「文件不存在」(此时 grep 零输出),⛔ 叠打
+  cnt0(){ local c; c="$(grep -c "$1" "$2" 2>/dev/null)" || true; printf '%s' "${c:-0}"; }
+  echo "今日事件:投递 $(cnt0 "^\[$today.*投递" "$EV_LOG") · 暂存 $(cnt0 "^\[$today.*暂存" "$EV_LOG") · 看门狗动作 $(cnt0 "^\[$today" "$WD_LOG")"
   return 0
 }
 
@@ -1274,7 +1283,10 @@ cmd_doctor() {
   # 上游版本变化检测(2026-08-18 生产级 P0-4 代偿:创始人裁保持自动升级——升级不拦,但绝不静默:
   # 「Set up auto mode」冻 4 窗 5.5h 的祸根正是上游悄悄带来的新对话框)
   local vf="$EV_DIR/tool-versions" vnow vold
-  vnow="claude=$(claude --version 2>/dev/null | head -1) codex=$(codex --version 2>/dev/null | head -1)"
+  # #57b:取版本必须 tail -1 ⛔ head -1——本机 claude 经安全包装器启动,--version 先打就绪检查
+  # 横幅再打真版本(末行)。head -1 抓到的是横幅:横幅不随 claude 升级变 ⇒ 版本变化检测全盲,
+  # 且表现恰好是「版本从未变化」(检查手段失效指向它要防的风险,三约束② 反向;真机实测抓出)。
+  vnow="claude=$(claude --version 2>/dev/null | tail -1) codex=$(codex --version 2>/dev/null | tail -1)"
   vold="$(cat "$vf" 2>/dev/null || true)"
   # #50:通过态也要一行——「没有报警」与「没有这项检查」不得同形(样本:grep doctor 零命中被读成「没有代龄检查」)
   if [ -n "$vold" ] && [ "$vnow" != "$vold" ]; then

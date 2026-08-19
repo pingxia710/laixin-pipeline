@@ -43,6 +43,7 @@
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
 #   laixin-lane merge-guard <目标commit> [--ref 分支] [--old 旧值]  ref级合并前后核主树是否被甩下(#24)
 #   laixin-lane opt-status [--page P] 优化条目销号率(#33):按节独立统计各队列共/销号/未销+未销条目点名
+#   laixin-lane release              发布(#25):仓库已提交版→版本化路径+原子换软链(工作树脏拒发;开发迭代直接跑仓库路径)
 set -euo pipefail
 
 # ---- 配置(全部可被环境变量或 config 文件覆盖;默认值=来信平台) ----
@@ -890,6 +891,55 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   return 0
 }
 
+cmd_release(){  # #25 部署原子化:把仓库**已提交版**发布到版本化路径并原子切换软链
+  # 两次实撞同根(07:17 verify-from 尾部假语法错 / 11:2x 换代竞态):~/.local/bin/laixin-lane 软链
+  # 直指仓库工作树 bin/laixin-lane,运行中脚本被就地改写 ⇒ bash 逐段续读的偏移落进新内容中间。
+  # 发布=已提交版复制到 ~/.local/libexec/laixin-lane-releases/laixin-lane-<short-hash> + 原子换链:
+  # 换链后运行中的旧进程握旧 inode 安全跑完;常驻循环(ev/wd)换代仍走 stop/start(loop_stale 提示)。
+  # 原子方案选型(本机 macOS/bash 3.2,无 mv -T 无 GNU coreutils):
+  #   ln -s 建临时链 + mv -f 临时链→正式链。BSD mv 在「目标存在且不解析为目录」时走 rename(2),
+  #   POSIX 保证原子替换;ln -sfn 在 macOS 是 unlink+symlink 两步,中间有路径空窗 ⛔ 用。
+  #   mv 的目录陷阱(目标是目录/指向目录的软链时变「移进去」)以 [ ! -d ] 前置校验挡掉;
+  #   临时链建在正式链同目录(同卷才保证 rename 不跨设备退化为拷贝)。
+  # 开发态不变笨重:开发迭代直接跑仓库路径 ~/Developer/laixin-pipeline/bin/laixin-lane 即可,
+  # 不引额外开关。⚠️ 把真实软链切到发布版的动作留复工试火(本批只交付机制+测试,#54 新规)。
+  [ $# -eq 0 ] || die "release 不接受参数"
+  local repo="${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}"
+  local lbin="${LAIXIN_RELEASE_BIN:-$HOME/.local/bin/laixin-lane}"
+  local rel_dir="${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"
+  [ -d "$repo/.git" ] || die "发布源不是 git 仓库:$repo"
+  local hash dirty
+  hash="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null)" || die "读 HEAD 失败:$repo"
+  [ -n "$hash" ] || die "读 HEAD 失败:$repo"
+  dirty="$(git -C "$repo" status --porcelain 2>/dev/null)" || die "git status 失败:$repo"
+  if [ -n "$dirty" ]; then
+    die "⛔ 工作树不干净,拒绝发布(发布=已提交态,与 backup 只推已提交同哲学;先 commit/stash):
+$(head -5 <<< "$dirty")"
+  fi
+  mkdir -p "$rel_dir" || die "建发布目录失败:$rel_dir"
+  local rel="$rel_dir/laixin-lane-$hash" tmp
+  tmp="$(mktemp "$rel_dir/.rel.XXXXXX")" || die "建临时文件失败:$rel_dir"
+  # 从 git 对象取已提交版(⛔ 拷工作树文件:干净判定与拷贝之间仍有窗口,git show 无此竞态)
+  if ! git -C "$repo" show "HEAD:bin/laixin-lane" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; die "读已提交版失败(HEAD:bin/laixin-lane)"
+  fi
+  # 发布前语法自检:半坏版换上去=每次调用都死,比旧版继续跑危害大
+  bash -n "$tmp" 2>/dev/null || { rm -f "$tmp"; die "⛔ 已提交版语法检查未过(bash -n),拒绝发布"; }
+  chmod +x "$tmp"
+  mv -f "$tmp" "$rel" || { rm -f "$tmp"; die "落发布文件失败:$rel"; }   # 同目录 rename,半写态不可见
+  [ ! -d "$lbin" ] || die "⛔ $lbin 解析为目录——mv 会移进去而非替换,人工处理"
+  mkdir -p "$(dirname "$lbin")" || die "建软链目录失败"
+  local old ltmp; old="$(readlink "$lbin" 2>/dev/null || echo "(无/非软链)")"
+  ltmp="$(dirname "$lbin")/.laixin-lane.new.$$"
+  ln -s "$rel" "$ltmp" || die "建临时软链失败:$ltmp"
+  if ! mv -f "$ltmp" "$lbin"; then rm -f "$ltmp"; die "原子换链失败:$ltmp → $lbin"; fi
+  echo "✅ 已发布 $hash → $rel"
+  echo "   软链:$lbin"
+  echo "     旧 → $old"
+  echo "     新 → $(readlink "$lbin")"
+  echo "   运行中的旧进程握旧 inode 不受影响;常驻循环(ev/wd)换代仍需 stop && start(#20⑥)"
+}
+
 cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史
   # 只推已提交历史——未提交的是活窗口的在途工作,由各窗口按纪律及时提交;⛔ 本命令不 add 不 commit
   # (备份自动 commit -A 会与窗口的精确提交互扫且污染史,见复盘页#9)
@@ -996,6 +1046,17 @@ cmd_doctor() {
   bash -n "$HOME/.local/bin/laixin-lane" 2>/dev/null && ok "laixin-lane 语法正常" || bad "laixin-lane 语法错误"
   command -v laixin-lane >/dev/null && ok "laixin-lane 在 PATH" || bad "laixin-lane 不在 PATH"
   command -v claude >/dev/null && ok "claude 可执行" || bad "claude 不可执行(验收/派工窗口起不来)"
+  # #25 发布代龄(提示不强制,对齐 loop_stale):软链指发布版时比对发布内容与仓库已提交版
+  if release_stale; then
+    wrn "发布版落后仓库已提交版——laixin-lane release 换代(#25;运行中的旧进程握旧 inode 不受影响)"
+  else
+    local _rbin _rtgt; _rbin="${LAIXIN_RELEASE_BIN:-$HOME/.local/bin/laixin-lane}"
+    _rtgt="$(readlink "$_rbin" 2>/dev/null || echo 非软链)"
+    case "$_rtgt" in
+      "${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"/*) ok "发布版与仓库已提交版一致($(basename "$_rtgt"))" ;;
+      *) echo "  ℹ️ laixin-lane 软链未指向发布版(当前→${_rtgt};开发直连态,#25 切换动作留复工试火)" ;;
+    esac
+  fi
   # 上游版本变化检测(2026-08-18 生产级 P0-4 代偿:创始人裁保持自动升级——升级不拦,但绝不静默:
   # 「Set up auto mode」冻 4 窗 5.5h 的祸根正是上游悄悄带来的新对话框)
   local vf="$EV_DIR/tool-versions" vnow vold
@@ -1446,6 +1507,23 @@ loop_stale(){  # <循环名 ev-loop|wd-loop> → 0=在跑的循环比脚本旧(�
   else up=$(( (10#$d*24*60+10#$a)*60+10#$b )); fi   # 无小时段:a=分 b=秒(10# 防 08/09 被当八进制)
   script_e="$(stat -L -f %m "$0" 2>/dev/null)"; [ -n "$script_e" ] || return 1   # -L 必须:$0 经 ~/.local/bin 软链调用,不带 -L 取的是链自身 8月13 的 mtime,永远判不出新
   [ "$script_e" -gt $(( $(date +%s) - up )) ]
+}
+
+release_stale(){  # → 0=软链指向发布版且其内容落后仓库已提交版;1=不落后或不适用(未切发布/仓库不可读)
+  # #25 doctor 提示的判据半边(提示不强制,对齐 loop_stale 思路):落后≠故障——运行中的旧进程
+  # 本就该跑完旧版,发现落后的处置是 laixin-lane release 换代。检查自身失效(软链没了/仓库读不了)
+  # 一律判「不适用」⛔ 判「落后」——失效不得恰好指向它要防的风险(检查器三约束②);
+  # 仓库缺失另有 doctor 段 2 大声报,不在此重复告警。
+  local repo="${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}"
+  local lbin="${LAIXIN_RELEASE_BIN:-$HOME/.local/bin/laixin-lane}"
+  local rel_dir="${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"
+  local ltgt committed
+  ltgt="$(readlink "$lbin" 2>/dev/null)" || return 1
+  case "$ltgt" in "$rel_dir"/*) ;; *) return 1 ;; esac   # 软链不指发布目录=开发直连态,不适用
+  committed="$(mktemp)" || return 1
+  if ! git -C "$repo" show "HEAD:bin/laixin-lane" > "$committed" 2>/dev/null; then rm -f "$committed"; return 1; fi
+  if cmp -s "$committed" "$lbin" 2>/dev/null; then rm -f "$committed"; return 1; fi   # 内容级比对:HEAD 前进但脚本没变不算落后
+  rm -f "$committed"; return 0
 }
 
 cmd_events(){
@@ -2503,6 +2581,7 @@ case "${1:-}" in
   merge-guard) shift; cmd_merge_guard "$@" ;;  # ref级合并主树同步闸(#24):只判不动手,⛔ 代跑 reset --hard
   opt-status) shift; cmd_opt_status "$@" ;;  # 优化条目销号率(#33):按节独立统计,未知节/解析失效自曝退非零
   backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
+  release) shift; cmd_release "$@" ;;        # #25 部署原子化:已提交版→版本化路径+原子换软链(脏树拒发)
   kb-commit) shift; cmd_kb_commit "$@" ;;    # 知识库提交守卫:只收文件路径拒目录旗标(P1-2 互扫防线)
   install-backup) cmd_install_backup ;;      # 每小时备份 launchd
   install-boot-full) cmd_install_boot_full ;;  # 开机全自动恢复(P0-3,烧钱,创始人已裁)

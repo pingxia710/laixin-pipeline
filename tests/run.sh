@@ -1027,6 +1027,66 @@ t "#38 绊线:缺 origin=配置缺口,首轮即告警不被重试掩蔽" bash -c
   grep -q "缺 origin 远端(配置缺口" "$B38"' 38 "$T38"
 rm -rf "$T38"
 
+echo "== 8. #25 部署原子化(release:已提交版+版本化路径+原子换链;fixture 仓零真实副作用) =="
+# ⚠️ 全部走 LAIXIN_RELEASE_* env 覆盖:本批 ⛔ 碰真实 ~/.local/bin/laixin-lane(切换留复工试火)
+R25="$(mktemp -d)"
+mkdir -p "$R25/repo/bin" "$R25/bin" "$R25/rel"
+git -C "$R25/repo" init -q
+printf '#!/bin/bash\necho v1\n' > "$R25/repo/bin/laixin-lane"
+git -C "$R25/repo" add bin/laixin-lane
+git -C "$R25/repo" -c user.email=t@t -c user.name=t commit -qm v1
+RENV=(env LAIXIN_RELEASE_REPO="$R25/repo" LAIXIN_RELEASE_BIN="$R25/bin/laixin-lane" LAIXIN_RELEASE_DIR="$R25/rel")
+tout "#25:release 发布已提交版并回显新旧软链去向" "已发布" "${RENV[@]}" "$LANE" release
+t "#25:软链指向发布目录内版本化文件,内容=已提交版且可执行" bash -c '
+  tgt="$(readlink "$1/bin/laixin-lane")"
+  case "$tgt" in "$1/rel"/*) ;; *) exit 1 ;; esac
+  [ -x "$tgt" ] && grep -q "echo v1" "$tgt"' 25 "$R25"
+# ⭐ 绊线③:工作树脏 ⇒ 拒绝发布,软链纹丝不动(发布=已提交态,与 backup 只推已提交同哲学)
+printf '#!/bin/bash\necho v2\n' > "$R25/repo/bin/laixin-lane"
+TGT25_OLD="$(readlink "$R25/bin/laixin-lane")"
+tfail "#25 绊线:工作树脏 ⇒ 拒绝发布" "拒绝发布" "${RENV[@]}" "$LANE" release
+t "#25 绊线:拒绝发布时软链未被碰" bash -c '[ "$(readlink "$1/bin/laixin-lane")" = "$2" ]' 25 "$R25" "$TGT25_OLD"
+# 提交 v2 再发布:链切到新版,旧发布文件保留(运行中的旧进程握旧 inode/可回滚)
+git -C "$R25/repo" add bin/laixin-lane
+git -C "$R25/repo" -c user.email=t@t -c user.name=t commit -qm v2
+tout "#25:换代发布成功" "已发布" "${RENV[@]}" "$LANE" release
+t "#25 绊线:链已指新版且旧发布文件仍保留(旧 inode 不销毁)" bash -c '
+  tgt="$(readlink "$1/bin/laixin-lane")"
+  grep -q "echo v2" "$tgt" || exit 1
+  [ "$(ls "$1/rel" | wc -l | tr -d " ")" -ge 2 ]' 25 "$R25"
+# ⭐ 绊线:已提交版语法坏 ⇒ 拒绝发布(半坏版换上=每次调用都死,比旧版继续跑危害大)
+printf '#!/bin/bash\nif [ x ; then\n' > "$R25/repo/bin/laixin-lane"
+git -C "$R25/repo" add bin/laixin-lane
+git -C "$R25/repo" -c user.email=t@t -c user.name=t commit -qm v3-bad
+tfail "#25 绊线:已提交版 bash -n 不过 ⇒ 拒绝发布" "语法检查未过" "${RENV[@]}" "$LANE" release
+t "#25:语法拒发后链仍指 v2(不换上半坏版)" bash -c 'grep -q "echo v2" "$(readlink "$1/bin/laixin-lane")"' 25 "$R25"
+# ② doctor 判据函数 release_stale:落后报 0 / 一致报 1 / 未切发布=不适用报 1(失效⛔指向「落后」)
+sed -n "/^release_stale()/,/^}/p" "$LANE" > "$R25/fn.sh"
+t "#25:release_stale——HEAD 前进(v3)而链仍 v2 ⇒ 报落后" bash -c '
+  source "$1/fn.sh"
+  export LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_RELEASE_BIN="$1/bin/laixin-lane" LAIXIN_RELEASE_DIR="$1/rel"
+  release_stale' 25 "$R25"
+t "#25:release_stale——回到 v2 后内容一致 ⇒ 不报落后" bash -c '
+  git -C "$1/repo" reset -q --hard HEAD~1
+  source "$1/fn.sh"
+  export LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_RELEASE_BIN="$1/bin/laixin-lane" LAIXIN_RELEASE_DIR="$1/rel"
+  ! release_stale' 25 "$R25"
+t "#25:release_stale——软链指向仓库工作树(开发直连态)⇒ 不适用不报落后" bash -c '
+  ln -sf "$1/repo/bin/laixin-lane" "$1/bin/laixin-lane"
+  source "$1/fn.sh"
+  export LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_RELEASE_BIN="$1/bin/laixin-lane" LAIXIN_RELEASE_DIR="$1/rel"
+  ! release_stale' 25 "$R25"
+rm -rf "$R25"
+# 结构绊线:doctor 挂了发布代龄提示(提示级 wrn ⛔ 强制);原子换链走「临时链+mv」⛔ ln -sfn 直写
+tout "#25:doctor 挂发布代龄检查" "发布版落后仓库已提交版" sed -n "/^cmd_doctor/,/^cmd_[a-z_]*()/p" "$LANE"
+t "#25 绊线:换链=临时链+mv 原子替换,⛔ ln -sfn 直写正式链(macOS 两步有空窗)" bash -c '
+  # 只判可执行行:cmd_release 注释里就有「ln -sfn ⛔ 用」的选型理由,含注释的包含匹配
+  # 会被自己的元文本命中(台账八律第 8 律,本测试首跑即实撞一次)
+  body="$(sed -n "/^cmd_release()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  grep -q "ln -s \"\$rel\" \"\$ltmp\"" <<< "$body" || exit 1
+  grep -q "mv -f \"\$ltmp\" \"\$lbin\"" <<< "$body" || exit 1
+  ! grep -q "ln -sfn" <<< "$body"' "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

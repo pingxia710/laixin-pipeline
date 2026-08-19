@@ -212,8 +212,9 @@ tout "连字符名裸拼在关闭清单(codex -c 纯字符串切分,无需 TOML 
 rm -rf "$TMPM"
 tout "up 有 codex 启动自检(拒载秒退=脚本说成功现场没成功,回头验尸)" "codex 未在跑" sed -n "/^cmd_up/,/^}/p" "$LANE"
 tout "启动自检不自动重试(同因重试同死,只会刷屏)" "盲目重试" sed -n "/^cmd_up/,/^}/p" "$LANE"
-tout "send 有被吞检测(8s 抓屏找活动迹象)" "send 疑似被吞" sed -n "/^cmd_send/,/^}/p" "$LANE"
-tout "send 被吞检测不自动重发" "盲目重发" sed -n "/^cmd_send/,/^}/p" "$LANE"
+# #40 起判定体抽进 send_swallow_check(cmd_send 后台块只留挂点)⇒ 这两条改盯函数本体
+tout "send 有被吞检测(8s 抓屏找活动迹象)" "send 疑似被吞" sed -n "/^send_swallow_check/,/^}/p" "$LANE"
+tout "send 被吞检测不自动重发" "盲目重发" sed -n "/^send_swallow_check/,/^}/p" "$LANE"
 
 echo "== 6g. kb-commit 台账钩+facts-fresh(2026-08-18 复盘页#13/#14:挂在人一定会做的动作上的机器检查) =="
 TMPG="$(mktemp -d)"
@@ -952,6 +953,38 @@ t "#39:多参但说明位是存在文件 ⇒ 提醒不阻断,提交照常" bash 
   out="$(env LAIXIN_VAULT="$1" "$2" kb-commit 总表.md 注册表.md 2>&1)"; rc=$?
   [ $rc -eq 0 ] && grep -q "存在的文件路径" <<< "$out" && grep -q "已提交 1 个文件" <<< "$out"' 39 "$V39" "$LANE"
 rm -rf "$V39"
+
+echo "== 7f. #40 send 送达检测附状态(⚖️ 裁定:⛔ 放宽判据 ⛔ 提高阈值,只加状态说明) =="
+T40="$(mktemp -d)"
+sed -n "/^send_swallow_check()/,/^}/p" "$LANE" > "$T40/f.sh"
+cat > "$T40/stub.sh" <<'S40'
+win(){ echo "lane-$1"; }
+target(){ echo "s:lane-$1"; }
+board(){ printf '%s\n' "$2" >> "$B40"; }
+tmux(){ cat "$P40"; }
+S40
+# ⭐ 主绊线(实撞形态):lane 跑后台长任务时界面静止 ⇒ 警告**照发**(拦截不变)且点名状态与看处
+t "#40 绊线:后台任务静止 ⇒ 警告照发+点名 Waiting for background terminal 属预期" bash -c '
+  export B40="$1/bA" P40="$1/pA"
+  printf "Waiting for background terminal (1m 42s)\n" > "$P40"; : > "$B40"
+  out="$(bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; send_swallow_check a" 2>&1)"
+  grep -q "疑似被吞" <<< "$out" && grep -q "Waiting for background terminal" <<< "$out" \
+    && grep -q "界面静止属预期" "$B40"' 40 "$T40"
+# 普通静止:警告原样,零状态注(状态注只在有据时出现,不制造无据文案)
+t "#40:普通静止 ⇒ 警告原样零状态注" bash -c '
+  export B40="$1/bB" P40="$1/pB"
+  printf "安静的画面\n" > "$P40"; : > "$B40"
+  out="$(bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; send_swallow_check a" 2>&1)"
+  grep -q "疑似被吞" <<< "$out" && ! grep -q "界面静止属预期" <<< "$out"' 40 "$T40"
+# 有活动迹象:零警告——判据未放宽也未收紧
+t "#40:有活动迹象 ⇒ 零警告(判据未动)" bash -c '
+  export B40="$1/bC" P40="$1/pC"
+  printf "● Working on it\n" > "$P40"; : > "$B40"
+  out="$(bash -c "source \"$1/f.sh\"; source \"$1/stub.sh\"; send_swallow_check a" 2>&1)"
+  [ -z "$out" ] && [ ! -s "$B40" ]' 40 "$T40"
+rm -rf "$T40"
+# 结构:8 秒阈值未动(裁定 ⛔ 提高阈值),检测挂点仍在 cmd_send 后台块
+tout "#40:8s 阈值未动且检测挂在 send 后台块" "sleep 8; send_swallow_check" sed -n "/^cmd_send()/,/^}/p" "$LANE"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

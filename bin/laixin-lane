@@ -213,6 +213,23 @@ cmd_fresh() {
   cmd_up "$lane" "$@"
 }
 
+# #40:send 被吞检测本体(独立成函数可独测)。⚖️ 裁定已定:⛔ 放宽判据 ⛔ 提高阈值——
+# 警告附带的「强制 peek 复核+⛔ 盲目重发」正是它的价值(重复派工污染 Codex 上下文,代价远大于误报)。
+# 正确改法=把导致误报的**状态**一并读出附上:lane 跑后台长任务时,新消息到达不产生任何活动迹象,
+# 「界面无变化」在该状态下≠「消息没到」(08-19 三十三任实撞:消息完整在屏,lane 正跑后台全量)。
+# 通则:误报的解药常常不是调阈值,是把「导致误报的那个状态」一起显示出来。
+send_swallow_check() {  # <轨道名>;由 cmd_send 的 8s 延时后台块调用
+  local lane="$1" _shot _bg=""
+  _shot="$(tmux capture-pane -p -t "$(target "$lane")" 2>/dev/null | tail -30 || true)"
+  if grep -qE 'Working|Explored|Read |Thinking|Ran ' <<< "$_shot"; then return 0; fi
+  if grep -q "Waiting for background terminal" <<< "$_shot"; then
+    _bg="(检测到该轨正在跑后台任务:画面含「Waiting for background terminal」,界面静止属预期——peek 时先看这一行,消息很可能已送达)"
+  fi
+  echo "⚠️⚠️ send 疑似被吞:$(win "$lane") 8 秒后未见活动迹象${_bg}——peek ${lane} 30 人工复核,确认被吞再重发(⛔ 盲目重发)" >&2
+  board "lane-$lane" "⚠️ send 疑似被吞(8s 无活动迹象)${_bg},派工窗口请 peek 复核"
+  return 0
+}
+
 cmd_send() {
   local lane="${1:-}"; shift || true
   [ -n "$lane" ] || die "send 需要轨道名"
@@ -231,12 +248,8 @@ cmd_send() {
   echo "已发送到 $(win "$lane")(${head1}…)"
   # send 被吞机器检测(2026-08-18 生产级 P1-1):MCP 启动刷屏曾吞掉 send,peek 复核此前靠自觉。
   # 8 秒后抓屏找活动迹象;未见=大声警告+记看板。⛔ 不自动重发(重发曾被裁定有搞乱 Codex 上下文风险)。
-  ( sleep 8
-    if ! tmux capture-pane -p -t "$(target "$lane")" 2>/dev/null | tail -30 | grep -qE 'Working|Explored|Read |Thinking|Ran '; then
-      echo "⚠️⚠️ send 疑似被吞:$(win "$lane") 8 秒后未见活动迹象——peek ${lane} 30 人工复核,确认被吞再重发(⛔ 盲目重发)" >&2
-      board "lane-$lane" "⚠️ send 疑似被吞(8s 无活动迹象),派工窗口请 peek 复核"
-    fi
-  ) &
+  # 判定与文案在 send_swallow_check(#40:附后台任务状态说明;判据与 8s 阈值都未动)。
+  ( sleep 8; send_swallow_check "$lane" ) &
 }
 
 cmd_peek() {

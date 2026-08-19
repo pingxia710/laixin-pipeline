@@ -1404,6 +1404,86 @@ tout "dispatch 回显在 --force-rival 下如实说「跳过未核」⛔ 装作�
 tout "relay 回显区分 --resurrect 豁免与 --force-rival 跳过(两种非常规调用语义不同)" "按 --resurrect 豁免" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
 tout "release 成功回显已核清单" "已核:工作树干净" sed -n "/^cmd_release/,/^}/p" "$LANE"
 
+echo "== 8j. #51 table-lint 台账写盘断言库(列数+残留竖线+行首唯一;从「各窗口自带」升「库提供」) =="
+TL="$(mktemp -d)"
+cat > "$TL/好表.md" <<'EOF'
+# 注册表
+| 角色 | 地址 | 备注 |
+|---|---|---|
+| 派工窗口 | dispatch | `?? 0` 与 `|| 0` 是禁止项 |
+| **中继窗口** | relay | 正常行 |
+整行叙述可以出现在表外只要不带竖线
+EOF
+tout "合法表过(内联代码带竖线不算分隔——实撞:裸分列被 \`|| 0\` 切碎)" "✅ table-lint:1 个表 4 行列数齐" "$LANE" table-lint "$TL/好表.md"
+t "合法表退 0" "$LANE" table-lint "$TL/好表.md"
+cat > "$TL/劈行.md" <<'EOF'
+| 角色 | 地址 | 备注 |
+|---|---|---|
+| 中继 | relay | 布尔或 || 就是那次把行劈成 10 列的形态 |
+EOF
+tfail "裸竖线劈行被列数断言拦(#51 本体:注册表 10 列实撞)" "列数断言:3 行有 5 格" "$LANE" table-lint "$TL/劈行.md"
+tfail "劈行报错给出路(符号进表格包反引号)" "包反引号" "$LANE" table-lint "$TL/劈行.md"
+cat > "$TL/残留.md" <<'EOF'
+| 角色 | 地址 |
+|---|---|
+| 甲 | a |
+移行没删干净的碎片 | b |
+| 尾巴不闭合
+EOF
+tfail "表外残留竖线被扫出(移行碎片形态)" "表外残留竖线" "$LANE" table-lint "$TL/残留.md"
+tfail "行不闭合被扫出" "行不闭合" "$LANE" table-lint "$TL/残留.md"
+cat > "$TL/叙述行.md" <<'EOF'
+| 片 | 轨 | 分支 | 状态 |
+|---|---|---|---|
+| **正常片** | A | x | ok |
+| **整行叙述的单格行(执行总表在用的形态,不许误伤)** |
+EOF
+tout "单格叙述行不算列数异常(状态感知,真总表 4 连例)" "单格叙述行 1 行不参与" "$LANE" table-lint "$TL/叙述行.md"
+cat > "$TL/围栏.md" <<'EOF'
+| 甲 | 乙 |
+|---|---|
+| a | b |
+```
+代码块里的 | 竖线 | 不算 | 表 |
+```
+EOF
+t "代码围栏内竖线不扫(fence 状态感知)" "$LANE" table-lint "$TL/围栏.md"
+# 行首匹配唯一性:写盘脚本定位目标行的三态
+tout "行首唯一命中报行号" "行首「派工窗口」唯一命中" "$LANE" table-lint "$TL/好表.md" --match "派工窗口"
+tfail "行首零命中报「sed 会静默空替换」" "零命中" "$LANE" table-lint "$TL/好表.md" --match "不存在的行"
+cat > "$TL/歧义.md" <<'EOF'
+| 片 | 轨 |
+|---|---|
+| 付款指引机制 | A |
+| 付款指引机制补丁 | B |
+EOF
+tfail "行首多命中报歧义并列行号" "命中 2 行" "$LANE" table-lint "$TL/歧义.md" --match "付款指引机制"
+# --lines 射程:存量坏行不在指定行 ⇒ 不扰(kb-commit 钩=只核新增行的机制半边)
+cat > "$TL/存量.md" <<'EOF'
+| 甲 | 乙 | 丙 |
+|---|---|---|
+| 老坏行 | 只有两格 |
+| 新好行 | a | b |
+EOF
+t "--lines 限射程:存量坏行不在指定行 ⇒ 过(历史形态不扰正常提交)" "$LANE" table-lint "$TL/存量.md" --lines 4
+tfail "--lines 含坏行 ⇒ 照拦" "列数断言" "$LANE" table-lint "$TL/存量.md" --lines 3,4
+# kb-commit 挂点:提交涉注册表 ⇒ 自动只核新增行;非台账族零噪音
+TLV="$(mktemp -d)"; git init -q -b main "$TLV"; git -C "$TLV" config user.email t@t; git -C "$TLV" config user.name t
+printf '| 角色 | 地址 |\n|---|---|\n| 甲 | a |\n' > "$TLV/来信平台-窗口角色注册表.md"
+git -C "$TLV" add -A; git -C "$TLV" commit -qm seed
+printf '| 乙 | 劈行 || 形态 |\n' >> "$TLV/来信平台-窗口角色注册表.md"
+tout "kb-commit 涉注册表 ⇒ 自动断言并拦下新增劈行(⛔ 阻断,报警由人核)" "列数断言" \
+  env LAIXIN_VAULT="$TLV" "$LANE" kb-commit "test: 注册表劈行" 来信平台-窗口角色注册表.md
+t "断言未过但提交已落库(⛔ 阻断=分桶钩同哲学)" bash -c \
+  'git -C "$1" log --oneline -1 | grep -q "注册表劈行"' tl "$TLV"
+printf '| 丙 | c |\n' >> "$TLV/来信平台-窗口角色注册表.md"
+tout "kb-commit 新增好行 ⇒ 断言过报绿(#50)" "✅ table-lint" \
+  env LAIXIN_VAULT="$TLV" "$LANE" kb-commit "test: 注册表好行" 来信平台-窗口角色注册表.md
+printf 'x | y 普通笔记里的竖线\n' > "$TLV/随笔.md"
+tl_nohook(){ case "$1" in *table-lint*|*表结构断言*) echo TL_LEAK ;; *已提交*) echo TL_OK ;; *) echo TL_BAD ;; esac; }
+tout "非台账族提交零断言噪音(钩挂在台账动作上)" "TL_OK" tl_nohook "$(env LAIXIN_VAULT="$TLV" "$LANE" kb-commit "test: 随笔" 随笔.md 2>&1)"
+rm -rf "$TL" "$TLV"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

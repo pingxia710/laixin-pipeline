@@ -46,6 +46,7 @@
 #   laixin-lane opt-status [--page P] 优化条目销号率(#33):按节独立统计各队列共/销号/未销+未销条目点名
 #   laixin-lane release              发布(#25):仓库已提交版→版本化路径+原子换软链(工作树脏拒发;开发迭代直接跑仓库路径)
 #   laixin-lane review-env [up|down|status]  评审环境一键化(#五-18):main 快照 worktree+init+seed+双服务(:8900/:3900);down 杀净有验尸
+#   laixin-lane table-lint <文件> [--match 行首串]... [--lines N,..]  台账写盘断言库(#51):列数+残留竖线+行首唯一;写盘脚本调用
 set -euo pipefail
 
 # ---- 配置(全部可被环境变量或 config 文件覆盖;默认值=来信平台) ----
@@ -583,6 +584,81 @@ cmd_report_lint() {  # #18b(2026-08-19):交付报告举证 lint——举证毛�
   [ "$errs" -eq 0 ]
 }
 
+# table-lint(#51,2026-08-19 停工B段批四):台账/注册表写盘断言库——「列数断言+残留竖线扫描+
+# 行首匹配唯一性」从「各窗口写盘脚本自带」升为「库提供」。
+# 失败样本:第二任把布尔或运算符**原样引用**进注册表表格行,整行被劈成 10 列(应 8),地址簿
+# 结构坏 20 分钟才被下一次写入的断言拦下——八律第 2 律逐字点名过这个形态,缺的是机器闸不是知识;
+# dispatch 移行脚本「assert 三次全拦零漏网」已证明有效,只是没推广到写注册表/看板的脚本。
+# 用法:各窗口写盘脚本写完调 `laixin-lane table-lint <文件> [--match 行首串]...`,非零退出即中止/告警;
+#       --lines N,M,… 把列数/残留报错射程限到指定行(kb-commit 钩用=只核本次新增行,存量历史形态不扰)。
+# 状态感知(三约束①):反引号内联代码带竖线是台账合法惯例(实撞:`?? 0` 与 `|| 0` 曾把分列切碎)
+# ⇒ 剥 code span 与 \| 再数列;单格整行叙述是执行总表在用的形态 ⇒ 不参与列数只计数;引注块(>)跳过。
+cmd_table_lint(){
+  local f="${1:-}"; shift || true
+  [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane table-lint <台账/注册表.md> [--match <行首串>]... [--lines N,M,...]"
+  python3 - "$f" "$@" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+only = set(); matches = []
+args = sys.argv[2:]; i = 0
+while i < len(args):
+    if args[i] == "--lines" and i+1 < len(args):
+        only = {int(x) for x in args[i+1].split(",") if x.strip().isdigit()}; i += 2
+    elif args[i] == "--match" and i+1 < len(args):
+        matches.append(args[i+1]); i += 2
+    else:
+        print(f"未知参数:{args[i]}(--match 与 --lines 都需要值)"); sys.exit(2)
+def strip_spans(s):
+    s = s.replace("\\|", "\x00")               # 转义竖线不算分隔
+    return re.sub(r'`[^`]*`', '`C`', s)        # 反引号内联代码里的竖线是内容不是分隔(实撞形态)
+lines = open(path, encoding="utf-8").read().split("\n")
+errs = 0; fence = False; hdr = None; hdr_ln = 0; tables = 0; rows = 0; notes = 0
+scope = (lambda ln: True) if not only else (lambda ln: ln in only)
+for ln, raw in enumerate(lines, 1):
+    if raw.strip().startswith("```"):
+        fence = not fence; continue
+    if fence: continue
+    s = strip_spans(raw); st = s.strip()
+    if st.startswith("|"):
+        if not st.endswith("|"):
+            if scope(ln): print(f"  ❌ 行不闭合(以|起未以|收,疑移行/劈行残留碎片):{ln} 行: {raw[:80]}"); errs += 1
+            continue
+        n = len(st.strip("|").split("|"))
+        if hdr is None:
+            hdr = n; hdr_ln = ln; tables += 1
+        elif re.fullmatch(r'[|\s:\-]+', st):
+            pass                               # 分隔行
+        elif n == 1:
+            notes += 1                         # 单格整行叙述=台账在用的合法形态(状态感知 ⛔ 误伤)
+        elif n != hdr:
+            if scope(ln):
+                why = "裸竖线把行劈碎——符号/代码片段进表格请包反引号(载体不同,消息里对的写法进表就劈行)" if n > hdr else "缺格"
+                print(f"  ❌ 列数断言:{ln} 行有 {n} 格,表头({hdr_ln} 行)是 {hdr} 格({why}): {raw[:80]}"); errs += 1
+        rows += 1
+    else:
+        if hdr is not None: hdr = None
+        if "|" in s and not st.startswith(">"):
+            if scope(ln): print(f"  ❌ 表外残留竖线(整行移出没删干净的碎片形态):{ln} 行: {raw[:80]}"); errs += 1
+# 行首匹配唯一性:写盘脚本按行首定位目标行——0 命中=sed 静默空替换,>1=替换目标歧义
+for m in matches:
+    want = re.sub(r'[*~\s]', '', m); hits = []
+    for ln, raw in enumerate(lines, 1):
+        st = raw.strip()
+        if not st.startswith("|"): continue
+        first = re.sub(r'[*~\s]', '', st.strip("|").split("|")[0])
+        if first.startswith(want): hits.append(ln)
+    if len(hits) == 1: print(f"  ✅ 行首「{m}」唯一命中({hits[0]} 行)")
+    elif not hits: print(f"  ❌ 行首「{m}」零命中——写盘目标行不在(sed 会静默空替换,先核行首串)"); errs += 1
+    else: print(f"  ❌ 行首「{m}」命中 {len(hits)} 行({','.join(map(str,hits))})——替换目标歧义,先收窄行首串"); errs += 1
+scope_note = f"(射程=指定的 {len(only)} 行)" if only else ""
+if errs == 0:
+    print(f"✅ table-lint:{tables} 个表 {rows} 行列数齐(单格叙述行 {notes} 行不参与)· 表外零残留竖线{scope_note}")
+else:
+    print(f"table-lint:{errs} 项断言未过{scope_note}")
+sys.exit(1 if errs else 0)
+PYEOF
+}
+
 cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自有活,由派工流程收尾)
   local stopped=""
   win_exists "$WATCHDOG_WIN" && { tmux kill-window -t "$SESSION:$WATCHDOG_WIN"; stopped="$stopped watchdog"; }
@@ -995,6 +1071,23 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   # (kb-commit)上。查结果(分桶数+行名,stats 已逐桶列名)不查形态——未见过的第 N 变体
   # (末尾标记/首段无标记/首段含 ⛔…)也能接住。⛔ 不阻断提交:命中≠定罪,异常由人核
   # (提交已落库,发现落错桶就改完再 kb-commit 一次)。
+  # #51 台账表结构断言挂点:提交涉台账族 ⇒ 只核**本次提交新增的行**(存量行的历史形态——单格
+  # 叙述行/老缺格——不该让每次正常提交都变黄,三约束③ 噪声必须与目标行为同向)。⛔ 阻断:
+  # 提交已落库,报警形态与分桶钩一致(修好再 kb-commit 一次);写盘脚本要闸门就在写盘时直调 table-lint。
+  if [ "$committed" -eq 1 ]; then
+    local _tf _lines
+    for _tf in "${args[@]}"; do
+      case "$_tf" in *执行总表*|*注册表*|*看板*|*走查底册*) : ;; *) continue ;; esac
+      _lines="$(git -C "$vault" show --unified=0 HEAD -- "$_tf" 2>/dev/null \
+        | awk '/^@@/ {if (match($0, /\+[0-9]+(,[0-9]+)?/)) {s=substr($0, RSTART+1, RLENGTH-1); split(s, a, ","); n=(a[2]=="")?1:a[2]+0; for(i=0;i<n;i++) print a[1]+i}}' \
+        | paste -s -d, -)"
+      [ -n "$_lines" ] || continue
+      echo
+      echo "== 台账表结构断言(#51,只核本次新增行:$(basename "$_tf")) =="
+      cmd_table_lint "$_tf" --lines "$_lines" \
+        || echo "⚠️ 表结构断言未过(提交已落库 ⛔ 回滚;修好后再 kb-commit 一次——注册表被劈 10 列坏 20 分钟正是这个形态)"
+    done
+  fi
   if [ "$committed" -eq 1 ]; then
     local _f _hit=0
     for _f in "${args[@]}"; do case "$_f" in *执行总表*) _hit=1 ;; esac; done
@@ -2898,6 +2991,7 @@ case "${1:-}" in
   backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
   release) shift; cmd_release "$@" ;;        # #25 部署原子化:已提交版→版本化路径+原子换软链(脏树拒发)
   review-env) shift; cmd_review_env "$@" ;;  # #五-18 评审环境一键化:实操卡命令序翻译;down 杀净+验尸(⛔ 留孤儿)
+  table-lint) shift; cmd_table_lint "$@" ;;  # #51 台账写盘断言库:列数+残留竖线+行首唯一(kb-commit 涉台账自动只核新增行)
   kb-commit) shift; cmd_kb_commit "$@" ;;    # 知识库提交守卫:只收文件路径拒目录旗标(P1-2 互扫防线)
   install-backup) cmd_install_backup ;;      # 每小时备份 launchd
   install-boot-full) cmd_install_boot_full ;;  # 开机全自动恢复(P0-3,烧钱,创始人已裁)

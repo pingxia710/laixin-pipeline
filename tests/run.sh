@@ -525,6 +525,46 @@ t "RELAY_CDP_PORT 落在全部派生值域之外(值域判据 ⛔ 占用判据)"
   [ "$rp" -lt "$vb" ] || exit 1'
 rm -rf "$R32"
 
+echo "== 6l. kb-commit 追加条目撞号自检(#9;fixture 仓,零真实副作用) =="
+D9="$(mktemp -d)"; mkdir -p "$D9/v/wiki"
+git init -q -b main "$D9/v"; git -C "$D9/v" config user.email t@t; git -C "$D9/v" config user.name t
+Q9="$D9/v/wiki/运行复盘与优化推动-20260818.md"
+printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的)\n' > "$Q9"
+git -C "$D9/v" add wiki && git -C "$D9/v" commit -qm base
+# 每个用例都回到**基线 commit**(⛔ reset 到 HEAD:上一个用例已把撞号提交进去,
+#   回到 HEAD 等于把撞号当基线,后续用例就再也造不出「新增行」了——实撞一次)
+BASE9="$(git -C "$D9/v" rev-parse HEAD)"
+KB9=(env LAIXIN_VAULT="$D9/v" LAIXIN_BOARD="$D9/board.md")
+# ⭐ 绊线①(实撞形态):乙窗口也按「读最大号+1」取 24 并追加 ⇒ 与甲窗口已登的 24 撞号。
+#   今晨真事:24-26 三条各撞一次,靠人工重排 28-30 才消歧。
+printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的)\n24. 廿四条(乙窗口并发登的)\n' > "$Q9"
+tout "追加撞号被抓出并点名编号(#9)" "编号 #24 在 运行复盘与优化推动-20260818.md 里出现 2 次" \
+  "${KB9[@]}" "$LANE" kb-commit "撞号测试" "wiki/运行复盘与优化推动-20260818.md"
+git -C "$D9/v" reset -q --hard "$BASE9"
+# ⭐ 绊线②:要给**建议号**(当前最大号+1),⛔ 只报「撞了」不给出路
+printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的)\n24. 廿四条(乙窗口并发登的)\n' > "$Q9"
+tout "撞号给出建议号=当前最大号+1(#9)" "建议改用 #25" \
+  "${KB9[@]}" "$LANE" kb-commit "撞号测试2" "wiki/运行复盘与优化推动-20260818.md"
+git -C "$D9/v" reset -q --hard "$BASE9"
+# ⭐ 绊线③(方向性):⛔ 阻断提交——命中≠定罪,同 kb-commit 既有分桶钩的哲学
+printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的)\n24. 廿四条(乙窗口并发登的)\n' > "$Q9"
+t "撞号 ⛔ 阻断提交(命中≠定罪,#9)" "${KB9[@]}" "$LANE" kb-commit "撞号测试3" "wiki/运行复盘与优化推动-20260818.md"
+t "撞号时提交确实落库了(告警不代替提交)" bash -c \
+  'git -C "'"$D9"'/v" log --oneline -1 | grep -q "撞号测试3"'
+git -C "$D9/v" reset -q --hard "$BASE9"
+# ⭐ 绊线④(零误报,决定这个检查器能不能长期活着):**改既有条目**不许报——
+#   改一条同时产生 +N. 与 -N.,文件里该号仍只有一行 ⇒ 不该报。误报若随「正常编辑」增长,
+#   这个检查器很快就会被所有人忽略(三约束③ 噪声必须与目标行为同向)。
+printf '# 队列页\n\n## 三、优化推动清单\n\n23. 廿三条\n24. 廿四条(甲窗口先登的,今天改了措辞)\n' > "$Q9"
+t "改既有条目零误报(#9 三约束③)" bash -c \
+  '! grep -q "撞号" <<< "$(env LAIXIN_VAULT="'"$D9"'/v" LAIXIN_BOARD="'"$D9"'/board.md" "'"$LANE"'" kb-commit "改措辞" "wiki/运行复盘与优化推动-20260818.md" 2>&1)"'
+git -C "$D9/v" reset -q --hard "$BASE9"
+# ⭐ 绊线⑤(射程,⛔ 扩到全库):非队列文件零噪音——撞号只发生在有自增编号的队列里
+printf '# 普通笔记\n\n1. 甲\n1. 乙\n' > "$D9/v/wiki/普通笔记.md"
+t "非队列文件不跑撞号自检(#9 射程 ⛔ 全库)" bash -c \
+  '! grep -q "撞号" <<< "$(env LAIXIN_VAULT="'"$D9"'/v" LAIXIN_BOARD="'"$D9"'/board.md" "'"$LANE"'" kb-commit "普通笔记" "wiki/普通笔记.md" 2>&1)"'
+rm -rf "$D9"
+
 echo "== 6k. opt-status 按节独立统计(#33;fixture 复盘页,⛔ 依赖真页) =="
 # fixture 刻意复用**真页的节名**:白/黑名单是本工具的判据本体,拿假节名测等于没测判据
 # (谁把 WHITE 里的节名改错,这些用例立刻红)。内容则是最小可判样本,每条对一个已知陷阱。

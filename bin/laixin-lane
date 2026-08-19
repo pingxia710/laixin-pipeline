@@ -712,6 +712,45 @@ PLIST
   return 0
 }
 
+# ── #9 追加型条目撞号自检(2026-08-19;复盘页 §三 9 的「同族新形态」) ──────────────
+# 实撞:中继与方案窗口**同晨各自**往复盘页追加条目,取号都用「读当前最大号+1」⇒ 并发时取到同号
+# (24-26 撞 24-26,中继当轮重排 28-30 消歧)。通则:并发环境里**「我刚取的号」也是共享状态**,
+# 任何自增序列的取用都该当场查尾——与 dispatch 扫存量「双层扫」是同一课的两个考点。
+# 本函数是那条轻规则的机器半:提交前查**新增行**的条目号在目标文件里是不是已经存在。
+# 射程刻意只到「复盘页这类追加型队列文件」,⛔ 扩到全库(全库跑=噪音随知识库体量涨,而撞号只发生
+# 在有自增编号的队列里;三约束③ 噪声必须与目标行为同向)。
+# ⛔ 阻断提交:命中≠定罪(同 kb-commit 既有分桶钩),报警+给建议号,改不改由人判。
+# 设计上对「改既有条目」零误报:改一条会同时产生 +N. 与 -N.,文件里该号仍只有一行 ⇒ 不报。
+#   只有**真的多出一行同号**才 cnt>1 —— 而那正是撞号的定义。
+KB_QUEUE_PAT="${LAIXIN_QUEUE_PAT:-运行复盘与优化推动}"
+kb_dup_num_check(){   # kb_dup_num_check <vault> <文件绝对路径>...
+  local vault="$1"; shift
+  local f added line n cnt maxn hit=0
+  for f in "$@"; do
+    case "$f" in *"$KB_QUEUE_PAT"*) : ;; *) continue ;; esac
+    [ -f "$f" ] || continue
+    # 新增行里行首带编号的(⛔ 用 grep -c:零命中退出码 1,AGENTS.md 已载)
+    added="$(git -C "$vault" diff HEAD -- "$f" 2>/dev/null | grep -E '^\+[0-9]' || true)"
+    [ -n "$added" ] || continue
+    maxn="$(grep -oE '^[0-9]{1,3}' "$f" 2>/dev/null | sort -n | tail -1 || true)"
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      n="$(printf '%s' "$line" | sed -nE 's/^\+([0-9]{1,3}(-bis)?)[.、(（].*/\1/p')"
+      [ -n "$n" ] || continue
+      cnt="$(grep -cE "^${n}[.、(（]" "$f" 2>/dev/null || true)"
+      if [ "${cnt:-0}" -gt 1 ]; then
+        [ "$hit" -eq 0 ] && { echo; echo "== 追加条目撞号自检(#9:并发取号,两窗口各自「读最大号+1」会取到同号) =="; }
+        hit=1
+        echo "⚠️ 编号 #${n} 在 $(basename "$f") 里出现 ${cnt} 次(你新增的那条与已有条目撞号):"
+        grep -nE "^${n}[.、(（]" "$f" 2>/dev/null | cut -c1-100 | sed 's/^/     /' || true
+        [ -n "$maxn" ] && echo "     建议改用 #$((maxn+1))(=本页当前最大号+1);改完重跑 kb-commit。"
+      fi
+    done <<< "$added"
+  done
+  [ "$hit" -eq 0 ] || echo "   ⛔ 未阻断提交(命中≠定罪):撞号已落库也能改,但**错误指针不过夜**——改完顺手把引用它的消息/回执一并更正。"
+  return 0
+}
+
 cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显式文件路径,拒目录/拒旗标
   # 双窗口同库并发时 add -A/add 目录会把对方未提交的编辑扫上自己车(复盘页#9 e5f6351 实撞)——
   # 本命令是「git add 精确路径」约定的机器化,窗口提交知识库一律走这里。
@@ -724,6 +763,9 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
     [ -f "$abs" ] || die "⛔ 不是文件:$p(目录/通配/不存在都拒——互扫防线)"
     args+=("$abs")
   done
+  # #9 撞号自检必须在 add/commit **之前**跑:它比对的是工作树与 HEAD 的差(新增了哪些行),
+  # 提交之后这个差就没了;且先报后交,操作者看到告警时下一步动作是明确的。
+  kb_dup_num_check "$vault" "${args[@]}" || true
   git -C "$vault" add -- "${args[@]}" || die "git add 失败"
   local committed=0
   if git -C "$vault" commit -q -m "$msg" -- "${args[@]}" 2>/dev/null; then

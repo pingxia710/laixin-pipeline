@@ -50,6 +50,10 @@ echo "== 3. verify-from 契约闸门 =="
 TMPD="$(mktemp -d)"
 printf '假报告\n【交付完成】main e9a4acc\n' > "$TMPD/来信平台-测试片验收记录.md"
 tout "合法报告解析出片名" "片名=测试片" "$LANE" verify-from "$TMPD/来信平台-测试片验收记录.md" --dry
+printf '假报告\n【交付完成】main e9a4acc\n' > "$TMPD/来信平台-对照片-交付报告-kimi.md"
+tout "引擎后缀交付报告(C 轨 kimi 对照份)片名派生成 X-kimi(⛔ 与对照份同名:回执会互相覆盖)" "片名=对照片-kimi" "$LANE" verify-from "$TMPD/来信平台-对照片-交付报告-kimi.md" --dry
+printf '假报告\n【交付完成】main e9a4acc\n' > "$TMPD/来信平台-普通片-交付报告.md"
+tout "无后缀交付报告片名派生不变" "片名=普通片" "$LANE" verify-from "$TMPD/来信平台-普通片-交付报告.md" --dry
 printf '没有标记\n' > "$TMPD/坏1.md"
 tfail "无标记被拒" "契约不符" "$LANE" verify-from "$TMPD/坏1.md" --dry
 printf '【交付完成】main deadbeef99\n' > "$TMPD/坏2.md"

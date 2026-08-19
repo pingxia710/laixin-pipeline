@@ -1033,6 +1033,146 @@ tout "图例随判据同步收紧(#65,自述 ⛔ 比判据宽)" "半销=✅ 紧�
 t "半销判据收紧后仍退 0——报告非闸门(#65)" env LAIXIN_OPT_PAGE="$D65/half.md" "$LANE" opt-status
 rm -rf "$D65"
 
+echo "== 6p. #67 派工引擎化(默认 claude)+ 出站中转 relay-msg(单向,零扩权) =="
+# 背景:Claude 周额度实测 weekly_all 91%,dispatch 是单窗口消耗最大的一个;#60① 已换验收窗,本批换派工窗。
+# codex 没有 SendMessage ⇒ 出站走中继代发;**回程 ⛔ 反向注入**——对方落盘、events 投**路径指针**,
+# dispatch 自读全文(events 的载荷从来不是结构化内容,这正是「讨论也能走落盘」的机关)。
+# ⭐ 绊线①(本批最关键的一条):默认值必须是 claude。#66 的教训=换默认值会让「同一条命令在换代前后
+#   语义不同,而命令本身长得一模一样」;而 dispatch 起窗会被 resurrect/boot 链**无人值守自动调用**。
+tout "#67 派工引擎默认 claude(⛔ 学 #60① 默认 codex:起窗会被 boot/resurrect 无人值守自动调用)" \
+  "LAIXIN_DISPATCH_ENGINE:-claude" grep -n "^DISPATCH_ENGINE=" "$LANE"
+t "#67 默认值确实不是 codex(回退检测:谁把默认改了本行立刻红)" bash -c \
+  '! grep -q "LAIXIN_DISPATCH_ENGINE:-codex" "'"$LANE"'"'
+# ⭐ 绊线②:值打错在**动窗口之前**拒(同 #60① 一课)——dispatch 起窗会先 kill 掉旧窗口,
+#   校验放后面等于「参数打错就把正在派工的窗口杀了」。
+tfail "#67 未知派工引擎被拒且指明合法值" "只接受 codex|claude" \
+  env LAIXIN_DISPATCH_ENGINE=kimi LAIXIN_SESSION=bogus-d67 "$LANE" dispatch
+t "#67 未知引擎被拒时零 tmux 副作用(⛔ 留下半个死会话)" bash -c \
+  '! tmux has-session -t bogus-d67 2>/dev/null'
+t "#67 引擎校验在 ensure_session/kill-window 之前" bash -c \
+  'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "'"$LANE"'")";
+   c="$(grep -n "未知派工引擎" <<< "$b" | head -1 | cut -d: -f1)";
+   e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)";
+   [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ]'
+# ⭐ 绊线③:claude 路径**零行为变化**——起窗命令行四件(--model/--permission-mode/--settings/
+#   --disallowedTools)与 #20c 定向重试都必须原样在;这是"回切随时可用"的全部保障。
+tout "#67 claude 起窗命令行原样保留(--disallowedTools)" "disallowedTools \$deny" \
+  sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+tout "#67 claude 路径保留 #20c 自更新定向重试(codex 无此因 ⛔ 照抄)" "Claude Code CLI not found" \
+  sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+# ⭐ 绊线④:codex 路径起窗形态=照 cmd_verify 的 codex 分支(MCP 全关 + 通道注入 + codex 就绪判据)
+tout "#67 codex 起窗 MCP 全量关闭(照 lane/verify 同一函数,⛔ 另拼)" "lane_mcp_off_flags" \
+  sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+tout "#67 codex 就绪判据复用 vwait_ready_codex(⛔ 拿 claude 输入框判据量 codex)" "vwait_ready_codex \"\$DISPATCH_WIN\"" \
+  sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+# ⭐ 绊线⑤:工具层锁失效必须**明写进派单指令**——DISPATCH_DENY 实测只有 git push 一条,
+#   codex 无 disallowedTools 等价物 ⇒ 锁静默失效,而「锁在」与「锁没了」在体检输出里原本同形。
+tout "#67 codex 派单指令明写 git push 禁令(工具层锁失效的补位)" "⛔ git push" \
+  sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
+tfail "#67 doctor 在 codex 引擎下点名 push 锁失效(⛔ 只写在提交信息里)" "工具层锁\*\*不生效\*\*" \
+  bash -c 'env LAIXIN_DISPATCH_ENGINE=codex "'"$LANE"'" doctor | grep "工具层锁"; exit 1'
+tout "#67 doctor 在 claude 引擎下旧文案逐字保留" "派工窗口钉:" \
+  env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
+# ⭐ 绊线⑥:派单指令必须告诉 codex「回程不会弹进你的输入框」——否则它会干等一个永远不来的消息
+tout "#67 codex 派单指令写明回程走落盘+路径指针(⛔ 等它直接注入)" "那条路不存在" \
+  sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
+tout "#67 codex 派单指令写明 ctx 必须带 --engine codex(否则读到别人的数)" "ctx --engine codex" \
+  sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
+
+# ── relay-msg:注入面自述可被逐条核(举证责任在实现方 ⛔ 在验收方)────────────────────
+# ⭐ 绊线⑦🔴(创始人明裁的边界,中继会亲自复核这一条):本命令只能向**一个**窗格注入=RELAY_WIN,
+#   且窗口名**硬编码 ⛔ 参数化** —— 没有"目标窗口"这个入参,就不存在被指去投 lane-*/dispatch 的形态。
+t "#67② relay-msg 的 tmux 目标只有 RELAY_WIN(⛔ 参数化 ⛔ 出现 dispatch/lane-)" bash -c \
+  'b="$(sed -n "/^cmd_relay_msg()/,/^}/p" "'"$LANE"'")";
+   n="$(grep -c "SESSION:" <<< "$b")"; r="$(grep -c "SESSION:\$RELAY_WIN" <<< "$b")";
+   [ "$n" -gt 0 ] && [ "$n" = "$r" ] && ! grep -q "SESSION:\$DISPATCH_WIN" <<< "$b" &&
+   ! grep -q "SESSION:lane-" <<< "$b"'
+# ⭐ 绊线⑧🔴:中继的 deny 列表**一字未改**——本批不靠放宽它换功能(换个名字不改变它是同一个动作)
+t "#67 RELAY_DENY 一字未放宽(七条原样,且 relay-msg 未被塞进去当例外)" bash -c \
+  'b="$(sed -n "/^RELAY_DENY=(/,/^)/p" "'"$LANE"'")";
+   for k in "git push" "git merge" "git reset --hard" "laixin-lane send" "laixin-lane fresh" \
+            "laixin-lane up" "laixin-lane down" "laixin-lane claim"; do
+     grep -q "$k" <<< "$b" || exit 1; done;
+   ! grep -q "relay-msg" <<< "$b"'
+# ⭐ 绊线⑨:调用方机器校验(⛔ 靠约定)——本命令是一条向窗格注入文本的路径,谁能用必须可被逐条核
+tfail "#67② relay-msg 只允许派工窗口调用(⛔ 靠约定)" "只允许派工窗口" \
+  env LAIXIN_SESSION=bogus-r67 "$LANE" relay-msg --to 方案窗口 "试"
+# ⭐ 绊线⑩:必须显式 --to —— 收方要据它判「这是 dispatch 的请求,不是中继的裁定」;
+#   ⛔ 让收方按内容猜:猜对和猜错在收方眼里长得一模一样。
+tfail "#67② relay-msg 必须显式 --to(⛔ 让收方按内容猜)" "必须显式 --to" \
+  env LAIXIN_SESSION=bogus-r67 "$LANE" relay-msg "没有目标"
+t "#67② 被拒时零 tmux 副作用" bash -c '! tmux has-session -t bogus-r67 2>/dev/null'
+# ⭐ 绊线⑪:relay 不在/已死 ⇒ **响亮失败 ⛔ 静默丢消息**
+tout "#67② relay 不在时响亮失败(⛔ 静默丢消息)" "⛔ 静默丢消息" \
+  sed -n "/^cmd_relay_msg()/,/^}/p" "$LANE"
+# ⭐ 绊线⑫:**先落盘再注入**——倒过来写,"注入成功但进程随即被杀"会让消息既没转出也没留痕
+t "#67② 全文落盘在注入之前(⛔ 注入成功但随即被杀 ⇒ 既没转出也没留痕)" bash -c \
+  'b="$(sed -n "/^cmd_relay_msg()/,/^}/p" "'"$LANE"'")";
+   w="$(grep -n "RELAY_OUTBOX_D/\$id\"$" <<< "$b" | head -1 | cut -d: -f1)";
+   i="$(grep -n "load-buffer -b laixin-relaymsg" <<< "$b" | head -1 | cut -d: -f1)";
+   [ -n "$w" ] && [ -n "$i" ] && [ "$w" -lt "$i" ]'
+# ⭐ 绊线⑬:信封三件(两个机器可辨字段 + 两类前缀 + 收方拒收半边)
+tout "#67② 信封带「原发方」字段" "原发方:" sed -n "/^cmd_relay_msg()/,/^}/p" "$LANE"
+tout "#67② 信封带「回执给谁」字段(⛔ 让收方猜)" "回执给谁:" sed -n "/^cmd_relay_msg()/,/^}/p" "$LANE"
+t "#67② 两类前缀分开(转办件 vs 请中继自己裁,自然语言里长得很像)" bash -c \
+  'b="$(sed -n "/^cmd_relay_msg()/,/^}/p" "'"$LANE"'")";
+   grep -q "【转:给" <<< "$b" && grep -q "【给relay自己】" <<< "$b"'
+tout "#67② 信封要求逐字透传(⛔ 要求中继加工/总结/判断)" "逐字透传" \
+  sed -n "/^cmd_relay_msg()/,/^}/p" "$LANE"
+tout "#67② 收方半边:信封不全即拒收(⛔ 据内容像谁就当谁)" "拒收并回一句" \
+  sed -n "/^cmd_relay_msg()/,/^}/p" "$LANE"
+
+# ── 回程与销账:复用既有扫描/投递/spool ⛔ 平行实现 ──────────────────────────────
+TMPR="$(mktemp -d)"; mkdir -p "$TMPR/kb/4-开发层/记录"
+{ sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^relay_outbox_overdue/,/^}/p" "$LANE"; } > "$TMPR/fn.sh"
+KB="$TMPR/kb"; source "$TMPR/fn.sh"
+printf '正文\n【交付完成】main abc1234\n' > "$TMPR/kb/4-开发层/记录/甲-交付报告.md"
+printf '正文\n【验收回执】通过 v-x abc1234 def5678\n' > "$TMPR/kb/4-开发层/记录/乙-验收回执.md"
+printf '正文\n【中转回执】rm-1-2 已转出 方案窗口\n' > "$TMPR/kb/4-开发层/记录/丙-中转回执.md"
+printf '自由文本很长很长……\n【中转回复】rm-1-2 来自 方案窗口\n' > "$TMPR/kb/4-开发层/记录/丁-中转回复.md"
+# ⭐ 绊线⑭:两个新末行标记走**同一个** ev_scan_deliveries(⛔ 另起一套扫描)
+t "#67③ 扫描同时认交付/验收回执/中转回执/中转回复四种末行(单一实现)" bash -c \
+  'out="$(KB="'"$TMPR"'/kb" bash -c "source \"'"$TMPR"'/fn.sh\"; ev_scan_deliveries")";
+   [ "$(grep -c . <<< "$out")" = 4 ]'
+# ⭐ 绊线⑮:ev_loop 对【中转回复】的下一步是**读全文**——投的是路径指针不是内容,
+#   ⛔ 对它 verify-from(那是交付报告的下一步,两者末行不同、动作完全不同)
+tout "#67③ ev_loop 对中转回复投「读全文」⛔ verify-from" "events 投的是指针不是内容" \
+  sed -n "/^ev_loop/,/^}/p" "$LANE"
+tout "#67③ ev_loop 收到中转回执即销 outbox 那条账(⛔ 只报不销 ⇒ 永久告警)" "#67 转办销账" \
+  sed -n "/^ev_loop/,/^}/p" "$LANE"
+# ⭐ 绊线⑯:超时纯判定——「投出去多久还没等到回执」⛔ 判 relay 死没死(两件事正确动作不同)
+t "#67② outbox 超时判定:超阈值命中、未超阈值不命中" bash -c \
+  'source "'"$TMPR"'/fn.sh"; now=1000000; export RELAY_ACK_SECS=600;
+   in="$(printf "%s|rm-old|方案窗口|摘要一\n%s|rm-new|方案窗口|摘要二\n" $((now-900)) $((now-60)))";
+   out="$(RELAY_ACK_SECS=600 relay_outbox_overdue "$now" <<< "$in")";
+   grep -q "rm-old" <<< "$out" && ! grep -q "rm-new" <<< "$out"'
+t "#67② 超时判定忽略非法行(⛔ 被半写的行带出假告警)" bash -c \
+  'source "'"$TMPR"'/fn.sh";
+   out="$(RELAY_ACK_SECS=600 relay_outbox_overdue 1000000 <<< "半行没有时间戳")"; [ -z "$out" ]'
+rm -rf "$TMPR"
+# ⭐ 绊线⑰:ctx 分引擎——取不到读数**报不可用退非零** ⛔ 返 0/旧值(0 和旧值都会让交班闸门看着「还早」)
+tfail "#67③ ctx 未知引擎被拒" "只接受 claude|codex" "$LANE" ctx --engine kimi
+tfail "#67③ codex ctx 取不到读数 ⇒ 报不可用并退非零(⛔ 返 0/返旧值)" "ctx 不可用" \
+  env LAIXIN_CODEX_SESSIONS=/nonexistent-codex-sessions-67 "$LANE" ctx --engine codex
+tout "#67③ ctx 默认引擎仍是 claude(claude 路径零行为变化)" 'local eng="claude"' \
+  sed -n "/^cmd_ctx() {/,/^}/p" "$LANE"
+tout "#67③ codex ctx 分母取会话自带 model_context_window(⛔ 复用 claude 那份手改分母)" \
+  "model_context_window" sed -n "/^cmd_ctx_codex/,/^}/p" "$LANE"
+# ⭐ 绊线⑱:confirm_briefed 词表分引擎,第三参缺省=claude ⇒ 既有调用方零行为变化
+tout "#67 confirm_briefed 词表分引擎(照 #60② lane-c 取词表)" 'eng="${3:-claude}"' \
+  sed -n "/^confirm_briefed/,/^}/p" "$LANE"
+t "#67 relay 起窗仍按 claude 词表(缺省参数,零行为变化)" bash -c \
+  'grep -q "confirm_briefed \"\$RELAY_WIN\" \"relay\" )" "'"$LANE"'" ||
+   grep -q "confirm_briefed \"\$RELAY_WIN\" \"relay\"" "'"$LANE"'"'
+# ⭐ 绊线⑲:SKILL.md 五处**分引擎二选一 ⛔ 删掉 claude 的写法**(回切时卡还得能用)
+t "#67 SKILL.md 保留 SendMessage 写法且补齐 relay-msg 分支(⛔ 二选一写成一选一)" bash -c \
+  'f="$(cd "$(dirname "'"$LANE"'")/.." && pwd)/skills/laixin-pipeline/SKILL.md";
+   [ "$(grep -c "SendMessage" "$f")" -ge 5 ] && [ "$(grep -c "relay-msg" "$f")" -ge 5 ]'
+tout "#67 SKILL.md 写明分流原则(事实类 ⛔ 占用中继那一跳)" "只让「需要对方判断」的消息走中继" \
+  cat "$(cd "$(dirname "$LANE")/.." && pwd)/skills/laixin-pipeline/SKILL.md"
+tout "#67 SKILL.md 写明中继无反向注入能力(换个名字不改变它是同一个动作)" "换个名字不改变它是同一个动作" \
+  cat "$(cd "$(dirname "$LANE")/.." && pwd)/skills/laixin-pipeline/SKILL.md"
+
 echo "== 6j. verify-from 自述列全防线(#27) =="
 # 原自述只说「契约与 commit 存在性已校验」,而实际已有四道 ⇒ 三十一任据它反推「闸门会放行」并当盲区上报。
 T27="$(mktemp -d)"

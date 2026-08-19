@@ -25,7 +25,8 @@
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane whoholds             谁当前持有派工权
 #   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
-#   laixin-lane ctx [会话id前缀]     当前上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)
+#   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)
+#                                    #67③:codex 引擎必须显式 --engine codex,否则读到的是 claude 会话的数(别人的)
 #   laixin-lane evidence [片名]      看验收留下的证据文件(回执里的数字须能在此 grep 到)
 #   laixin-lane evid-gc [天数]       清理超期证据目录(默认 7 天)
 #   laixin-lane doctor               体检:skill 落位/命令/知识库/拓扑/发车位/已知工程债
@@ -46,6 +47,9 @@
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
 #   laixin-lane merge-guard <目标commit> [--ref 分支] [--old 旧值]  ref级合并前后核主树是否被甩下(#24)
+#   laixin-lane relay-msg --to <目标> <文本>  出站转办(#67②):投给中继窗口代发 SendMessage。**单向**——
+#                                    回程走「对方落盘【中转回复】+ events 投路径指针」,中继无任何反向注入能力。
+#                                    --status 查未见【中转回执】的未销账条目
 #   laixin-lane opt-status [--page P] 优化条目销号率(#33):按节独立统计各队列共/销号/未销+未销条目点名
 #   laixin-lane release              发布(#25):仓库已提交版→版本化路径+原子换软链(工作树脏拒发;开发迭代直接跑仓库路径)
 #   laixin-lane review-env [up|down|status]  评审环境一键化(#五-18):main 快照 worktree+init+seed+双服务(:8900/:3900);down 杀净有验尸
@@ -79,6 +83,16 @@ VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-codex}"
 KIMI_BIN="${LAIXIN_KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
 DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
+# #67(2026-08-19 创始人拍板「用 codex」,临时形态):派工窗口引擎化。动机=Claude 周额度实测
+# weekly_all 已用 91%(重置 08-20 00:00 CST),dispatch 是单窗口消耗最大的一个;#60① 已把验收窗
+# 换成 codex,本条换派工窗。风险序(混合车队计划)=worker < 派工 < 验收,codex 当 worker 已验证
+# 数百片纪律。
+# 🔴 **默认值必须是 claude ⛔ 学 #60① 默认 codex**——理由是本项目今天刚吃过的 **#66**:
+#   换默认值会让「**同一条命令在换代前后语义不同,而命令本身长得一模一样**」;而 dispatch 起窗会被
+#   `resurrect`/boot 链**自动调用**(整机重启后无人值守),默认值变更会在**没有人在场**时生效——
+#   届时"起了个派工窗口"这句话在看板上与从前逐字相同,而里面跑的是另一个引擎、另一套通信路径。
+#   ⇒ 切换只由创始人窗口**显式设环境变量**完成,代码里的默认值不动。
+DISPATCH_ENGINE="${LAIXIN_DISPATCH_ENGINE:-claude}"
 # 中继窗口(裁定缺口路由)同档钉死(2026-08-19 创始人直裁,#32):中继做的是**核库快裁**——
 # 要的是可靠核查不是极限推理,与 dispatch/verify 同档。⛔ 继承 /model:中继窗口此前由创始人
 # 手开,模型随手边设置漂移;入流水线托管后必须与另两类托管窗口同一条纪律(起窗命令行显式带 --model)。
@@ -444,9 +458,25 @@ EVID_ROOT="${LAIXIN_EVID_ROOT:-$HOME/.laixin-evidence}"   # 可覆盖:测试用 
 
 # 上下文占比:从 Claude Code 本地 transcript 精确读(零依赖;判据是**占比**不是 token 绝对数)
 # 依据 pingxia-e6 的实测:自我感知会低估 15-25 个百分点(感觉"30-40%",实际 54.9%)⇒ 不能靠窗口自己估
+# #67③:ctx 读数**分引擎**。claude 从 ~/.claude-official/projects 的 transcript 读;codex 的会话
+# 落在 ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl,格式也不同(event_msg/token_count 事件里带
+# last_token_usage 与 **model_context_window**——分母由文件自带,⛔ 再靠 LAIXIN_CTX_WINDOW 猜)。
+# ⚠️ 不分引擎的后果不是报错而是**报出别人的数字**:dispatch 换 codex 后照旧跑 `ctx`,读到的是本机
+#    某个 claude 窗口的占比,而交班硬闸门(≥70%)就架在这个数上 ⇒ 闸门静默失效。
+# ⚠️ 取不到读数一律**报不可用并退非零 ⛔ 返 0 / ⛔ 返最近一次的旧值**——0 和旧值都会让闸门看起来
+#    「还早着呢」,失效方向正对着它要防的风险。claude 路径逐字未动(默认引擎仍是 claude)。
 cmd_ctx() {
+  local eng="claude" want=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --engine) eng="${2:?--engine 需要 claude|codex}"; shift 2 ;;
+      *) want="$1"; shift ;;
+    esac
+  done
+  case "$eng" in claude|codex) : ;; *) die "未知 ctx 引擎:$eng(只接受 claude|codex)" ;; esac
+  [ "$eng" = "codex" ] && { cmd_ctx_codex "$want"; return $?; }
   local proj="${LAIXIN_CTX_PROJ:-$HOME/.claude-official/projects/-Users-pingxia}"
-  python3 - "$proj" "${1:-}" <<'PY'
+  python3 - "$proj" "$want" <<'PY'
 import json,os,sys,glob
 proj,want=sys.argv[1],(sys.argv[2] if len(sys.argv)>2 else "")
 win=int(os.environ.get("LAIXIN_CTX_WINDOW","1000000"))   # 分母可配:换模型必须改,写死会让闸门静默失效
@@ -496,6 +526,71 @@ else:         print("🟢 <55%:正常工作区间")
 print("注:判据是**占比**不是 token 绝对数——同样 500k,1M 模型是半程、200k 模型早已溢出。分母用 LAIXIN_CTX_WINDOW 覆盖。")
 PY
   return 0
+}
+
+cmd_ctx_codex(){  # <会话id前缀,可空> —— codex 引擎的 ctx 读数(#67③)
+  # 分母**取自会话文件自带的 model_context_window**(实测 0.147.0 写在 event_msg/token_count 的
+  # info 里)⇒ 换模型自动跟随,⛔ 再维护一份 LAIXIN_CTX_WINDOW 那样的手改分母(那正是「双真相源」)。
+  # 闸门线 70/55 与 claude 分支共用同一组数字(改一处就改另一处,同上面那条双真相源注)。
+  local root="${LAIXIN_CODEX_SESSIONS:-$HOME/.codex/sessions}"
+  python3 - "$root" "${1:-}" <<'PY'
+import json,os,sys,glob,time
+root,want=sys.argv[1],(sys.argv[2] if len(sys.argv)>2 else "")
+files=sorted(glob.glob(os.path.join(root,"**","rollout-*.jsonl"),recursive=True),
+             key=os.path.getmtime,reverse=True)
+if not files:
+    print(f"⛔ ctx 不可用:找不到 codex 会话文件({root}/**/rollout-*.jsonl)"); sys.exit(2)
+def read(path):
+    """→ (已用 token, 上下文窗口) 或 None。取最后一条 token_count 事件。"""
+    last=None
+    try: fh=open(path,encoding="utf-8",errors="ignore")
+    except OSError: return None
+    with fh:
+        for line in fh:
+            try: d=json.loads(line)
+            except Exception: continue
+            pl=d.get("payload") or {}
+            if d.get("type")=="event_msg" and pl.get("type")=="token_count":
+                info=pl.get("info")
+                if isinstance(info,dict): last=info
+    if not last: return None
+    win=last.get("model_context_window")
+    lu=last.get("last_token_usage") or {}
+    cur=lu.get("total_tokens")
+    if cur is None:
+        cur=(lu.get("input_tokens") or 0)+(lu.get("output_tokens") or 0)
+    if not win or not cur: return None
+    return cur,win
+if want:
+    m=[f for f in files if want in os.path.basename(f)]
+    if not m:
+        print(f"⛔ ctx 不可用:没有匹配 '{want}' 的 codex 会话"); sys.exit(2)
+    files=m
+elif len(files)>1:
+    # ⚠️ 与 claude 分支同一课:多会话并存时「mtime 最新」不等于「你自己」。⛔ 猜——
+    #    这里比 claude 分支更严:**退非零**,因为交班硬闸门就架在这个数上,拿错一个数比拿不到更糟。
+    print("⛔ ctx 不可用:检测到多个 codex 会话,mtime 最新的**未必是你自己**,⛔ 替你猜。")
+    print("   指定自己:laixin-lane ctx --engine codex <会话id前缀>(codex 里 /status 可看当前会话 id)\n")
+    for f in files[:5]:
+        r=read(f); base=os.path.basename(f)
+        sid=base[len("rollout-"):-len(".jsonl")]
+        shown=(f"{r[0]:,} / {r[1]:,} = {r[0]/r[1]*100:.1f}%" if r else "无 token_count 记录")
+        print(f"   {sid[:33]:<34} {shown:<28} 改于 {time.strftime('%m-%d %H:%M:%S',time.localtime(os.path.getmtime(f)))}")
+    sys.exit(2)
+f=files[0]
+r=read(f)
+if not r:
+    print(f"⛔ ctx 不可用:该会话无 token_count 记录:{os.path.basename(f)}"); sys.exit(2)
+cur,win=r
+pct=cur/win*100
+bar="█"*int(pct//5)+"░"*(20-int(pct//5))
+print(f"会话 {os.path.basename(f)[8:41]}…  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
+if   pct>=70: print("🔴 ≥70% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
+elif pct>=55: print("🟡 55-70%:进入交班准备区,别再开新调查;手上这片收尾就交班")
+else:         print("🟢 <55%:正常工作区间")
+print("注:引擎=codex;已用取 last_token_usage.total_tokens,分母取会话自带的 model_context_window")
+print("   (⛔ 用 LAIXIN_CTX_WINDOW——那是 claude 分支的手改分母,两边共用一个会变成双真相源)。")
+PY
 }
 
 cmd_evidence() {
@@ -1516,6 +1611,11 @@ cmd_doctor() {
       else ok "事件总线循环代龄一致(循环不老于脚本,修复已生效)"; fi
     elif win_exists "$EV_WIN"; then wrn "⛔ events 窗口在但循环已死(假绿灯)——events stop && events start;交付事件正在漏,优先处理"
     else wrn "事件总线未运行(dispatch 自动带起;交付/卡住事件靠它投递,不靠窗口自建 Monitor)"; fi
+    # #67②:未见【中转回执】的转办要在**接班一定会跑的地方**看得见——outbox 里躺着的每一条
+    # 都意味着「dispatch 以为发出去了」,而它可能压根没转出去(注入成功 ≠ 送达)。
+    if [ -s "$RELAY_OUTBOX" ]; then
+      wrn "转办 outbox 有 $(wc -l < "$RELAY_OUTBOX" | tr -d ' ') 条未见【中转回执】——注入成功 ⛔ 等于送达;laixin-lane relay-msg --status 查,原文可原样重发"
+    else ok "转办 outbox 空(无未确认转出的消息;#67②)"; fi
     local vs; vs="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^verify-' || true)"
     [ "${vs:-0}" -gt 0 ] && ok "在跑的验收窗口:$vs 个" || ok "无在跑的验收窗口"
   else bad "tmux 会话 $SESSION 不存在"; fi
@@ -1532,10 +1632,26 @@ cmd_doctor() {
   # #60①:引擎=codex 时 VERIFY_MODEL 不参与起窗——照旧显示「验收窗口钉:claude-…」会误导读者
   # 以为验收还在烧 Claude(#27 工具自述与实际防线不同步族,⛔ 让旧文案误导);haiku/ctx 分母
   # 冲突检查同步只看还真在用 claude 的档位。claude 引擎下两行输出与旧版逐字一致。
-  if [ "$VERIFY_ENGINE" = "claude" ]; then
-    ok "验收窗口钉:$VERIFY_MODEL  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_VERIFY_MODEL/LAIXIN_DISPATCH_MODEL)"
+  # #67:派工引擎=codex 时 DISPATCH_MODEL 不参与起窗——照旧显示「派工窗口钉:claude-…」会误导读者
+  # 以为派工还在烧 Claude(#27 工具自述与实际防线不同步族,与 #60① 对验收窗口那一处同因同修)。
+  # ⚠️ DISPATCH_ENGINE=claude 时,下面两行与旧版**逐字一致**(默认值就是 claude ⇒ 今天零变化)。
+  if [ "$DISPATCH_ENGINE" = "claude" ]; then
+    if [ "$VERIFY_ENGINE" = "claude" ]; then
+      ok "验收窗口钉:$VERIFY_MODEL  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_VERIFY_MODEL/LAIXIN_DISPATCH_MODEL)"
+    else
+      ok "验收引擎:codex(#60① 临时形态,VERIFY_MODEL 不适用;回切:LAIXIN_VERIFY_ENGINE=claude)  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_DISPATCH_MODEL)"
+    fi
   else
-    ok "验收引擎:codex(#60① 临时形态,VERIFY_MODEL 不适用;回切:LAIXIN_VERIFY_ENGINE=claude)  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_DISPATCH_MODEL)"
+    if [ "$VERIFY_ENGINE" = "claude" ]; then
+      ok "验收窗口钉:$VERIFY_MODEL(改用 LAIXIN_VERIFY_MODEL)  派工引擎:codex(#67 临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
+    else
+      ok "验收引擎:codex(#60①)  派工引擎:codex(#67 临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
+    fi
+    # ⚠️ 工具层锁失效必须**在体检里说出来** ⛔ 只写在提交信息里:DISPATCH_DENY 实测只有一条
+    # `Bash(git push*)`,而 codex 没有 disallowedTools 等价物 ⇒ 该锁静默失效,而「锁在」与
+    # 「锁没了」在体检输出里原本长得一模一样。
+    wrn "派工引擎=codex ⇒ DISPATCH_DENY 的 git push 工具层锁**不生效**(codex 无 disallowedTools 等价物),红线以派单指令明写为准;待 git pre-push hook 把锁挪到 git 层"
+    ok "codex 派工出站:需对方判断的走 laixin-lane relay-msg(中继代发);回程走对方落盘【中转回复】+ events 投路径指针(中继无反向注入能力)"
   fi
   local gmodel
   gmodel="$(python3 -c "import json;print(json.load(open('$HOME/.claude-official/settings.json')).get('model','未设'))" 2>/dev/null || echo 未知)"
@@ -1735,6 +1851,12 @@ EV_LOG="$EV_DIR/events.log"
 EV_SPOOL="$EV_DIR/spool"
 EV_SEEN="$EV_DIR/deliveries.seen"
 EV_PENDING="$EV_DIR/pending.ack"          # M1(复盘页#8):已投交付的认领台账 epoch|slug|状态(P待认领/E已升级)
+# #67②:relay-msg 出站暂存(dispatch→relay 那一跳)。索引行 epoch|id|目标|首行摘要,全文另存
+# RELAY_OUTBOX_D/<id>。**⛔ 拿「注入成功」当「送达」**:relay 是托管窗口、看门狗随时可重生它,
+# 「发进来了、还没转出去、它死了」这一段在发送方眼里与成功完全同形——这正是本项目全天主线。
+RELAY_OUTBOX="$EV_DIR/relay-outbox"
+RELAY_OUTBOX_D="$EV_DIR/relay-outbox.d"
+RELAY_ACK_SECS="${LAIXIN_RELAY_ACK:-600}"   # 转出确认超时(秒,默认 10 分钟)⇒ 超时投告警给 dispatch
 EV_ACK="${LAIXIN_EV_ACK:-2700}"           # 无认领升级阈值(秒,45min 取 30-60 区间中值;方案 log:29 原文 30-60 分钟)
 EV_STALL="${LAIXIN_EV_STALL:-360}"   # 无变化多少秒判卡住/空闲(默认 6 分钟)
 EV_TICK="${LAIXIN_EV_TICK:-60}"
@@ -1749,6 +1871,13 @@ ev_hb_cutoff(){  # 心跳截止线(2026-08-18 优化推动清单#1,防重扫假�
 }
 
 ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能再触发;验收方追加结论后自然退出集合)
+  # #67③:再扩两个末行标记,仍是**同一套**扫描/基线/心跳截止/spool(⛔ 平行实现):
+  #   【中转回执】=relay 已把某条转办发出去了(销 outbox 那条账);
+  #   【中转回复】=被转办方对某条讨论的**回复正文落盘了**(dispatch 收到指针后自己去读)。
+  # ⭐ 后者是「讨论回程零扩权」的全部机关:events 投递的载荷从来不是结构化内容,而是**路径指针+
+  #   末行提示**,而指针能指向任意长度的自由文本 ⇒ 讨论回程与验收回执走同一条路,relay 不需要
+  #   任何指向 dispatch 窗格的注入能力。代价=延迟一个 ev-loop 周期且非对话式(委派方有意接受:
+  #   这点延迟不值得换一次永久性、不可逆的权限扩张)。
   # #60①:验收回执(codex 验收窗口无 SendMessage,回执走落盘契约)与交付报告**同机制**监听——
   # 末行行首标记+mtime 判新旧,心跳截止线/seen 基线/spool 对两种形态一体适用(同构扩展 ⛔ 另起一套);
   # 投递文案在 ev_loop 按末行分流(回执的下一步是核数字+合并,不是 verify-from)。
@@ -1757,7 +1886,7 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
     [ -f "$f" ] || continue
     # 用 if 不用 &&:glob 最后一个文件无标记时,&& 列表的失败会成为循环乃至函数的退出码,
     # 在 set -e/pipefail 调用方处炸掉——此前没炸只是文件排序的运气(执行级绊线抓出)
-    if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】'; then printf '%s|%s\n' "$f" "$(stat -f %m "$f")"; fi
+    if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】'; then printf '%s|%s\n' "$f" "$(stat -f %m "$f")"; fi
   done | sort
   return 0
 }
@@ -1890,7 +2019,7 @@ ev_loop(){
   local hb_cutoff; hb_cutoff="$(ev_hb_cutoff)"
   ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份 心跳截止=$(date -r "$hb_cutoff" '+%F %T')"
   board "事件总线" "启动(交付投递+卡住告警;监听不再随派工窗口死)"
-  local cur f m lastline vw
+  local cur f m lastline vw _rid _ovd
   while true; do
     sleep "$EV_TICK"
     date +%s > "$EV_HB"
@@ -1925,6 +2054,23 @@ ev_loop(){
       # #60①:按末行分流两种事实形态——交付报告(下一步=起验收)与验收回执(下一步=核数字+合并);
       # 扫描/基线/心跳截止线全共用,只有投递文案与 M1 登记不同(回执 ⛔ 进 M1,见 ev_deliver 注)。
       case "$lastline" in
+        【中转回执】*)
+          # relay 已转出 ⇒ 销 outbox 那条账(id 在末行第二个字段);⛔ 只报不销(账留着会一直告警)
+          _rid="$(awk '{print $2}' <<< "${lastline#【中转回执】}")"
+          [ -z "$_rid" ] && _rid="$(awk '{print $1}' <<< "${lastline#【中转回执】}")"
+          if [ -n "$_rid" ] && [ -s "$RELAY_OUTBOX" ]; then
+            grep -v "^[0-9]*|${_rid}|" "$RELAY_OUTBOX" > "$RELAY_OUTBOX.new" 2>/dev/null
+            mv -f "$RELAY_OUTBOX.new" "$RELAY_OUTBOX"
+            ev_log "#67 转办销账:$_rid(relay 已确认转出)"
+          fi
+          ev_deliver "回执" "【事件】中转回执落盘:$f
+末行:$lastline
+下一步:该条转办已确认**转出**(⛔ 等同于对方已答复)。等对方的【中转回复】落盘;久无回复按你原来的口径追。" ;;
+        【中转回复】*)
+          # ⭐ 载荷是**指针不是内容**:回复正文在该文件里,自由长度、自由格式,dispatch 自己去读
+          ev_deliver "回执" "【事件】转办回复落盘:$f
+末行:$lastline
+下一步:**读 $f 全文**(events 投的是指针不是内容),按其中的答复继续该片;需要再问一轮就再发一次 laixin-lane relay-msg。" ;;
         【验收回执】*)
           ev_deliver "回执" "【事件】验收回执落盘:$f
 末行:$lastline
@@ -1942,6 +2088,21 @@ ev_loop(){
 $(cat "$EV_SPOOL")"
       : > "$EV_SPOOL"
     fi
+    # 2.5) #67②:转办投给 relay 后久无【中转回执】⇒ 告警。**⛔ 静默**——"发进来了、还没转出去、
+    #      它死了"在发送方眼里与成功完全同形,而原文就躺在 outbox 里可以重发。
+    #      每条只告一次(告完即销账):⛔ 每 tick 重复刷屏(噪声随正常派工增长,三约束③)。
+    if [ -s "$RELAY_OUTBOX" ]; then
+      _ovd="$(relay_outbox_overdue "$(date +%s)" < "$RELAY_OUTBOX")"
+      if [ -n "$_ovd" ]; then
+        ev_deliver "告警" "【告警】转办投给 relay 后 $((RELAY_ACK_SECS/60)) 分钟未见【中转回执】($(wc -l <<< "$_ovd" | tr -d ' ') 条)——
+relay 可能在转出**之前**就被重生/卡住了(注入成功 ≠ 送达)。原文全文在 $RELAY_OUTBOX_D/<id>,可原样重发。
+$(echo "$_ovd" | sed 's/^/  /')
+先 laixin-lane peek-r 40 看 relay 现场;确属丢失就重跑 laixin-lane relay-msg。"
+        # 告完销账:事实已交到有行动者手上,留着只会每 tick 再喊一遍
+        grep -vxF -f <(echo "$_ovd") "$RELAY_OUTBOX" > "$RELAY_OUTBOX.new" 2>/dev/null
+        mv -f "$RELAY_OUTBOX.new" "$RELAY_OUTBOX"
+      fi
+    fi
     # 3) 卡住/空闲监视(lane + 全部验收窗口)
     ev_watch_target "lane-a"
     ev_watch_target "lane-b"
@@ -1950,6 +2111,12 @@ $(cat "$EV_SPOOL")"
       ev_watch_target "$vw"
     done || true   # 无 verify-* 窗口时 grep 返 1 属正常空结果——这正是两次击穿循环的那颗雷
   done
+}
+
+relay_outbox_overdue(){  # #67②纯判定:stdin=outbox 索引(epoch|id|目标|摘要),$1=当前 epoch → 打印超阈值未销账的行
+  # ⚠️ 只判「投出去多久还没等到【中转回执】」——**⛔ 判 relay 死没死**:那两件事的正确动作不同
+  # (死了要重起,活着不回执要人去看它卡在哪),用一个判据同时回答两个问题就会两边都答错。
+  awk -F'|' -v now="$1" -v ack="$RELAY_ACK_SECS" '$1 ~ /^[0-9]+$/ && (now-$1)>=ack {print}'
 }
 
 ev_ack_overdue(){  # M1 纯判定:stdin=pending 台账(epoch|slug|状态),$1=当前 epoch → 打印超阈值且未升级的行
@@ -2264,13 +2431,18 @@ dialog_sweep_win() {
 # 已在输入框,重发=翻倍污染;Enter 幂等——输入框已空时回车无害)。有限次仍未见 ⇒ board 大声报。
 # ⚠️ 补 Enter 前必过对话框安检:签名库硬规则「安全键永远不得是 Enter/不得选中默认项」——
 # 画面有对话框时补 Enter 等于替它选默认项(如静默降档模型),此时只告警交对话框扫描处置。
-confirm_briefed() {  # <窗口名> <标签> → 0=确认已提交;1=未确认(已大声报)
-  local w="$1" label="$2" tries=0
-  local shot cls age
+confirm_briefed() {  # <窗口名> <标签> [引擎] → 0=确认已提交;1=未确认(已大声报)
+  # #67:活动迹象词表**分引擎**(照 #60② 给 lane-c 做的取词表那一模式)。第三参缺省=claude
+  # ⇒ 既有调用方逐字零行为变化。codex 词表取本仓已实测在用的那份(lane_busy 的 codex 分支),
+  # ⛔ 现编:拿 claude 文案量 codex 会把每次正常提交都读成「没提交」而去补 Enter,
+  # 而补 Enter 落进正在工作的窗口正是 #58 那次假阳性的实撞形态。
+  local w="$1" label="$2" eng="${3:-claude}" tries=0
+  local shot cls age pat='Working|Explored|Read |Thinking|Ran '
+  [ "$eng" = "codex" ] && pat='Working|Explored|Reading|Search|Thinking|Applying|Running'
   while [ "$tries" -lt 3 ]; do
     sleep 3
     shot="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null || true)"
-    if grep -qE 'Working|Explored|Read |Thinking|Ran ' <<< "$(tail -30 <<< "$shot")"; then return 0; fi
+    if grep -qE "$pat" <<< "$(tail -30 <<< "$shot")"; then return 0; fi
     cls="$(tail -25 <<< "$shot" | dialog_classify)"
     if [ "$cls" != "none" ]; then
       board "$(caller_src)" "⚠️ ${label} 接管指令未见提交且画面有对话框(${cls})——⛔ 补 Enter(会选中默认项),交看门狗对话框扫描处置"
@@ -2328,6 +2500,40 @@ DISPATCH_BRIEF='你是 laixin 开发流水线的**派工窗口**(由看门狗托
 **你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。所以状态一定随做随写进执行总表与看板,不要攒在窗口记忆里。
 
 铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、SendMessage 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
+状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。'
+
+# #67:codex 引擎的接管指令。与 claude 版**逐条对齐**,只在四处必须不同的地方分叉,⛔ 借机改口径:
+#  ①开场读卡:codex 不走 Skill 调用 ⇒ 直读单点源实体文件(同 #60① 对验收窗口的做法);
+#  ②出站通信:codex **没有 SendMessage** ⇒ 需要对方判断的走 relay-msg 转办,事实类照旧落盘+events;
+#  ③ctx 读数:transcript 位置与格式都不同 ⇒ 必须带 --engine codex(⛔ 读到别人的会话还以为是自己);
+#  ④红线:codex 无 disallowedTools 等价物 ⇒ DISPATCH_DENY 的 git push 锁**失效**,改由指令明写。
+DISPATCH_BRIEF_CODEX='你是 laixin 开发流水线的**派工窗口**(引擎=Codex,由看门狗托管起动)。
+
+起手式,按序做完再报告:
+1. 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源),认领"派工窗口"角色(不要兼任验收);
+2. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md 的"进行中"节,再读同目录 来信平台-流水线看板.md 末 20 行,再读 知识库/log.md 末尾;
+3. 事件总线(events 窗口)已随本窗口自动运行——交付落盘、验收回执、转办回复、轨道与验收窗口卡住,都会**直接投递进你的输入框**。**你无需也不要自建监听**;每条【事件】/【告警】到达,同一轮内完成「判断→行动→可见输出」。⚠️ 事件投给你的是**路径指针不是内容**,凡带文件路径的事件一律**先读那个文件全文**再动手。交付事件的下一步通常是 laixin-lane verify-from "<报告路径>" --prompt <prompt路径> --to dispatch;
+4. 接管当前状态:该派工的立即派(laixin-lane fresh + send + peek 复核),已交付待验的用 laixin-lane verify 起一次性验收窗口——**你的会话名就是 dispatch,所以固定写 --to dispatch**。
+
+⚠️ **本引擎没有 SendMessage,出站通信按消息类型分两条路(⛔ 一律走 relay,也 ⛔ 一律落盘)**:
+- **需要对方判断/裁定/讨论的**(裁定缺口、挂起上报、请方案窗口补设计、口径请裁)→
+  laixin-lane relay-msg --to <目标> "<正文>" —— 投给中继窗口代发 SendMessage,**必须显式 --to**。
+  它只是**注入成功不等于送达**:等中继落盘【中转回执】才算转出,久无回执事件总线会告警;laixin-lane relay-msg --status 查未销账。
+  对方的答复会以**【中转回复】落盘 + 事件投路径指针**回到你这里,**⛔ 等它直接注入你的窗口**(那条路不存在)。
+- **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
+
+⚠️ **上下文占比必须带引擎**:laixin-lane ctx --engine codex(不带 --engine 读的是 claude 会话,那不是你——数字会是别人的)。≥70% 是交班硬闸门。
+
+派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
+
+接班先跑 laixin-lane doctor(体检)与 laixin-lane stats(看还剩多少燃料、有无总表状态滞后);合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
+**你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。所以状态一定随做随写进执行总表与看板,不要攒在窗口记忆里。
+
+🔴 **红线(本引擎没有 claude 的 disallowedTools 工具层禁令,以下以本指令为准)**:⛔ git push ——
+流水线不碰 origin,推远端一律不做;要备份走 laixin-lane backup。合并你照旧做(派工窗口持有合并权),
+但 merge 后按卡跑 merge-guard 收尾。越线即整轮作废并报创始人。
+
+铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
 状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。'
 
 # ---- 派工权认领:用"谁在动 lane"识别派工窗口,而不是数窗口个数 ----
@@ -2432,6 +2638,8 @@ cmd_dispatch() {
       *) die "未知参数:$1" ;;
     esac
   done
+  # #67:引擎校验在动窗口**之前**(同 #60① 一课:值打错不该留下半个死窗口/半个被杀的旧窗口)
+  case "$DISPATCH_ENGINE" in codex|claude) : ;; *) die "未知派工引擎:$DISPATCH_ENGINE(LAIXIN_DISPATCH_ENGINE 只接受 codex|claude)" ;; esac
   ensure_session
   if [ -z "$nocheck" ] && ! check_rival_dispatch; then
     die "起窗中止——绝不允许两个派工窗口同时活着。先确认那些窗口已收工,或确认它们不是派工窗口后加 --force-rival 重试"
@@ -2440,9 +2648,11 @@ cmd_dispatch() {
     [ -n "$force" ] || { echo "$DISPATCH_WIN 已存在(换全新上下文用 --fresh)"; return 0; }
     tmux kill-window -t "$SESSION:$DISPATCH_WIN"; sleep 0.3
   fi
+  local _cdp_port="$DISPATCH_CDP_PORT"
+  local _brief="$DISPATCH_BRIEF"
+  if [ "$DISPATCH_ENGINE" = "claude" ]; then
   local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
   ensure_headless_settings
-  local _cdp_port="$DISPATCH_CDP_PORT"
   # 起窗+就绪等待,撞 Claude 自更新时定向重试一次(复盘页#20c):08-19 05:07 实撞——起窗恰逢
   # claude.exe 替换瞬间(时间戳 05:08,窗口以秒计),包装器 fail-closed 留空 shell,而报错落在
   # 正退场的交班窗口里无人看见。该因**天然瞬时**,等 20s 重试一次不属「同因重试同死」;
@@ -2461,16 +2671,30 @@ cmd_dispatch() {
     fi
     die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
   done
+  else
+  # ── codex 引擎(#67,默认关闭):起窗形态照 cmd_verify 的 codex 分支——MCP 全量关闭
+  # (⛔ 引号 key,见 lane_mcp_off_flags 注释)、BU_NAME/BU_CDP_URL 派生规则**一字未改**
+  # (dispatch 的通道名与端口是固定值,两引擎共用 ⇒ cdp_sweep/halt 零改动)。
+  # ⛔ 用 claude 那条 #20c 定向重试:那个因是「claude 二进制被自更新替换」,codex 没有这个因,
+  #    照抄等于给一个不存在的故障装重试(而重试会掩盖真正的启动失败)。
+  # ⛔ 用 --settings/--disallowedTools:codex 无等价物,拼上去会整份拒载秒退(#11-③ 同族)。
+  _brief="$DISPATCH_BRIEF_CODEX"
+  local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
+  tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" codex $_mcp_off" C-m
+  vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"
+  fi
   sleep 1
-  printf '%s' "$DISPATCH_BRIEF" | tmux load-buffer -b laixin-dmsg -
+  printf '%s' "$_brief" | tmux load-buffer -b laixin-dmsg -
   tmux paste-buffer -p -b laixin-dmsg -t "$SESSION:$DISPATCH_WIN"
   tmux delete-buffer -b laixin-dmsg
   sleep 0.5
   tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
   # #37:回读复核接管指令已提交(后台跑,未提交先补 Enter、仍失败大声上看板;显式脱离 fd 防拖 $( ) 读)
-  ( confirm_briefed "$DISPATCH_WIN" "dispatch" ) >/dev/null 2>&1 &
+  ( confirm_briefed "$DISPATCH_WIN" "dispatch" "$DISPATCH_ENGINE" ) >/dev/null 2>&1 &
   printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
-  board "$(caller_src)" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领)"
+  board "$(caller_src)" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领;引擎=$DISPATCH_ENGINE)"
   ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
   # 起窗验尸(复盘页#20b,lanes #11-③ 同款):就绪判定可能被过渡画面骗过,15s 后回头核
   # pane 里跑的真是 claude——掉回登录 shell 即大声告警,⛔ 自动重试(非瞬时因,人工看现场)。
@@ -2484,7 +2708,13 @@ cmd_dispatch() {
   # #50/#57:守卫状态如实回显——被 --force-rival 跳过时 ⛔ 让输出读起来像「核过了」
   local _guard="双派工守卫已核:无对手"
   [ -n "$nocheck" ] && _guard="双派工守卫被 --force-rival 跳过(未核,风险自担)"
-  echo "$DISPATCH_WIN 已起并接管(${_guard};15s 验尸+接管回读复核已挂后台,异常上看板)。复核:laixin-lane peek-d 30"
+  echo "$DISPATCH_WIN 已起并接管(引擎=$DISPATCH_ENGINE;${_guard};15s 验尸+接管回读复核已挂后台,异常上看板)。复核:laixin-lane peek-d 30"
+  # ⚠️ `[ ] && echo` 作为**函数最后一条语句**:条件为假时函数退出码=1 ⇒ wd_loop/resurrect 收码时
+  #    会把一次正常的 claude 起窗读成失败(本仓 grep 零命中击穿函数同族)。必须 || true 兜底。
+  if [ "$DISPATCH_ENGINE" = "codex" ]; then
+    echo "⚠️ codex 引擎:出站需对方判断的消息走 laixin-lane relay-msg(中继代发);DISPATCH_DENY 的 git push 工具层锁**不生效**,已在派单指令里明写禁令。"
+  fi
+  return 0
 }
 
 cmd_peekd() { tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" -S "-${1:-30}"; }
@@ -2639,6 +2869,103 @@ cmd_relay_down() {
 }
 
 cmd_peekr() { tmux capture-pane -p -t "$SESSION:$RELAY_WIN" -S "-${1:-30}"; }
+
+# ══ #67②:出站中转 relay-msg —— dispatch 换 codex 后唯一的真工程 ═══════════════════════════
+# 背景:codex **没有 SendMessage**。入站没问题(events 靠 tmux send-keys 投递,任何引擎都收得到,
+# 零改动);出站是问题——skills/laixin-pipeline/SKILL.md 有 5 处依赖 SendMessage。
+# 设计=出站走 relay 中转(relay 保持 claude,这正是「中继」这个角色本来的定位,⛔ 为它新造职责)。
+#
+# 🔴 **本命令是单向的:只有 dispatch → relay 这一个方向。**(创始人 2026-08-19 明裁后由委派方两次
+#    收窄,最终形态)。⛔ 存在任何让 relay 反向注入 dispatch 窗格的能力——含改名的、包装的、
+#    经由第三个命令的。**讨论的回程不靠注入**:被转办方把回复**写成文件**,events 扫到末行
+#    `【中转回复】` 后投给 dispatch 一条**路径指针**,dispatch 自己去读(见 ev_scan_deliveries 注)。
+#    ⇒ 全程零扩权;relay 的 `laixin-lane send` 封禁与 RELAY_DENY **一个字都没动**。
+#
+# 🔒 注入面自述(举证责任在实现方 ⛔ 在验收方):本命令只能向**一个**窗格注入——`$RELAY_WIN`,
+#    窗口名**硬编码 ⛔ 参数化**(没有"目标窗口"这个入参,所以不存在被指去投 lane-*/dispatch 的形态);
+#    且**只允许 dispatch 窗口调用**(whoami_window 机器校验,⛔ 靠约定)。
+#
+# ⚠️ spool:**⛔ 拿「注入成功」当「送达」**。relay 是托管窗口、看门狗随时可重生它,
+#    「发进来了、还没转出去、它死了」在发送方眼里与成功完全同形。⇒ 投递**之前**先落盘全文,
+#    等 relay 落盘的【中转回执】销账;超时由 ev_loop 告警并把原文路径一并给出(可原样重发)。
+# ⚠️ relay 不在/已死 ⇒ **响亮失败 ⛔ 静默丢消息**(die 前 outbox 已落盘,事实不丢)。
+cmd_relay_msg(){
+  local to="" text="" id now
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) to="${2:?--to 需要目标(窗口/角色名;写 relay 表示这条是给中继自己判的)}"; shift 2 ;;
+      --status) shift; cmd_relay_msg_status; return 0 ;;
+      *) break ;;
+    esac
+  done
+  [ $# -gt 0 ] && text="$*" || text="$(cat)"
+  [ -n "$to" ] || die "relay-msg 必须显式 --to <目标>:收方要据它判「这是 dispatch 的请求,不是中继的裁定」;
+   ⛔ 让收方按内容猜——猜对和猜错在收方眼里长得一模一样。
+   签名:laixin-lane relay-msg --to <目标> <消息文本>(多行走 stdin);查未销账:laixin-lane relay-msg --status"
+  [ -n "$text" ] || die "relay-msg 没有要转的内容"
+  # 🔒 调用方机器校验:只有派工窗口可用。⛔ 靠约定——本命令是一条向 relay 窗格注入文本的路径,
+  #    谁能用它必须可被逐条核。其余窗口(方案/验收/创始人)本身就有 SendMessage,不需要这条路。
+  local _who; _who="$(whoami_window)"
+  [ "$_who" = "$DISPATCH_WIN" ] || die "relay-msg 只允许派工窗口(tmux 窗口名 $DISPATCH_WIN)调用,当前是 [$_who]。
+   理由:这是一条**向 relay 窗格注入文本**的路径,可调用者必须可被逐条核(#67②)。
+   你若是方案/验收/创始人窗口,直接用 SendMessage——你有,dispatch 换 codex 后才没有。"
+  relay_alive || die "⛔ 转办失败:中继窗口 $RELAY_WIN 不在或已死(pane=$(pane_cmd "$RELAY_WIN"))。
+   ⛔ 静默丢消息:这条消息**没有**发出去。先 laixin-lane relay(或等看门狗重生,relay_enabled 时)再重试。
+   要发的原文已落盘,可原样重发。"
+
+  now="$(date +%s)"; id="rm-$now-$$"
+  mkdir -p "$RELAY_OUTBOX_D"
+  # 信封两类前缀分开:一条**本该由 relay 裁**的请裁被它当中转转走(或反之)在自然语言里极易发生,
+  # relay 当天已各处理过若干件。⇒ 前缀是机器可辨的,⛔ 让它从措辞里推。
+  local head
+  if [ "$to" = "$RELAY_WIN" ]; then head="【给relay自己】$id"; else head="【转:给${to}】$id"; fi
+  local envelope
+  envelope="$(cat <<EOF
+$head
+原发方:$DISPATCH_WIN(派工窗口;引擎=$DISPATCH_ENGINE)
+回执给谁:$DISPATCH_WIN
+$( [ "$to" = "$RELAY_WIN" ] \
+   && echo "处置:**这条是给你(中继)自己判的**,⛔ 转发出去。" \
+   || echo "处置:**逐字透传**给 $to,⛔ 加工/总结/替我判断(加工会把每条中转从几百 token 变成几千,而你是唯一枢纽)。" )
+—————— 以下为原文 ——————
+$text
+—————— 原文结束 ——————
+回执契约(⛔ 反向注入 dispatch 窗格,那条路不存在也不会有):
+1. 转出后请落盘:$KB/4-开发层/记录/$id-中转回执.md,**末行行首固定**:
+   【中转回执】$id 已转出 $to
+   ——事件总线据此销账;不落盘的话 $((RELAY_ACK_SECS/60)) 分钟后 dispatch 会收到「疑似丢失」告警。
+2. $to 的答复请让它落盘:$KB/4-开发层/记录/$id-中转回复.md,**末行行首固定**:
+   【中转回复】$id 来自 $to
+   ——正文长度格式不限(事件总线投给 dispatch 的是**路径指针**,dispatch 自己读全文)。
+3. ⚠️ 信封不全(缺「原发方」或「回执给谁」)⇒ **拒收并回一句**「我不是 X 的对口,请补原发方/回执给谁」,
+   ⛔ 据内容像谁就当谁——猜对和猜错在收方眼里长得一模一样。
+EOF
+)"
+  # ⚠️ 顺序:**先落盘再注入**。倒过来写,"注入成功但进程随即被杀"就会让这条消息既没转出也没留痕。
+  printf '%s' "$envelope" > "$RELAY_OUTBOX_D/$id"
+  printf '%s|%s|%s|%s\n' "$now" "$id" "$to" "$(head -1 <<< "$text" | cut -c1-60)" >> "$RELAY_OUTBOX"
+  # 投递路径与 events/cmd_send **同构**(load-buffer → paste-buffer -p → C-m),⛔ 另起一套
+  printf '%s' "$envelope" | tmux load-buffer -b laixin-relaymsg -
+  tmux paste-buffer -p -b laixin-relaymsg -t "$SESSION:$RELAY_WIN"
+  tmux delete-buffer -b laixin-relaymsg
+  sleep 0.4
+  tmux send-keys -t "$SESSION:$RELAY_WIN" C-m
+  board "$(caller_src)" "转办 → relay:$head 给 $to($(head -1 <<< "$text" | cut -c1-50)…)"
+  echo "已投给 $RELAY_WIN:$head → $to"
+  echo "⚠️ 这只是**注入成功 ⛔ 送达**——等 relay 落盘【中转回执】$id 才算转出;$((RELAY_ACK_SECS/60)) 分钟无回执会有告警。"
+  echo "   原文留底:$RELAY_OUTBOX_D/$id   查未销账:laixin-lane relay-msg --status"
+}
+
+cmd_relay_msg_status(){  # 未销账的转办(只读;⛔ 顺手清账——清账归 ev_loop 的回执/告警两条路)
+  if [ ! -s "$RELAY_OUTBOX" ]; then echo "转办 outbox:空(无未确认转出的消息)"; return 0; fi
+  echo "转办 outbox(投给 relay 但**尚未**见到【中转回执】;超 $((RELAY_ACK_SECS/60)) 分钟 ev-loop 会告警):"
+  local e i t h now; now="$(date +%s)"
+  while IFS='|' read -r e i t h; do
+    [ -n "$i" ] || continue
+    printf '  %s  → %-16s 投出 %s 分钟前   原文:%s\n' "$i" "$t" "$(( (now - e)/60 ))" "$RELAY_OUTBOX_D/$i"
+    printf '      %s\n' "$h"
+  done < "$RELAY_OUTBOX"
+}
 
 # 看门狗主循环:纯 bash,不累不崩没有上下文,是整条流水线里唯一不会"忘"的东西
 wd_loop() {
@@ -3368,6 +3695,7 @@ case "${1:-}" in
   relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记
   peek-r)     shift; cmd_peekr "$@" ;;
   relay-down) shift; cmd_relay_down "$@" ;;   # 收窗并**关闭托管**(清标记,看门狗从此不管 relay)
+  relay-msg)  shift; cmd_relay_msg "$@" ;;    # #67②:出站转办(**单向** dispatch→relay;回程走落盘+events,零扩权)
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)

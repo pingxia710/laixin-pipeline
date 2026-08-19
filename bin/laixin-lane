@@ -822,7 +822,19 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   # 双窗口同库并发时 add -A/add 目录会把对方未提交的编辑扫上自己车(复盘页#9 e5f6351 实撞)——
   # 本命令是「git add 精确路径」约定的机器化,窗口提交知识库一律走这里。
   local vault="${LAIXIN_VAULT:-$HOME/Obsidian}" msg="${1:-}"; shift || true
+  # #39 强形态:单参调用且该参数是**存在的文件** ⇒ 把路径放进了「说明」位(签名用反),直接拒绝。
+  # 实撞:总表路径被当说明串传入,实际只提交了注册表,而回显读起来完全像总表已提交。
+  local _mabs="$msg"
+  if [ -n "$msg" ] && [ "${msg#/}" = "$msg" ]; then _mabs="$vault/$msg"; fi
+  if [ $# -eq 0 ] && [ -n "$msg" ] && [ -f "$_mabs" ]; then
+    die "⛔ 唯一的参数是**存在的文件**($msg)——它落在「说明」位,不会被提交(#39 实撞形态)。签名:laixin-lane kb-commit <提交说明> <文件路径>..."
+  fi
   { [ -n "$msg" ] && [ $# -gt 0 ]; } || die "用法:laixin-lane kb-commit <提交说明> <文件路径>...(相对 vault 或绝对;⛔ 目录 ⛔ 旗标 ⛔ 通配)"
+  # #39 弱形态(实撞原型:kb-commit <总表路径> <注册表路径>):说明位是存在的文件 ⇒ 不阻断只提醒
+  #(命中≠定罪,同分桶钩哲学;正常说明是中文句子,与真实路径撞形的概率≈0,提醒不随正确用法增长)
+  if [ -f "$_mabs" ]; then
+    echo "⚠️ 说明位参数是一个**存在的文件路径**($msg)——它只会成为提交说明,不会被提交。想提交它就把它挪进文件参数列表。" >&2
+  fi
   local p abs; local -a args=()
   for p in "$@"; do
     case "$p" in -*) die "⛔ 不收旗标($p)——本命令存在的意义就是拒绝 add -A" ;; esac
@@ -836,7 +848,10 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   git -C "$vault" add -- "${args[@]}" || die "git add 失败"
   local committed=0
   if git -C "$vault" commit -q -m "$msg" -- "${args[@]}" 2>/dev/null; then
-    echo "✅ 已提交 ${#args[@]} 个文件:$msg"
+    # #39:回显列**实际 add 的路径**,msg 加「说明:」标注——原回显「已提交 N 个文件:<msg>」的
+    # msg 位读起来像文件名(实撞:误信总表已提交)。回显要证明「写对了」,不只证明「写了」。
+    echo "✅ 已提交 ${#args[@]} 个文件(说明:$msg):"
+    printf '   %s\n' "${args[@]}"
     committed=1
   else
     echo "无变更可提交(文件与 HEAD 一致)"

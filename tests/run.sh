@@ -805,7 +805,7 @@ t "设了 LAIXIN_WINDOW 则零提示(不制造噪音)" bash -c \
 t "设了来源时来源字段照原样写入" bash -c 'grep -q "| 派工窗口 | 测试事件丁 |" "'"$L26"'/b.md"'
 rm -rf "$L26"
 
-echo "== 6k. #44 保命循环禁裸调用(wd_loop 执行重生时宿主无声死亡;隔离 fixture,零真实 tmux) =="
+echo "== 7a. #44 保命循环禁裸调用(wd_loop 执行重生时宿主无声死亡;隔离 fixture,零真实 tmux) =="
 # 08-19 10:56 实撞:杀 relay → 看门狗记「自动重起」→ cmd_relay 内双中继守卫 die(:die=echo+exit)
 # 在**同进程函数调用**形态下 exit 直接终止宿主 wd_loop,`|| board` 兜底接不住 exit,stderr 被吞
 # ⇒ 无声死亡,全线失去看门狗且零告警。绊线驱动 tests/wd44-driver.sh 在沙盒里跑**真实** wd_loop/cmd_relay。
@@ -839,7 +839,7 @@ t "#44:resurrect --full 内无裸 cmd_relay/cmd_dispatch/cmd_watchdog 调用" ba
 t "#44:起窗函数内后台块显式脱离 stdout(防拖住 wd_loop 的命令替换读 15s)" bash -c \
   'for f in cmd_relay cmd_dispatch; do sed -n "/^${f}()/,/^}/p" "$0" | grep -qE "^[[:space:]]*\) &$" && exit 1; done; :' "$LANE"
 
-echo "== 6l. #45 起窗看板来源=真实调用上下文(⛔ 硬编码「看门狗」) =="
+echo "== 7b. #45 起窗看板来源=真实调用上下文(⛔ 硬编码「看门狗」) =="
 # 实撞(08-19 11:0x):创始人**手工**拉起 relay,看板记「看门狗 起中继窗口」,relay 第二任据此
 # 误判「看门狗保活有效」并正式推翻 #44 的失效判定(三层全错)——来源写「通常是谁」=为每一次
 # 非常规调用制造伪证,而演练/事故排查恰恰全是非常规调用。
@@ -864,7 +864,7 @@ t "#45:caller_src 优先级=LAIXIN_BOARD_SRC>LAIXIN_WINDOW>手工" bash -c '
   rm -rf "$T"
   [ "$a" = 手工 ] && [ "$b" = 派工窗口 ] && [ "$c" = 看门狗 ]' "$LANE"
 
-echo "== 6m. #37 派接管指令后回读复核(Enter 竞态实撞:指令停在输入框,dispatch 空转 5 分钟) =="
+echo "== 7c. #37 派接管指令后回读复核(Enter 竞态实撞:指令停在输入框,dispatch 空转 5 分钟) =="
 # fixture:抽真实 confirm_briefed+dialog_classify,tmux/sleep/board 为桩,三情景全覆盖
 T37="$(mktemp -d)"
 sed -n "/^confirm_briefed()/,/^}/p" "$LANE" > "$T37/f.sh"
@@ -902,7 +902,7 @@ rm -rf "$T37"
 tout "#37:cmd_dispatch 起窗挂了回读复核" "confirm_briefed \"\$DISPATCH_WIN\"" sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
 tout "#37:cmd_relay 起窗挂了回读复核(共用路径同修)" "confirm_briefed \"\$RELAY_WIN\"" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
 
-echo "== 6n. #34 wip-save 丢弃前先固化(fixture 仓库,零真实副作用) =="
+echo "== 7d. #34 wip-save 丢弃前先固化(fixture 仓库,零真实副作用) =="
 W34="$(mktemp -d)"; mkdir -p "$W34/repo" "$W34/wip"
 git -C "$W34/repo" init -q
 printf 'a\nb\n' > "$W34/repo/f.txt"
@@ -929,6 +929,29 @@ rm -rf "$W34"
 t "#34 绊线:补丁目录默认挂 HOME ⛔ /tmp 族" bash -c \
   'grep -q "LAIXIN_WIP_DIR:-\$HOME/" "$0" && ! grep -qE "LAIXIN_WIP_DIR:-/(private/)?tmp" "$0"' "$LANE"
 tout "#34:保真校验在位(⛔ 只看文件生成了)" "apply --check -R" sed -n "/^cmd_wip_save()/,/^}/p" "$LANE"
+
+echo "== 7e. #39 kb-commit 回显列实际路径+说明位路径守卫(fixture vault) =="
+V39="$(mktemp -d)"
+git -C "$V39" init -q
+printf 'x\n' > "$V39/总表.md"; printf 'y\n' > "$V39/注册表.md"
+git -C "$V39" add 总表.md 注册表.md
+git -C "$V39" -c user.email=t@t -c user.name=t commit -qm init
+printf 'y2\n' > "$V39/注册表.md"
+# ⭐ 主绊线(实撞:误信总表已提交):回显必须列**实际 add 的路径**,msg 带「说明:」标注不再像文件名
+t "#39 绊线:回显列实际 add 的路径且 msg 标注为说明" bash -c '
+  out="$(env LAIXIN_VAULT="$1" "$2" kb-commit "更新注册表" 注册表.md 2>&1)"
+  grep -q "已提交 1 个文件(说明:更新注册表)" <<< "$out" && grep -q "^   .*注册表.md" <<< "$out"' 39 "$V39" "$LANE"
+# ⭐ 强形态:单参且是存在的文件 ⇒ 拒绝并提示签名(把路径当 msg 的形态)
+tfail "#39 绊线:单参调用且参数是存在的文件 ⇒ 拒绝并提示签名" "落在「说明」位" \
+  env LAIXIN_VAULT="$V39" "$LANE" kb-commit 总表.md
+tfail "#39:单参非文件仍走通用用法提示(不误伤)" "用法:" \
+  env LAIXIN_VAULT="$V39" "$LANE" kb-commit 只有说明没有文件
+# 弱形态(实撞原型 kb-commit <总表路径> <注册表路径>):不阻断,stderr 提醒说明位是存在文件
+t "#39:多参但说明位是存在文件 ⇒ 提醒不阻断,提交照常" bash -c '
+  printf "y3\n" > "$1/注册表.md"
+  out="$(env LAIXIN_VAULT="$1" "$2" kb-commit 总表.md 注册表.md 2>&1)"; rc=$?
+  [ $rc -eq 0 ] && grep -q "存在的文件路径" <<< "$out" && grep -q "已提交 1 个文件" <<< "$out"' 39 "$V39" "$LANE"
+rm -rf "$V39"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

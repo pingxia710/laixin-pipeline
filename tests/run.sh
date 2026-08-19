@@ -986,6 +986,47 @@ rm -rf "$T40"
 # 结构:8 秒阈值未动(裁定 ⛔ 提高阈值),检测挂点仍在 cmd_send 后台块
 tout "#40:8s 阈值未动且检测挂在 send 后台块" "sleep 8; send_swallow_check" sed -n "/^cmd_send()/,/^}/p" "$LANE"
 
+echo "== 7g. #38 backup 瞬时失败重试(git 桩按调用次数控成败,零真实 push) =="
+T38="$(mktemp -d)"
+sed -n "/^cmd_backup()/,/^}/p" "$LANE" > "$T38/f.sh"
+cat > "$T38/stub.sh" <<'S38'
+board(){ printf '%s\n' "$2" >> "$B38"; }
+git(){  # git -C <repo> <子命令>…;push 的成败由计数与 FAILN 控制
+  shift 2
+  case "$1" in
+    remote) if [ -f "$NOREMOTE" ]; then return 1; fi; return 0 ;;
+    push)   local n; n="$(cat "$CNT" 2>/dev/null || echo 0)"; n=$((n+1)); printf '%s' "$n" > "$CNT"
+            if [ "$n" -le "$FAILN" ]; then return 1; fi; return 0 ;;
+  esac
+  return 0
+}
+S38
+# ⭐ 主绊线(实撞形态):首轮三仓全败、重试全成 ⇒ 退出码 0 且**零告警**(误报被洗掉)
+t "#38 绊线:瞬时失败(首轮败重试成)⇒ 重试洗掉误报,零告警 rc=0" bash -c '
+  export B38="$1/bA" CNT="$1/cA" NOREMOTE="$1/没有这个文件" FAILN=3 LAIXIN_BACKUP_RETRY_DELAY=0
+  : > "$B38"
+  out="$(bash -c "set -uo pipefail; source \"$1/f.sh\"; source \"$1/stub.sh\"; cmd_backup")" || exit 1
+  grep -q "自动重试一次" <<< "$out" && [ ! -s "$B38" ]' 38 "$T38"
+# 持续失败:重试后仍败才告警,rc 非零(告警没有被重试机制吞掉)
+t "#38 绊线:持续失败 ⇒ 重试后仍告警且 rc 非零" bash -c '
+  export B38="$1/bB" CNT="$1/cB" NOREMOTE="$1/没有这个文件" FAILN=99 LAIXIN_BACKUP_RETRY_DELAY=0
+  : > "$B38"
+  bash -c "set -uo pipefail; source \"$1/f.sh\"; source \"$1/stub.sh\"; cmd_backup" >/dev/null && exit 1
+  grep -q "重试后仍有失败项" "$B38"' 38 "$T38"
+# 全成:零重试零告警(重试不随健康态出现)
+t "#38:全成 ⇒ 零重试零告警" bash -c '
+  export B38="$1/bC" CNT="$1/cC" NOREMOTE="$1/没有这个文件" FAILN=0 LAIXIN_BACKUP_RETRY_DELAY=0
+  : > "$B38"
+  out="$(bash -c "set -uo pipefail; source \"$1/f.sh\"; source \"$1/stub.sh\"; cmd_backup")" || exit 1
+  ! grep -q "自动重试" <<< "$out" && [ ! -s "$B38" ]' 38 "$T38"
+# ⭔ 配置缺口 ⛔ 被重试掩蔽:缺 origin 首轮即告警(重试救不了的失败不进重试洗白通道)
+t "#38 绊线:缺 origin=配置缺口,首轮即告警不被重试掩蔽" bash -c '
+  export B38="$1/bD" CNT="$1/cD" NOREMOTE="$1/cD-noremote" FAILN=0 LAIXIN_BACKUP_RETRY_DELAY=0
+  : > "$B38"; : > "$NOREMOTE"
+  bash -c "set -uo pipefail; source \"$1/f.sh\"; source \"$1/stub.sh\"; cmd_backup" >/dev/null && exit 1
+  grep -q "缺 origin 远端(配置缺口" "$B38"' 38 "$T38"
+rm -rf "$T38"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

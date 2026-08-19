@@ -893,20 +893,34 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
 cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史
   # 只推已提交历史——未提交的是活窗口的在途工作,由各窗口按纪律及时提交;⛔ 本命令不 add 不 commit
   # (备份自动 commit -A 会与窗口的精确提交互扫且污染史,见复盘页#9)
-  local rc=0 r
-  for r in "$HOME/Obsidian" "$HOME/Developer/laixin-pipeline" "$HOME/来信平台"; do
-    if git -C "$r" remote get-url origin >/dev/null 2>&1; then
-      if git -C "$r" push origin main -q 2>/dev/null; then
-        echo "✅ $(basename "$r") 已推送"
+  # #38:推送瞬时失败自动重试一轮——重启窗口期网络/代理未就绪会造成首轮全败误报(08-19 08:55
+  # 实撞:boot 链起备份报失败,09:02 手跑三仓全推成功)。失败后隔 ${LAIXIN_BACKUP_RETRY_DELAY:-150}s
+  # (2-3 分钟)重试一次,仍失败才 board 告警。⛔ 只重试**推送失败**(瞬时族);「无 origin 远端」是
+  # 配置缺口,重试救不了 ⇒ 首轮即告警(失效不得被重试机制掩蔽,三约束②)。
+  local delay="${LAIXIN_BACKUP_RETRY_DELAY:-150}"
+  local rc=0 cfg_rc=0 r round
+  for round in 1 2; do
+    rc=0
+    for r in "$HOME/Obsidian" "$HOME/Developer/laixin-pipeline" "$HOME/来信平台"; do
+      if git -C "$r" remote get-url origin >/dev/null 2>&1; then
+        if git -C "$r" push origin main -q 2>/dev/null; then
+          echo "✅ $(basename "$r") 已推送"
+        else
+          echo "❌ $(basename "$r") 推送失败(网络/认证?)"; rc=1
+        fi
       else
-        echo "❌ $(basename "$r") 推送失败(网络/认证?)"; rc=1
+        if [ "$round" -eq 1 ]; then echo "⚠️ $(basename "$r") 无 origin 远端,跳过"; cfg_rc=1; fi
       fi
-    else
-      echo "⚠️ $(basename "$r") 无 origin 远端,跳过"; rc=1
-    fi
+    done
+    if [ "$rc" -eq 0 ] || [ "$round" -eq 2 ]; then break; fi
+    echo "…首轮有推送失败:${delay}s 后自动重试一次(#38 瞬时失败族,重启窗口期网络未就绪实撞);仍失败才告警"
+    sleep "$delay"
+    echo "== 重试(第 2 轮,只为洗掉瞬时失败) =="
   done
-  [ "$rc" -ne 0 ] && board "备份" "⛔ 异地备份有失败项,laixin-lane backup 手跑核对"
-  return "$rc"
+  if [ "$cfg_rc" -ne 0 ]; then board "备份" "⛔ 异地备份有仓库缺 origin 远端(配置缺口,重试救不了),laixin-lane backup 手跑核对"; fi
+  if [ "$rc" -ne 0 ]; then board "备份" "⛔ 异地备份重试后仍有失败项(首轮+${delay}s 重试均败),laixin-lane backup 手跑核对"; fi
+  if [ "$rc" -ne 0 ] || [ "$cfg_rc" -ne 0 ]; then return 1; fi
+  return 0
 }
 
 cmd_install_backup(){  # 每小时异地备份 launchd(P0-2 配套)

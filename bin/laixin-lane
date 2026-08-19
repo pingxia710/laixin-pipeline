@@ -258,8 +258,17 @@ ensure_session() {
 # ⚠️ claude 席位(dispatch/relay/verify 的 claude 形态)**本次不动** —— 它们的启动串各带
 #   不同的 --model/--allowedTools/--disallowedTools,合并收益小而改动面大;且脚本既有纪律
 #   是「claude 路径原样保留零行为变化」。
-codex_launch_cmd(){  # <BU_NAME> <cdp端口> <mcp关闭串> → stdout=完整启动命令串
-  printf 'BU_NAME="%s" BU_CDP_URL="http://127.0.0.1:%s" codex %s' "$1" "$2" "$3"
+# 2026-08-19 二次收口:kimi 席位加入后,注入前缀在三处出现 ⇒ 再抽一层,**注入形态只此一份**。
+agent_launch_cmd(){  # <BU_NAME> <cdp端口> <引擎启动串> → stdout=完整启动命令串
+  printf 'BU_NAME="%s" BU_CDP_URL="http://127.0.0.1:%s" %s' "$1" "$2" "$3"
+}
+codex_launch_cmd(){  # <BU_NAME> <cdp端口> <mcp关闭串>
+  agent_launch_cmd "$1" "$2" "codex $3"
+}
+# kimi 起窗形态与 lane 的 C 轨(cmd_up)**同一份**:`--auto` 全自主 ⛔ 交互提问(派工窗口无人应答)。
+# ⚠️ kimi 的 --prompt 与 --auto/--yolo **互斥**(实测 0.37.2 直接报错)⇒ 托管窗口只能走交互式常驻。
+kimi_launch_cmd(){   # <BU_NAME> <cdp端口>
+  agent_launch_cmd "$1" "$2" "\"$KIMI_BIN\" --auto -m $KIMI_MODEL"
 }
 
 target() { echo "$SESSION:$(win "$1")"; }
@@ -1680,9 +1689,9 @@ cmd_doctor() {
     fi
   else
     if [ "$VERIFY_ENGINE" = "claude" ]; then
-      ok "验收窗口钉:$VERIFY_MODEL(改用 LAIXIN_VERIFY_MODEL)  派工引擎:codex(#67 临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
+      ok "验收窗口钉:$VERIFY_MODEL(改用 LAIXIN_VERIFY_MODEL)  派工引擎:$DISPATCH_ENGINE(临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
     else
-      ok "验收引擎:codex(#60①)  派工引擎:codex(#67 临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
+      ok "验收引擎:codex(#60①)  派工引擎:$DISPATCH_ENGINE(临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
     fi
     # ⚠️ 工具层锁失效必须**在体检里说出来** ⛔ 只写在提交信息里:DISPATCH_DENY 实测只有一条
     # `Bash(git push*)`,而 codex 没有 disallowedTools 等价物 ⇒ 该锁静默失效,而「锁在」与
@@ -2589,6 +2598,40 @@ DISPATCH_BRIEF_CODEX='你是 laixin 开发流水线的**派工窗口**(引擎=Co
 铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
 状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。'
 
+# 方案 C(kimi):与 codex 版同构,四处按实测差异改写 —— ①skills 用绝对路径 Read(⛔ 依赖 kimi 的
+# 自动发现);②ctx 看自己界面底部 `context: N%`(`laixin-lane ctx` 只认 claude/codex 会话文件,
+# 对 kimi 无效,⛔ 让它读到别人的数);③kimi 独有 Agent/AgentSwarm 子代理,派工窗口用它等于绕过
+# lane 与派工权锁而看板上看不出区别 ⇒ 明令禁;④告诉它 dmsg 这条入站路不需要它做任何事。
+DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kimi Code,由看门狗托管起动)。
+
+起手式,按序做完再报告:
+1. 用 Read 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源,**绝对路径直读 ⛔ 靠 skill 自动发现**),认领"派工窗口"角色(不要兼任验收);
+2. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md 的"进行中"节,再读同目录 来信平台-流水线看板.md 末 20 行,再读 知识库/log.md 末尾;
+3. 事件总线(events 窗口)已随本窗口自动运行——交付落盘、验收回执、转办回复、轨道与验收窗口卡住,都会**直接投递进你的输入框**。**你无需也不要自建监听**;每条【事件】/【告警】到达,同一轮内完成「判断→行动→可见输出」。⚠️ 事件投给你的是**路径指针不是内容**,凡带文件路径的事件一律**先读那个文件全文**;
+4. 接管当前状态:该派工的立即派(laixin-lane fresh + send + peek 复核),已交付待验的用 laixin-lane verify 起一次性验收窗口——**你的会话名就是 dispatch,所以固定写 --to dispatch**。
+
+🔴 **⛔ 用 Agent / AgentSwarm 起子代理去干派工窗口的活**。lane 上的开发轨、验收窗口、派工权锁全是 laixin-lane 在 tmux 层管的实体;你另起一套子代理会**绕过派工权锁与看门狗托管**,而看板上看不出任何区别。要并行就用 A/B/C 三条真实轨道。
+
+⚠️ **本引擎没有 SendMessage,出站通信按消息类型分两条路(⛔ 一律走 relay,也 ⛔ 一律落盘)**:
+- **需要对方判断/裁定/讨论的**(裁定缺口、挂起上报、请方案窗口补设计、口径请裁)→
+  laixin-lane relay-msg --to <目标> "<正文>" —— 投给中继窗口代发 SendMessage,**必须显式 --to**。
+  **注入成功不等于送达**:等中继落盘【中转回执】才算转出,久无回执事件总线会告警;laixin-lane relay-msg --status 查未销账。
+  对方的答复会以**【中转回复】落盘 + 事件投路径指针**回到你这里,**⛔ 等它直接注入你的窗口**(那条路不存在)。
+- **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
+- 📌 别人主动找你的消息走 laixin-lane dmsg,会以「【消息】来自 <来源>」的形态直接落进你的输入框——**那条路不需要你做任何事**。
+
+⚠️ **上下文占比看你自己界面底部的 `context: N%`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。≥70% 是交班硬闸门。
+
+派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**。
+
+接班先跑 laixin-lane doctor 与 laixin-lane stats;合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
+**你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
+
+🔴 **红线(本引擎没有 claude 的 disallowedTools 工具层禁令,以下以本指令为准)**:⛔ git push。
+合并你照旧做(派工窗口持有合并权),但 merge 后按卡跑 merge-guard 收尾。越线即整轮作废并报创始人。
+
+铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。'
+
 # ---- 派工权认领:用"谁在动 lane"识别派工窗口,而不是数窗口个数 ----
 # 数量是身份的不可靠代理(开窗口问问题 vs 开窗口接管派工,在"数量"里长得一样);
 # 而 send 是派工窗口的定义性行为 ⇒ 直接测行为,不猜身份。
@@ -2758,7 +2801,7 @@ cmd_dispatch() {
     esac
   done
   # #67:引擎校验在动窗口**之前**(同 #60① 一课:值打错不该留下半个死窗口/半个被杀的旧窗口)
-  case "$DISPATCH_ENGINE" in codex|claude) : ;; *) die "未知派工引擎:$DISPATCH_ENGINE(LAIXIN_DISPATCH_ENGINE 只接受 codex|claude)" ;; esac
+  case "$DISPATCH_ENGINE" in codex|claude|kimi) : ;; *) die "未知派工引擎:$DISPATCH_ENGINE(LAIXIN_DISPATCH_ENGINE 只接受 codex|claude|kimi)" ;; esac
   ensure_session
   if [ -z "$nocheck" ] && ! check_rival_dispatch; then
     die "起窗中止——绝不允许两个派工窗口同时活着。先确认那些窗口已收工,或确认它们不是派工窗口后加 --force-rival 重试"
@@ -2790,7 +2833,7 @@ cmd_dispatch() {
     fi
     die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
   done
-  else
+  elif [ "$DISPATCH_ENGINE" = "codex" ]; then
   # ── codex 引擎(#67,默认关闭):起窗形态照 cmd_verify 的 codex 分支——MCP 全量关闭
   # (⛔ 引号 key,见 lane_mcp_off_flags 注释)、BU_NAME/BU_CDP_URL 派生规则**一字未改**
   # (dispatch 的通道名与端口是固定值,两引擎共用 ⇒ cdp_sweep/halt 零改动)。
@@ -2802,7 +2845,16 @@ cmd_dispatch() {
   tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
   sleep 0.5
   tmux send-keys -t "$SESSION:$DISPATCH_WIN" "$(codex_launch_cmd "dispatch" "$_cdp_port" "$_mcp_off")" C-m
-  vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"
+  vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"  else
+  # ── kimi 引擎(方案 C):起窗形态与 lane 的 C 轨同一份(kimi_launch_cmd)。
+  # #68:kimi 对每个新工作目录弹 `Trust this folder?`,两个选项都是坑(不信任=直接退出)
+  # ⇒ **起窗前预写信任记录**,⛔ 起完再想办法点按钮——托管窗口无人可点。
+  _brief="$DISPATCH_BRIEF_KIMI"
+  kimi_trust_prewrite "$dir" || die "$DISPATCH_WIN 起窗中止:kimi 信任记录预写失败(见上方告警)"
+  tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "$(kimi_launch_cmd "dispatch" "$_cdp_port")" C-m
+  vwait_ready_kimi "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 kimi 就绪状态栏)。查看:laixin-lane peek-d 40"
   fi
   sleep 1
   printf '%s' "$_brief" | tmux load-buffer -b laixin-dmsg -
@@ -3339,6 +3391,18 @@ ${why:-(未捕获到 FAIL 行,peek 看现场)}
   done
   # 90s 仍未就绪:把 pane 末尾带出来,别让调用者盲猜
   board "$(caller_src)" "⛔ $w 启动超时(90s),pane 末行:$(tmux capture-pane -p -t "$SESSION:$w" -S -5 2>/dev/null | grep -v '^$' | tail -1)"  # #45-bis 来源同上
+  return 1
+}
+
+vwait_ready_kimi() {  # <窗口名> —— kimi 引擎就绪判据(#方案C)。⛔ 与 codex 共用:三家的就绪画面互不相同。
+  # 判据取自 2026-08-19 真机实测(kimi 0.37.2):底部状态栏同时出现 `auto` 模式字样与 `context: N% `。
+  # ⛔ 认启动横幅里的 `Model:`/`Version:` —— 那在 MCP 还在连接、输入框尚未可用时就已经打出来了。
+  local w="$1" i out
+  for i in $(seq 1 45); do   # 90s,与 codex 同量级
+    out="$(tmux capture-pane -p -t "$SESSION:$w" -S -40 2>/dev/null)"
+    if grep -q "context: " <<< "$out" && grep -qE "(^| )auto " <<< "$out"; then return 0; fi
+    sleep 2
+  done
   return 1
 }
 

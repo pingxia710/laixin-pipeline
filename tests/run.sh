@@ -1050,7 +1050,9 @@ t "#67 默认值确实不是 codex(回退检测:谁把默认改了本行立刻�
 # ⭐ 绊线②:值打错在**动窗口之前**拒(同 #60① 一课)——dispatch 起窗会先 kill 掉旧窗口,
 #   校验放后面等于「参数打错就把正在派工的窗口杀了」。
 tfail "#67 未知派工引擎被拒且指明合法值" "只接受 codex|claude" \
-  env LAIXIN_DISPATCH_ENGINE=kimi LAIXIN_SESSION=bogus-d67 "$LANE" dispatch
+  env LAIXIN_DISPATCH_ENGINE=bogus LAIXIN_SESSION=bogus-d67 "$LANE" dispatch   # ⚠️ 样本原为 kimi,
+  # 2026-08-19 kimi 成为**合法**第三引擎后必须换掉:否则本条不再测「拒绝」而是真的起一个 kimi
+  # 派工窗口,并在 fixture 会话里留下残渣。⇒ **加新引擎时先查有没有绊线拿它当反例。**
 t "#67 未知引擎被拒时零 tmux 副作用(⛔ 留下半个死会话)" bash -c \
   '! tmux has-session -t bogus-d67 2>/dev/null'
 t "#67 引擎校验在 ensure_session/kill-window 之前" bash -c \
@@ -2259,6 +2261,38 @@ t "dmsg:⛔ 进 RELAY_DENY(relay 恰是最需要它的席位)" bash -c '
 tfail "未知子命令:退出码非零且 stderr 有明确告警(⛔ 静默打 help)" "未知子命令" "$LANE" 完全不存在的子命令xyz
 t "未知子命令:告警走 stderr ⛔ stdout(混进 stdout 会被当成输出的一部分)" bash -c '
   out="$("'"$LANE"'" 不存在xyz 2>/dev/null)"; ! grep -q "未知子命令" <<< "$out"'
+
+# ── dispatch 方案 C:kimi(2026-08-19)────────────────────────────────────────────────
+# 三家引擎的通信能力实测:claude 有 SendMessage;codex 无;**kimi 无**(0.37.2 自报逐字
+# 「没有任何 SendMessage / ListAgents 之类的工具」)⇒ 与 codex 同档,出站 relay-msg、
+# 入站 dmsg/events,通信面已闭合,kimi 不需要额外机制。
+VKM="$(mktemp -d)"; VKMF="$VKM/fn.sh"
+{ echo 'KIMI_BIN=/k/kimi; KIMI_MODEL=k3';
+  sed -n "/^agent_launch_cmd()/,/^}$/p" "$LANE";
+  sed -n "/^codex_launch_cmd()/,/^}$/p" "$LANE";
+  sed -n "/^kimi_launch_cmd()/,/^}$/p" "$LANE"; } > "$VKMF"
+tout "kimi:构造串走同一注入形态(⛔ 各写一套)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" "/k/kimi" --auto -m k3' bash -c '
+  source "'"$VKMF"'"; kimi_launch_cmd d 9'
+tout "codex:构造串与引入 kimi 前**逐字一致**(回归保护)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" codex --x' bash -c '
+  source "'"$VKMF"'"; codex_launch_cmd d 9 "--x"'
+# ⛔ 在这里再写一条"未知引擎被拒":既有 #67 那条已覆盖,且它带 LAIXIN_SESSION 隔离;
+# 照抄时漏掉隔离 ⇒ 会在**真实** tmux 会话里跑起窗命令(2026-08-19 自撞,当轮发现并撤回)。
+tout "kimi:错误文案列出三种合法引擎(⛔ 只列两种)" "codex|claude|kimi" bash -c '
+  grep "未知派工引擎" "'"$LANE"'"'
+tout "kimi:BRIEF 禁 Agent/AgentSwarm(用子代理会绕过派工权锁且看板看不出)" "AgentSwarm" bash -c '
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/^铁律/p" "'"$LANE"'"'
+tout "kimi:BRIEF 明示 ctx 看自己界面(laixin-lane ctx 对本引擎无效,会读到别人的数)" "context: N%" bash -c '
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/^铁律/p" "'"$LANE"'"'
+tout "kimi:BRIEF 告知 dmsg 入站路(⛔ 让它去自建监听)" "dmsg" bash -c '
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/^铁律/p" "'"$LANE"'"'
+t "kimi:起窗前必须预写信任记录(#68,⛔ 起完再点按钮——托管窗口无人可点)" bash -c '
+  n=$(grep -n "kimi_launch_cmd \"dispatch\"" "'"$LANE"'" | cut -d: -f1)
+  sed -n "$((n-6)),${n}p" "'"$LANE"'" | grep -q kimi_trust_prewrite'
+tout "kimi:就绪判据认状态栏 ⛔ 认启动横幅(横幅在输入框可用前就打出来了)" "context: " \
+  sed -n "/^vwait_ready_kimi()/,/^}$/p" "$LANE"
+t "kimi:doctor 引擎行⛔ 写死 codex(三态要可分辨)" bash -c '
+  ! sed -n "/^cmd_doctor()/,/^}$/p" "'"$LANE"'" | grep -q "派工引擎:codex("'
+rm -rf "$VKM"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

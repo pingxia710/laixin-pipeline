@@ -3886,5 +3886,11 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   attach) shift; cmd_attach "$@" ;;
   down)   shift; cmd_down "$@" ;;
-  *) awk 'NR>1 && /^#/ {print; next} NR>1 {exit}' "$0"; exit 1 ;;
+  # ⛔ 只打 help 就退:退出码虽为 1,但**输出看起来像一次正常的结果** ⇒ 用 `cmd | grep`/`| tail`
+  #   读它的人会把 help 正文当成命令输出(2026-08-19 实撞:11B 归口多次 `laixin-lane board | tail`
+  #   "看看板末段",看到的全是 help;并据此判过一条"看板没记录",而记录其实在看板文件里)。
+  #   ⇒ 先往 **stderr** 打一行明确告警,再打 help。⚠️ 调用方若写了 `2>&1 |`,这行同样会被管道
+  #   吃掉 —— 那一半是调用方的纪律:**⛔ 无脑 `2>&1`,错误消息也会被一起过滤**。
+  *) printf '⛔ 未知子命令:%s —— 本次未执行任何动作。下面是可用命令清单(这不是命令输出)\n' "${1:-<空>}" >&2
+     awk 'NR>1 && /^#/ {print; next} NR>1 {exit}' "$0"; exit 1 ;;
 esac

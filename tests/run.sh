@@ -2252,6 +2252,14 @@ tout "dmsg:回执点明「注入成功⛔等于已读」(#69 同族)" "⛔ 等�
 t "dmsg:⛔ 进 RELAY_DENY(relay 恰是最需要它的席位)" bash -c '
   ! grep -q "Bash(laixin-lane dmsg" "'"$LANE"'"'
 
+# ── 未知子命令必须**大声**(2026-08-19 实撞)────────────────────────────────────────
+# 原行为:只打 help + exit 1。退出码对,但输出看起来像一次正常结果 ⇒ 用 `cmd | grep` 读它
+# 的人会把 help 正文当命令输出(11B 归口多次 `laixin-lane board | tail` 看"看板末段",
+# 看到的全是 help,并据此判过一条"看板没记录"——而记录其实在看板文件里)。
+tfail "未知子命令:退出码非零且 stderr 有明确告警(⛔ 静默打 help)" "未知子命令" "$LANE" 完全不存在的子命令xyz
+t "未知子命令:告警走 stderr ⛔ stdout(混进 stdout 会被当成输出的一部分)" bash -c '
+  out="$("'"$LANE"'" 不存在xyz 2>/dev/null)"; ! grep -q "未知子命令" <<< "$out"'
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

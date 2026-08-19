@@ -44,6 +44,7 @@
 #   laixin-lane merge-guard <目标commit> [--ref 分支] [--old 旧值]  ref级合并前后核主树是否被甩下(#24)
 #   laixin-lane opt-status [--page P] 优化条目销号率(#33):按节独立统计各队列共/销号/未销+未销条目点名
 #   laixin-lane release              发布(#25):仓库已提交版→版本化路径+原子换软链(工作树脏拒发;开发迭代直接跑仓库路径)
+#   laixin-lane review-env [up|down|status]  评审环境一键化(#五-18):main 快照 worktree+init+seed+双服务(:8900/:3900);down 杀净有验尸
 set -euo pipefail
 
 # ---- 配置(全部可被环境变量或 config 文件覆盖;默认值=来信平台) ----
@@ -2594,6 +2595,143 @@ cmd_opt_status() {
   LX_OPT_PAGE="$OPT_PAGE" python3 "$(dirname "$self")/opt_status.py" "$@"
 }
 
+# ============ #五-18 评审环境一键化(2026-08-19 停工B段批四) ============
+# 实操卡来源:laixin-dual-audience skill §八(2026-08-18 创始人裁定沉淀)——对账走查四轮手搭
+# 四次(每次 2-3 分钟+实撞坑),本命令把卡上的命令序逐条翻译成一条命令,⛔ 改哲学:
+#   worktree(main 快照,必须在 /Users 下——Turbopack 拒 worktree 外 node_modules symlink,
+#   /tmp 会 panic)→ init_db(DB 按 cwd 天然隔离)→ seed(测试账号 13800001001-1006/test123)
+#   → uvicorn 后端(venv 用主仓库的)→ next dev 前端(symlink 主仓库 node_modules,必须 --webpack)。
+# 端口=专属段(CDP 同哲学,创始人 2026-08-17「每类通道一段」):评审后端 8900 / 前端 3900
+# (实操卡钉的值),常量单一真相供 up/down/status 三方共用——⛔ 字面端口散写(dispatch 9230
+# 双真相源实撞:改一处漏一处,回收扫错端口=服务静默留活)。
+# 「用完要关」机器兜底(同 cdp_sweep):down 先杀 pid 文件里的,再按端口扫尾(pid 文件丢了也杀净),
+# 最后**验尸端口已静默**——杀了≠死了,验过才算。
+REVIEW_DIR="${LAIXIN_REVIEW_DIR:-$HOME/laixin-review}"
+REVIEW_API_PORT="${LAIXIN_REVIEW_API_PORT:-8900}"
+REVIEW_WEB_PORT="${LAIXIN_REVIEW_WEB_PORT:-3900}"
+REVIEW_STATE="${LAIXIN_REVIEW_STATE:-$HOME/.laixin-review.d}"
+REVIEW_TIMEOUT="${LAIXIN_REVIEW_TIMEOUT:-90}"
+
+rev_port_pids(){ lsof -ti "tcp:$1" 2>/dev/null || true; }
+rev_wait_http(){  # <端口> <秒> → 0=端口有 HTTP 响应(404 也算活——判「服务在」不判「路由对」)
+  local port="$1" limit="$2" i=0
+  while [ "$i" -lt "$limit" ]; do
+    if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/" 2>/dev/null; then return 0; fi
+    sleep 1; i=$((i+1))
+  done
+  return 1
+}
+rev_kill_port(){  # <端口>;杀监听者并验尸。⛔ 杀完就走:kill 发出≠进程死了
+  local port="$1" pids
+  pids="$(rev_port_pids "$port")"
+  [ -n "$pids" ] && kill $pids 2>/dev/null || true
+  sleep 0.5
+  pids="$(rev_port_pids "$port")"
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
+  sleep 0.3
+  [ -z "$(rev_port_pids "$port")" ]
+}
+rev_env_fail(){  # <阶段名>;起环境失败:已起的服务杀净(⛔ 留孤儿),目录留着供诊断
+  local stage="$1"
+  rev_kill_port "$REVIEW_API_PORT" >/dev/null 2>&1 || true
+  rev_kill_port "$REVIEW_WEB_PORT" >/dev/null 2>&1 || true
+  echo "── 日志末 5 行($REVIEW_STATE)──" >&2
+  tail -5 "$REVIEW_STATE"/*.log 2>/dev/null >&2 || true
+  die "⛔ 评审环境起失败于「${stage}」——已起的服务已杀净(端口 $REVIEW_API_PORT/$REVIEW_WEB_PORT 已扫);worktree 留在 $REVIEW_DIR 供诊断,看完 laixin-lane review-env down 回收"
+}
+
+cmd_review_env(){
+  local sub="${1:-up}"; shift || true
+  local repo="$DEFAULT_DIR"
+  case "$sub" in
+    up)
+      [ -d "$repo/.git" ] || die "主仓库不是 git 仓库:$repo"
+      case "$REVIEW_DIR" in
+        "/Users/"*) : ;;
+        *) die "⛔ 评审 worktree 必须放 /Users 下(实操卡⚠️:Turbopack 拒绝指向 worktree 外的 node_modules symlink,放 /tmp 会 panic):$REVIEW_DIR" ;;
+      esac
+      # ⚠️ ${REVIEW_DIR} 花括号不能省:裸 $var 紧跟全角破折号会被中文 locale 的 bash 卷进变量名(五发坑第四发,本行首跑即撞)
+      [ ! -e "$REVIEW_DIR" ] || die "评审环境目录已存在:${REVIEW_DIR}——先 laixin-lane review-env down(或 status 看现状)"
+      # 端口占用预检:被占时起上去的「服务」是别人的进程——status/走查看到的是伪环境
+      # (观察者伪证形态,#45 同族)⇒ 先指认占用者再让位,⛔ 盲起
+      local _p _occ
+      for _p in "$REVIEW_API_PORT" "$REVIEW_WEB_PORT"; do
+        _occ="$(rev_port_pids "$_p")"
+        [ -z "$_occ" ] || die "⛔ 端口 $_p 已被占用(pid:$(echo $_occ | tr '\n' ' ')$(ps -o comm= -p $(echo "$_occ" | head -1) 2>/dev/null | sed 's/^/ = /'))——评审段端口是专属段,先核占用者(可能是上次没 down 干净的评审环境:laixin-lane review-env down)"
+      done
+      local py="$repo/.venv/bin/python"
+      [ -x "$py" ] || die "主仓库 venv 缺失:$py(实操卡:venv 用主仓库的)"
+      [ -d "$repo/frontend/node_modules" ] || die "主仓库 frontend/node_modules 缺失(实操卡:评审前端 symlink 主仓库依赖;先在主仓库装好)"
+      mkdir -p "$REVIEW_STATE"
+      git -C "$repo" worktree add --detach "$REVIEW_DIR" main >/dev/null 2>&1 || die "worktree add 失败(git -C $repo worktree add --detach $REVIEW_DIR main)"
+      echo "✅ 1/5 worktree:main 快照($(git -C "$repo" rev-parse --short main))→ $REVIEW_DIR"
+      ( cd "$REVIEW_DIR" && "$py" scripts/init_db.py ) > "$REVIEW_STATE/init.log" 2>&1 || rev_env_fail "init_db"
+      echo "✅ 2/5 init_db(DB 按 cwd 天然隔离,零碰主库)"
+      ( cd "$REVIEW_DIR" && "$py" -c "from seed import seed; seed()" ) >> "$REVIEW_STATE/init.log" 2>&1 || rev_env_fail "seed"
+      echo "✅ 3/5 seed(测试账号 13800001001-1006 / test123)"
+      (
+        cd "$REVIEW_DIR" || exit 1
+        CORS_ORIGINS="http://localhost:$REVIEW_WEB_PORT" nohup "$py" -m uvicorn app.main:app --port "$REVIEW_API_PORT" > "$REVIEW_STATE/api.log" 2>&1 &
+        echo $! > "$REVIEW_STATE/api.pid"
+      )
+      rev_wait_http "$REVIEW_API_PORT" 30 || rev_env_fail "后端就绪等待(30s 无 HTTP 响应)"
+      echo "✅ 4/5 后端 uvicorn @ :$REVIEW_API_PORT(HTTP 已应答,CORS→:$REVIEW_WEB_PORT)"
+      if [ ! -e "$REVIEW_DIR/frontend/node_modules" ]; then
+        ln -s "$repo/frontend/node_modules" "$REVIEW_DIR/frontend/node_modules" || rev_env_fail "node_modules symlink"
+      fi
+      (
+        cd "$REVIEW_DIR/frontend" || exit 1
+        NEXT_PUBLIC_API_URL="http://localhost:$REVIEW_API_PORT" nohup npx next dev -p "$REVIEW_WEB_PORT" --webpack > "$REVIEW_STATE/web.log" 2>&1 &
+        echo $! > "$REVIEW_STATE/web.pid"
+      )
+      rev_wait_http "$REVIEW_WEB_PORT" "$REVIEW_TIMEOUT" || rev_env_fail "前端就绪等待(${REVIEW_TIMEOUT}s 无 HTTP 响应)"
+      echo "✅ 5/5 前端 next dev @ :$REVIEW_WEB_PORT(--webpack,HTTP 已应答)"
+      board "$(caller_src)" "评审环境已起:$REVIEW_DIR(API :$REVIEW_API_PORT / 前端 :$REVIEW_WEB_PORT;main 快照)"
+      echo
+      echo "评审环境已就绪(五步各自实测过,非声明):http://localhost:$REVIEW_WEB_PORT"
+      echo "  截图纪律(实操卡):每页重设 Emulation 375×812(换页 override 会丢);nextjs-portal 是 dev 浮标,截图前 remove ⛔ 当缺陷报"
+      echo "  造异常态订单按真实状态机取值(先核 status 枚举全集,优先走服务层函数)——直改字段会造出现实不存在的形态"
+      echo "  用完回收:laixin-lane review-env down(杀净双服务+删 worktree,有验尸)"
+      ;;
+    down)
+      local killed="" f pid
+      for f in "$REVIEW_STATE/api.pid" "$REVIEW_STATE/web.pid"; do
+        if [ -f "$f" ]; then
+          pid="$(cat "$f" 2>/dev/null || true)"
+          [ -n "$pid" ] && kill "$pid" 2>/dev/null && killed="$killed $pid" || true
+          rm -f "$f"
+        fi
+      done
+      # 端口扫尾:pid 文件丢了/子进程另起也杀净(专属段端口,扫的只会是评审环境自己)
+      rev_kill_port "$REVIEW_API_PORT" || die "⛔ 端口 $REVIEW_API_PORT 杀后仍有监听者(lsof -i tcp:$REVIEW_API_PORT 人工核)——⛔ 当作已回收"
+      rev_kill_port "$REVIEW_WEB_PORT" || die "⛔ 端口 $REVIEW_WEB_PORT 杀后仍有监听者(lsof -i tcp:$REVIEW_WEB_PORT 人工核)——⛔ 当作已回收"
+      echo "✅ 双服务已杀净(端口 $REVIEW_API_PORT/$REVIEW_WEB_PORT 验尸:零监听者)"
+      if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qx "worktree $REVIEW_DIR"; then
+        git -C "$repo" worktree remove --force "$REVIEW_DIR" \
+          || die "⛔ worktree remove 失败($REVIEW_DIR)——人工核:git -C $repo worktree remove --force $REVIEW_DIR"
+        echo "✅ worktree 已回收:$REVIEW_DIR"
+      elif [ -e "$REVIEW_DIR" ]; then
+        echo "⚠️ $REVIEW_DIR 存在但不是本仓库注册的 worktree——不代删(来历不明的目录只有人能决定),人工核"
+      else
+        echo "✅ worktree 本就不在($REVIEW_DIR)"
+      fi
+      board "$(caller_src)" "评审环境已回收(端口 $REVIEW_API_PORT/$REVIEW_WEB_PORT 验尸零监听,worktree 已删)"
+      ;;
+    status)
+      if [ -e "$REVIEW_DIR" ]; then echo "worktree:在($REVIEW_DIR)"; else echo "worktree:不在($REVIEW_DIR)"; fi
+      local _p2 _o2
+      for _p2 in "$REVIEW_API_PORT" "$REVIEW_WEB_PORT"; do
+        _o2="$(rev_port_pids "$_p2")"
+        if [ -n "$_o2" ]; then echo "端口 $_p2:有监听(pid $(echo $_o2 | tr '\n' ' '))"; else echo "端口 $_p2:静默"; fi
+      done
+      [ -f "$REVIEW_STATE/web.log" ] && { echo "--- web.log 末 3 行 ---"; tail -3 "$REVIEW_STATE/web.log"; }
+      return 0
+      ;;
+    *) die "review-env 只接受 up(默认)|down|status" ;;
+  esac
+  return 0
+}
+
 # #19-(a) 在班行为续期:派工窗口的日常动作不止 send——持有者跑任一 duty 命令即证明在班。
 # 身份校验在 lock_renew_if_holder 内(调用者==持有者才续),其余窗口跑同名命令零影响。
 case "${1:-}" in
@@ -2617,6 +2755,7 @@ case "${1:-}" in
   opt-status) shift; cmd_opt_status "$@" ;;  # 优化条目销号率(#33):按节独立统计,未知节/解析失效自曝退非零
   backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
   release) shift; cmd_release "$@" ;;        # #25 部署原子化:已提交版→版本化路径+原子换软链(脏树拒发)
+  review-env) shift; cmd_review_env "$@" ;;  # #五-18 评审环境一键化:实操卡命令序翻译;down 杀净+验尸(⛔ 留孤儿)
   kb-commit) shift; cmd_kb_commit "$@" ;;    # 知识库提交守卫:只收文件路径拒目录旗标(P1-2 互扫防线)
   install-backup) cmd_install_backup ;;      # 每小时备份 launchd
   install-boot-full) cmd_install_boot_full ;;  # 开机全自动恢复(P0-3,烧钱,创始人已裁)

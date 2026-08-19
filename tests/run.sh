@@ -1181,6 +1181,62 @@ t "kb-commit 被拒时点明「按 vault 解析」+回显解析后路径+给绝�
   grep -q "绝对路径" <<< "$out"' kb "$KRP" "$LANE"
 rm -rf "$KRP"
 
+echo "== 8e. #五-18 review-env 评审环境一键化(fixture 全封闭:假仓+桩服务;起过的服务测完必须杀净) =="
+RVD="$(mktemp -d)"
+# 假主仓库:main 分支 + 实操卡要求的全部落点(scripts/init_db.py、seed.py、frontend、.venv 桩)
+git init -q -b main "$RVD/repo"; git -C "$RVD/repo" config user.email t@t; git -C "$RVD/repo" config user.name t
+mkdir -p "$RVD/repo/scripts" "$RVD/repo/frontend" "$RVD/repo/app"
+printf '# fixture init_db\n' > "$RVD/repo/scripts/init_db.py"
+printf 'def seed(): pass\n' > "$RVD/repo/seed.py"
+printf 'x\n' > "$RVD/repo/frontend/package.json"
+git -C "$RVD/repo" add -A; git -C "$RVD/repo" commit -qm fixture
+mkdir -p "$RVD/repo/frontend/node_modules" "$RVD/repo/.venv/bin" "$RVD/bin"
+# python 桩:init/seed 退 0;`-m uvicorn ... --port N` 起真实 HTTP 监听(就绪判定与杀净验尸都要真端口)
+cat > "$RVD/repo/.venv/bin/python" <<'EOF'
+#!/bin/bash
+port=""; prev=""
+for a in "$@"; do [ "$prev" = "--port" ] && port="$a"; prev="$a"; done
+case "${1:-}" in
+  -m) exec /usr/bin/env python3 -m http.server "$port" --bind 127.0.0.1 ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$RVD/repo/.venv/bin/python"
+# npx 桩:`next dev -p N --webpack` 同样起真实监听
+cat > "$RVD/bin/npx" <<'EOF'
+#!/bin/bash
+port=""; prev=""
+for a in "$@"; do [ "$prev" = "-p" ] && port="$a"; prev="$a"; done
+exec /usr/bin/env python3 -m http.server "$port" --bind 127.0.0.1
+EOF
+chmod +x "$RVD/bin/npx"
+RV_WT="$HOME/.laixin-review-test-$$"   # 评审树必须在 /Users 下(命令自己的硬闸门),⛔ 用 mktemp(/var 下)
+RVE=(env PATH="$RVD/bin:$PATH" LAIXIN_REPO="$RVD/repo" LAIXIN_REVIEW_DIR="$RV_WT" LAIXIN_REVIEW_STATE="$RVD/state" LAIXIN_REVIEW_API_PORT=8977 LAIXIN_REVIEW_WEB_PORT=3977 LAIXIN_BOARD="$RVD/b.md")
+# ⭐ 闸门先测(零副作用路径):/Users 外拒起(Turbopack panic 实撞)、重复 up 拒起
+tfail "review-env:worktree 在 /Users 外被拒(Turbopack symlink 坑)" "必须放 /Users 下" \
+  env LAIXIN_REPO="$RVD/repo" LAIXIN_REVIEW_DIR="/tmp/lx-review-bad" "$LANE" review-env up
+RV_OUT="$("${RVE[@]}" "$LANE" review-env up 2>&1)"; RV_RC=$?
+tout "up 五步全过并自报每步实测(#50 通过态可见)" "5/5 前端" echo "$RV_OUT"
+t "up 退出码 0" test "$RV_RC" -eq 0
+t "后端端口真在应答(HTTP 判活,非声明)" curl -s -o /dev/null --max-time 2 http://127.0.0.1:8977/
+t "前端端口真在应答" curl -s -o /dev/null --max-time 2 http://127.0.0.1:3977/
+t "worktree 真建在指定路径" test -d "$RV_WT"
+t "前端 node_modules 已 symlink 主仓库" test -L "$RV_WT/frontend/node_modules"
+tfail "重复 up 被拒(目录已存在,先 down)" "已存在" "${RVE[@]}" "$LANE" review-env up
+tout "status 报端口有监听" "有监听" "${RVE[@]}" "$LANE" review-env status
+# ⭐ 端口占用预检:8977 正被上面的环境占着,换 API 端口=8977 的第二环境必须被拦并指认占用者
+tfail "端口被占时拒起并指认占用者(⛔ 盲起=伪环境)" "已被占用" \
+  env PATH="$RVD/bin:$PATH" LAIXIN_REPO="$RVD/repo" LAIXIN_REVIEW_DIR="$HOME/.laixin-review-test2-$$" LAIXIN_REVIEW_STATE="$RVD/state2" LAIXIN_REVIEW_API_PORT=8977 LAIXIN_REVIEW_WEB_PORT=3978 "$LANE" review-env up
+# ⭐ down=杀净+验尸+回收(⛔ 留孤儿进程——本批最硬的纪律)
+RV_DOWN="$("${RVE[@]}" "$LANE" review-env down 2>&1)"
+tout "down 验尸端口零监听" "验尸:零监听者" echo "$RV_DOWN"
+tout "down 回收 worktree" "worktree 已回收" echo "$RV_DOWN"
+t "down 后后端端口确已静默(lsof 实测)" bash -c '[ -z "$(lsof -ti tcp:8977 2>/dev/null)" ]'
+t "down 后前端端口确已静默" bash -c '[ -z "$(lsof -ti tcp:3977 2>/dev/null)" ]'
+t "down 后 worktree 目录确已不在" bash -c '[ ! -e "$1" ]' rv "$RV_WT"
+t "down 后 git 无残留注册(worktree list 干净)" bash -c '! git -C "$1/repo" worktree list --porcelain | grep -qx "worktree $2"' rv "$RVD" "$RV_WT"
+rm -rf "$RVD"; rm -rf "$RV_WT" 2>/dev/null || true
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

@@ -573,10 +573,15 @@ dispatch/relay,跨通道消息发不到,它没有任何可通信对象却照样�
 echo "$BU_NAME $BU_CDP_URL"          # 端口取 URL 末段
 PORT="${BU_CDP_URL##*:}"
 # 2) 用该端口起自己的 headless Chrome(独立临时 profile):
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+# 🔴 必须 nohup + disown,⛔ 裸 `&`——那正是 #42「lane 侧自起的后台进程活不过命令会话」
+#    的成因:裸 & 起的 Chrome 会随本条命令的会话一起被收走,**短暂输出 DevTools 地址随即全空**,
+#    下一条命令 curl 就已经连不上了(2026-08-19 三次实撞:b86 开工即停车 · 11B 探针原样重现)。
+nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --remote-debugging-port="$PORT" \
-  --user-data-dir="$(mktemp -d)" --no-first-run about:blank &
+  --user-data-dir="$(mktemp -d)" --no-first-run about:blank >/dev/null 2>&1 &
+disown
 sleep 2 && curl -s "http://127.0.0.1:$PORT/json/version" | head -1   # 有 JSON 回显=通道就绪
+# ⚠️ 这一步**无回显就是没起成**,⛔ 往下走也 ⛔ 判「环境坏/变量为空」——回到本块重起一次。
 # 3) browser-harness 自动读环境里的 BU_NAME/BU_CDP_URL,直接用:
 browser-harness <<'PY'
 new_tab("http://localhost:<你的应用端口>/<路径>")

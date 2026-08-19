@@ -15,6 +15,9 @@
 #   laixin-lane vlist                列出在跑的验收窗口
 #   laixin-lane dispatch [--fresh]   起(或换新)托管的派工窗口;看门狗要靠它才能重生流水线
 #   laixin-lane peek-d [N]           看派工窗口最近 N 行
+#   laixin-lane relay [--fresh]      起(或换新)托管的中继窗口(裁定缺口路由);模型钉死,看门狗保活
+#   laixin-lane peek-r [N]           看中继窗口最近 N 行
+#   laixin-lane relay-down           收中继窗口并**关闭托管**(清除启用标记,看门狗从此不再管它)
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane whoholds             谁当前持有派工权
@@ -50,6 +53,10 @@ BOARD="${LAIXIN_BOARD:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开�
 # 下一个验收窗口将以双倍价格起)。验收=核查+测试+走查,Opus 5(agentic coding 主力档)是对的档位。
 VERIFY_MODEL="${LAIXIN_VERIFY_MODEL:-claude-opus-5}"
 DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
+# 中继窗口(裁定缺口路由)同档钉死(2026-08-19 创始人直裁,#32):中继做的是**核库快裁**——
+# 要的是可靠核查不是极限推理,与 dispatch/verify 同档。⛔ 继承 /model:中继窗口此前由创始人
+# 手开,模型随手边设置漂移;入流水线托管后必须与另两类托管窗口同一条纪律(起窗命令行显式带 --model)。
+RELAY_MODEL="${LAIXIN_RELAY_MODEL:-claude-opus-5}"
 # 流水线窗口专用 settings(2026-08-15「Set up auto mode」对话框一天冻 4 窗后加):
 # askUserQuestionTimeout 让交互对话框空闲超时自动继续——把「无限冻结」压成「有界暂停」。
 # ⛔ 只经 --settings 挂给流水线窗口,不写全局 settings.json——方案窗口是人机对话,问句不该被自动应答。
@@ -145,6 +152,10 @@ cmd_up() {
 }
 
 # CDP 通道端口派生(单一真相:发窗与回收共用;段位=创始人 2026-08-17 裁定 9230+)
+# ⚠️ dispatch 端口曾是**双真相源**(cmd_dispatch 起窗写 9230、cmd_halt 回收又写一次 9230):
+#   改一处漏一处 ⇒ 回收扫错端口 = headless Chrome 静默留活(「用完要关」失效且零症状)。
+#   #32 收尾当轮收敛为本常量,起窗与回收共用它。⛔ 任何地方再写字面 9230。
+DISPATCH_CDP_PORT="${LAIXIN_DISPATCH_CDP_PORT:-9230}"
 cdp_port_verify() { printf '%d' $(( 9300 + $(printf '%s' "$1" | cksum | awk '{print $1}') % 700 )); }
 cdp_port_lane()   { case "$1" in a) echo 9231 ;; b) echo 9232 ;; *) echo $(( 9233 + $(printf '%s' "$1" | cksum | awk '{print $1}') % 60 )) ;; esac; }
 cdp_sweep() {  # 回收窗口时清掉该通道的 headless Chrome——「用完要关」(创始人),机器兜底不赖记性
@@ -494,7 +505,12 @@ cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自�
   local stopped=""
   win_exists "$WATCHDOG_WIN" && { tmux kill-window -t "$SESSION:$WATCHDOG_WIN"; stopped="$stopped watchdog"; }
   win_exists "$EV_WIN"       && { tmux kill-window -t "$SESSION:$EV_WIN"; stopped="$stopped events"; }
-  if dispatch_alive; then tmux kill-window -t "$SESSION:$DISPATCH_WIN"; cdp_sweep 9230; stopped="$stopped dispatch"; fi
+  if dispatch_alive; then tmux kill-window -t "$SESSION:$DISPATCH_WIN"; cdp_sweep "$DISPATCH_CDP_PORT"; stopped="$stopped dispatch"; fi
+  # #32 收尾(中继裁定):relay 随三件套一起停——暂停期不发新片即无裁定缺口,中继席位没有活。
+  # ⚠️ **只收窗口,⛔ 清托管标记**:halt 是「暂停」,relay-down 才是「关闭托管」。标记留着,
+  #   resurrect --full 才能把中继席位一并恢复;若这里顺手 rm 标记,halt→resurrect 会**静默少起一个窗口**
+  #   (拓扑缺一角且零告警)——正是三约束②「失效必须降级 ⛔ 反向」要防的形态。
+  if win_exists "$RELAY_WIN"; then tmux kill-window -t "$SESSION:$RELAY_WIN"; cdp_sweep "$RELAY_CDP_PORT"; stopped="$stopped relay"; fi
   # 只清属于托管窗口的锁——外部手开派工窗口的锁不动(halt 不该打开双派工的风险窗口)
   [ "$(lock_holder)" = "$DISPATCH_WIN" ] && rm -f "$DISPATCH_LOCK"
   board "方案窗口" "halt:三件套停止(${stopped:-本就没在跑});lanes/verify 未动"
@@ -514,6 +530,18 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
     --full)
       cmd_dispatch --force-rival 2>/dev/null || cmd_dispatch
       win_exists "$WATCHDOG_WIN" || cmd_watchdog start
+      # #32:中继席位一并恢复——本命令就是 boot 链(cmd_install_boot_full 的 launchd 调的正是
+      # `resurrect --full`)⇒ 改这一处即覆盖开机自动恢复,⛔ 动 plist(unload/load 会碰常驻)。
+      # 立项根因正是这里:P0-1 整机重启后 dispatch 自动重生零人工,而中继断档 14 分钟且要人在场。
+      # ⛔ --force-rival:「绝不允许两个中继同时活着」的优先级高于「自动拉起」——被拦下要**大声报**,
+      #    不是静默跳过(静默跳过=拓扑缺一角且零症状,三约束②反向生效族)。
+      if relay_enabled; then
+        if relay_alive; then echo "中继窗口 $RELAY_WIN 已在跑,不重复起"
+        else cmd_relay || board "看门狗" "⚠️ resurrect --full:中继窗口没起成(#32)——托管标记在但起窗失败(可能被双中继守卫拦下),人工核:laixin-lane relay"
+        fi
+      else
+        echo "(中继窗口未启用托管:标记 $RELAY_ENABLED 不存在 ⇒ 跳过。启用方式=手跑一次 laixin-lane relay)"
+      fi
       echo "三件套已全部拉起。laixin-lane doctor 复核。"
       ;;
     *) die "resurrect 只接受 --infra(默认,只起事件总线) 或 --full(三件套全起,会启动 claude 计费)" ;;
@@ -1576,7 +1604,7 @@ cmd_whoholds() {
 outside_sessions() {
   local in_tmux total
   in_tmux="$(tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_current_command}' 2>/dev/null \
-    | grep -cE '^(dispatch|verify-).*(node|claude)' || true)"
+    | grep -cE '^(dispatch|relay|verify-).*(node|claude)' || true)"
   total=0
   for sk in /tmp/cc-socks/*.sock; do
     [ -S "$sk" ] || continue
@@ -1615,7 +1643,7 @@ cmd_dispatch() {
   fi
   local deny; deny="$(printf '"%s" ' "${DISPATCH_DENY[@]}")"
   ensure_headless_settings
-  local _cdp_port=9230
+  local _cdp_port="$DISPATCH_CDP_PORT"
   # 起窗+就绪等待,撞 Claude 自更新时定向重试一次(复盘页#20c):08-19 05:07 实撞——起窗恰逢
   # claude.exe 替换瞬间(时间戳 05:08,窗口以秒计),包装器 fail-closed 留空 shell,而报错落在
   # 正退场的交班窗口里无人看见。该因**天然瞬时**,等 20s 重试一次不属「同因重试同死」;
@@ -1657,6 +1685,143 @@ cmd_dispatch() {
 
 cmd_peekd() { tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" -S "-${1:-30}"; }
 
+# ================= 中继窗口托管(#32,2026-08-19 创始人直裁) =================
+# 解决的失败(当日 P0-1 整机重启实证):dispatch 由 boot 链自动重生零人工,而**中继窗口断档**
+# 只能等创始人开窗凭库接班(08:47 重启 → 09:01 接班,约 14 分钟且依赖人在场)。
+# 「窗口存活依赖人」在 dispatch 上已被看门狗消除,本节消除中继这一侧。形态照抄 cmd_dispatch。
+RELAY_WIN="relay"
+# CDP 通道:段位=创始人 2026-08-17 裁定 9230+(dispatch=9230,lane=9231/9232,lane 派生兜底 9233-9292,
+# verify=9300-9999)⇒ relay 取 9299:在 lane 派生上界之上、verify 段起点之下,与现有全部固定/派生端口零交集。
+# 本批只固定端口,⛔ 不做「按段分配」机制(后续批)。
+RELAY_CDP_PORT="${LAIXIN_RELAY_CDP_PORT:-9299}"
+# 显式启用标记:**本族全部保活行为的总闸门**。laixin-lane relay 起窗时写、relay-down 时清。
+# 为什么要它(2026-08-19 落地当日的硬约束):现任中继是创始人**手开**的窗口,代码一装若立刻让
+# 看门狗自动拉起 relay,就会当场出现双中继。⇒ 标记不在 = 完全惰性(零告警零拉起零错误),
+# 直到有人手跑一次 laixin-lane relay,托管才生效。失效方向也对:标记丢了是「不托管」(退回今天的现状),
+# ⛔ 不是「乱拉窗口」——检查器三约束②(失效必须降级,⛔ 反向)。
+RELAY_ENABLED="${LAIXIN_RELAY_ENABLED:-$HOME/.laixin-relay.enabled}"
+# deny 按中继职责裁剪(照 VERIFY_DENY 剪):中继**不派工**(send/fresh/up/down/claim 是派工的定义性动作)、
+# **不合并不推送**(merge/push/reset --hard)。⛔ 不禁只读 git 与 verify 族——中继的活就是核库
+# (git log/show/diff 复现 commit 与改动面),禁掉等于禁掉它的本职。
+RELAY_DENY=(
+  "Bash(git push*)" "Bash(git merge*)" "Bash(git reset --hard*)"
+  "Bash(laixin-lane send*)" "Bash(laixin-lane fresh*)" "Bash(laixin-lane up*)" "Bash(laixin-lane down*)"
+  "Bash(laixin-lane claim*)"
+)
+
+relay_enabled() { [ -f "$RELAY_ENABLED" ]; }
+
+relay_alive() {
+  win_exists "$RELAY_WIN" || return 1
+  case "$(pane_cmd "$RELAY_WIN")" in
+    node|claude|claude.exe) return 0 ;;   # claude 进程还在
+    *) return 1 ;;                        # 掉回 shell = 已死
+  esac
+}
+
+# 防撞:绝不允许两个中继同时活着。
+# ⛔ 这里**不造心跳锁**:锁要有人续期才不是假绿,而中继没有 send 那样的机器可观察「定义性动作」
+# 可挂心跳 ⇒ 无人续期的锁 30 分钟后静默失效,恰好在「该拦的时候不拦」——三约束②反向生效族。
+# 改用两个真实可观察的事实:①tmux 内 relay 窗口在不在(cmd_relay 自己查);②tmux 外活跃 claude
+# 会话数 outside_sessions。基线=1(方案窗口常驻 tmux 外)⇒ >1 说明多出手开的窗口,**很可能就是
+# 手开的中继**(2026-08-19 现任 pingxia-1a 正是此形态,实测 outside=2)⇒ 拦下,留 --force-rival 逃生口。
+check_rival_relay() {
+  local n; n="$(outside_sessions)"
+  if [ "${n:-0}" -le 1 ]; then return 0; fi
+  echo "⚠️ tmux 外有 $n 个活跃 claude 会话(基线 1=方案窗口)——多出来的很可能就是**手开的中继窗口**。" >&2
+  echo "   绝不允许两个中继同时活着:先让手开的中继把班交给本窗口并退场,再重试。" >&2
+  echo "   确认那些会话都不是中继,可加 --force-rival 强行起窗。" >&2
+  return 1
+}
+
+RELAY_BRIEF='你是 laixin 开发流水线的**中继窗口**(角色全名:裁定缺口路由;由流水线托管起动,窗口名 relay,看门狗保活)。
+
+起手式,按序做完再报告(⛔ 跳步 ⛔ 凭印象补):
+1. 跑 date 实测当前时间——⛔ 拿推断的/记忆里的时间写任何登记;
+2. **自更注册表中继行(纪律 1)**:/Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-窗口角色注册表.md 里「裁定缺口路由(别名:中继窗口)」那一行——地址写 relay(tmux laixin 会话内窗口,看门狗托管,**地址不随任期变**,照 dispatch 例),上任时间用第 1 步 date 的实测值;⛔ 由 session UUID 推断对外名(2026-08-19 实撞过一次误登)。
+3. **凭库接班**(本指令只给指针,知识全在库里,⛔ 拿本指令当知识):
+   - /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-中继窗口换班快照-20260819.md
+   - /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-开发协作流程.md 的三节:前期判定授权(授权-1)· 授权升级(授权-2)· 中继窗口(裁定缺口路由)收班卡
+   - 调 Skill laixin-pipeline(流水线操作卡)
+   - /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md 末 30 行
+4. **通告在班**:向派工窗口(dispatch)与方案窗口各发一条 SendMessage,报「中继窗口已入流水线托管,现任在 tmux relay 窗口,角色性回执发我」;对方地址一律 ListAgents 实测,⛔ 照注册表旧地址盲发。
+
+你是**托管窗口**:窗口死了看门狗自动起新的一个 ⇒ 结论随做随写进知识库与看板,⛔ 攒在窗口记忆里(它随时不算数)。
+本窗口模型已由脚本显式钉死(⛔ 继承 /model 的副作用);权限已按中继职责裁剪——**不派工**(laixin-lane send/fresh/up/down/claim 已被工具层禁掉)、**不合并不推送**(git merge/push/reset --hard 已禁)。
+遇到要问人的岔路:**用 SendMessage 发给该问的窗口,⛔ 停下来干等**——本窗口无人值守,干等就是断档。
+看板记录用 laixin-lane log "..."。'
+
+cmd_relay() {
+  local dir="$HOME" force="" nocheck=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir)   dir="${2:?--dir 需要路径}"; shift 2 ;;
+      --fresh) force=1; shift ;;
+      --force-rival) nocheck=1; shift ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  ensure_session
+  if [ -z "$nocheck" ] && ! check_rival_relay; then
+    die "起窗中止——绝不允许两个中继同时活着。先确认手开的中继已交班退场,或确认那些会话不是中继后加 --force-rival 重试"
+  fi
+  if win_exists "$RELAY_WIN"; then
+    [ -n "$force" ] || { echo "$RELAY_WIN 已存在(换全新上下文用 --fresh)"; return 0; }
+    tmux kill-window -t "$SESSION:$RELAY_WIN"; sleep 0.3
+  fi
+  local deny; deny="$(printf '"%s" ' "${RELAY_DENY[@]}")"
+  ensure_headless_settings
+  # 起窗+就绪等待,撞 Claude 自更新时定向重试一次(同 cmd_dispatch,复盘页#20c:该因天然瞬时)
+  local _attempt
+  for _attempt in 1 2; do
+    tmux new-window -t "$SESSION" -n "$RELAY_WIN" -c "$dir" 2>/dev/null || true
+    sleep 0.5
+    tmux send-keys -t "$SESSION:$RELAY_WIN" "BU_NAME=\"relay\" BU_CDP_URL=\"http://127.0.0.1:$RELAY_CDP_PORT\" claude -n \"$RELAY_WIN\" --model $RELAY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
+    if vwait_ready "$RELAY_WIN" "$dir"; then break; fi
+    if [ "$_attempt" = 1 ] && tmux capture-pane -p -t "$SESSION:$RELAY_WIN" 2>/dev/null | grep -q "Claude Code CLI not found"; then
+      board "看门狗" "⚠️ relay 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
+      tmux kill-window -t "$SESSION:$RELAY_WIN" 2>/dev/null || true
+      sleep 20
+      continue
+    fi
+    die "$RELAY_WIN 启动超时。查看:laixin-lane peek-r 40"
+  done
+  sleep 1
+  printf '%s' "$RELAY_BRIEF" | tmux load-buffer -b laixin-rmsg -
+  tmux paste-buffer -p -b laixin-rmsg -t "$SESSION:$RELAY_WIN"
+  tmux delete-buffer -b laixin-rmsg
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$RELAY_WIN" C-m
+  printf '%s\n' "$(date +%s)" > "$RELAY_ENABLED"   # 起窗即开托管:此后看门狗/resurrect/doctor 才管 relay
+  board "看门狗" "起中继窗口 $RELAY_WIN(全新上下文,已派接管指令;托管已启用=看门狗开始保活)"
+  # 起窗验尸(复盘页#20b 同款):就绪判定可能被过渡画面骗过,15s 后回头核 pane 里跑的真是 claude——
+  # 掉回登录 shell 即大声告警,⛔ 自动重试(非瞬时因,人工看现场)。
+  ( sleep 15
+    _pc="$(tmux display-message -p -t "$SESSION:$RELAY_WIN" '#{pane_current_command}' 2>/dev/null || echo 无窗口)"
+    if [ "$_pc" = "$(basename "${SHELL:-/bin/zsh}")" ] || [ "$_pc" = "无窗口" ]; then
+      _tail="$(tmux capture-pane -p -t "$SESSION:$RELAY_WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -2 | tr '\n' ' ' | cut -c1-160 || true)"
+      board "看门狗" "⚠️ relay 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
+    fi
+  ) &
+  echo "$RELAY_WIN 已起并接管(托管已启用)。复核:laixin-lane peek-r 30"
+}
+
+cmd_relay_down() {
+  local was=0
+  if win_exists "$RELAY_WIN"; then
+    tmux kill-window -t "$SESSION:$RELAY_WIN"
+    cdp_sweep "$RELAY_CDP_PORT"
+    was=1
+  fi
+  rm -f "$RELAY_ENABLED"   # 收窗即关托管:标记不在 ⇒ 看门狗/resurrect/doctor 对 relay 完全惰性
+  board "中继窗口" "回收中继窗口 $RELAY_WIN(托管已关闭:看门狗不再保活)"
+  if [ "$was" = 1 ]; then echo "$RELAY_WIN 已回收;托管已关闭(标记 $RELAY_ENABLED 已清除)"
+  else echo "$RELAY_WIN 本就不存在;托管标记已清除(如有)"; fi
+  return 0
+}
+
+cmd_peekr() { tmux capture-pane -p -t "$SESSION:$RELAY_WIN" -S "-${1:-30}"; }
+
 # 看门狗主循环:纯 bash,不累不崩没有上下文,是整条流水线里唯一不会"忘"的东西
 wd_loop() {
   local interval="${WD_INTERVAL:-60}"      # 秒
@@ -1670,6 +1835,25 @@ wd_loop() {
     sleep "$interval"
     # —— 0. 事件总线也要活着(它给派工窗口喂事件) ——
     ev_alive || { board "看门狗" "事件总线循环已死(窗口在≠活着),重启"; cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
+    # —— 0.5 中继席位保活(#32,2026-08-19) ——
+    # 位置**必须在派工分支之前**:下面每个 dispatch 分支都 continue,挂在后面等于「派工窗口一出事
+    # 中继就没人管」——而这两件事恰恰最可能同时发生(整机重启)。
+    # 总闸门=托管标记:标记不在则本段完全惰性(零告警零拉起)。现任中继若仍是人手开的,
+    # 代码一装绝不能当场变出第二个中继;标记丢了退化为「不托管」=回到今天的现状,失效方向对。
+    # ⛔ **不做静默戳**(中继裁定,2026-08-19):中继是**反应式**角色,没有裁定缺口时静默就是健康态,
+    #    照搬 dispatch 的静默戳会让误报随「流水线健康」增长——正撞三约束③(噪声必须与目标行为同向)。
+    #    只做两件:①窗口死了重起;②对话框扫描——那是**解冻不是催活**(被弹窗挡住的中继看着活着实则聋了,
+    #    与静默戳是两回事:前者判「屏幕上有已知签名的模态框」,后者判「多久没动静」)。
+    # ⛔ --force-rival:「绝不允许两个中继同时活着」优先级高于「自动拉起」,被守卫拦下要**大声报**。
+    if relay_enabled; then
+      if ! relay_alive; then
+        board "看门狗" "⚠️ 中继窗口不在(#32 托管中),自动重起"
+        cmd_relay --fresh >/dev/null 2>&1 \
+          || board "看门狗" "⛔ 中继窗口重起失败(#32)——常见原因=双中继守卫拦下(tmux 外多个活跃 claude 会话)。人工核:laixin-lane relay"
+      else
+        dialog_sweep_win "$RELAY_WIN" >/dev/null 2>&1 || true
+      fi
+    fi
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then
       if [ "$restarts" -ge "$max_restart" ]; then
@@ -1989,6 +2173,9 @@ case "${1:-}" in
   stats)    shift; cmd_stats ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   peek-d)   shift; cmd_peekd "$@" ;;
+  relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记
+  peek-r)     shift; cmd_peekr "$@" ;;
+  relay-down) shift; cmd_relay_down "$@" ;;   # 收窗并**关闭托管**(清标记,看门狗从此不管 relay)
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)

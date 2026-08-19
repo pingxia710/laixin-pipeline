@@ -465,6 +465,66 @@ t "有零命中仍退出 0——报告非闸门(#28 三约束②)" env LAIXIN_RE
 tfail "数据源失效自曝退非零(#28 三约束②)" "失效自曝" env LAIXIN_REPO="$CAD/nonexist" LAIXIN_KB="$CAD/kb" "$LANE" copy-audit
 rm -rf "$CAD"
 
+echo "== 6h. 中继窗口托管 relay(#32;fixture 全封闭=假 tmux 会话+临时标记/看板,零真实副作用) =="
+R32="$(mktemp -d)"
+R32S="bogus-relay-$$"
+# ⭐ 绊线①(半成品实撞):用法注释、RELAY_* 配置、cmd_relay/cmd_relay_down/cmd_peekr 三个函数全都写好了,
+#   **唯独没接进 case 分派** ⇒ `laixin-lane relay` 静默落进 `*)` 打印用法退 1,与「参数敲错了」完全同形,
+#   人会去查自己的命令行而不是查接线。判据取 cmd_relay 自己的参数报错(它的 while 解析在 ensure_session
+#   之前,未知参数即 die,零副作用)——接线被回退时这里立刻变红。
+tfail "relay 已接线(进得了 cmd_relay 参数解析)" "未知参数" \
+  env LAIXIN_SESSION="$R32S" LAIXIN_RELAY_ENABLED="$R32/m" LAIXIN_BOARD="$R32/b.md" "$LANE" relay --nope
+t "peek-r 已接线(不落进用法兜底)" bash -c \
+  '! grep -q "信使脚本" <<< "$(env LAIXIN_SESSION="'"$R32S"'" "'"$LANE"'" peek-r 2>&1)"'
+# ⭐ 绊线②:relay-down = 收窗 **且关闭托管**(清标记)。标记是本族全部保活行为的总闸门。
+printf 'seed\n' > "$R32/m"
+tout "relay-down 已接线并清托管标记" "托管标记已清除" \
+  env LAIXIN_SESSION="$R32S" LAIXIN_RELAY_ENABLED="$R32/m" LAIXIN_BOARD="$R32/b.md" "$LANE" relay-down
+t "relay-down 后标记确已不在(总闸门真的关了)" bash -c '[ ! -f "'"$R32"'/m" ]'
+# ⭐ 绊线③(方向性,最容易被"顺手优化"掉):halt 收 relay 窗口但 **⛔ 清标记**——
+#   halt 是暂停、relay-down 才是关托管。若谁在 halt 里顺手 rm 标记,halt→resurrect --full 会
+#   **静默少起一个中继**(拓扑缺一角且零告警),正是三约束②「失效必须降级 ⛔ 反向」要防的形态。
+printf 'seed\n' > "$R32/m"
+env LAIXIN_SESSION="$R32S" LAIXIN_RELAY_ENABLED="$R32/m" LAIXIN_BOARD="$R32/b.md" "$LANE" halt >/dev/null 2>&1 || true
+t "halt 保留托管标记(halt=暂停 ⛔ 关托管)" bash -c '[ -f "'"$R32"'/m" ]'
+t "halt 确会收 relay 窗口" bash -c \
+  'awk "/^cmd_halt\(\)/,/^}/" "'"$LANE"'" | grep -q "RELAY_WIN"'
+# ⭐ 绊线④:9230 双真相源收敛——起窗与回收必须共用常量;字面 9230 再现即红
+t "cmd_halt 不再硬编码 9230(与起窗共用 DISPATCH_CDP_PORT)" bash -c \
+  '! grep -q "cdp_sweep 9230" "'"$LANE"'"'
+# ⭐ 绊线⑤:看门狗里 relay 段必须**排在派工分支之前**——下面每个 dispatch 分支都 continue,
+#   挂在后面 = 「派工窗口一出事中继就没人管」,而这两件最可能同时发生(整机重启)。行号序即判据。
+t "wd_loop:relay 保活段排在 dispatch 分支之前" bash -c \
+  'b="$(awk "/^wd_loop\(\)/,/^}/" "'"$LANE"'" | grep -n "relay_enabled" | head -1 | cut -d: -f1)";
+   d="$(awk "/^wd_loop\(\)/,/^}/" "'"$LANE"'" | grep -n "dispatch_alive" | head -1 | cut -d: -f1)";
+   [ -n "$b" ] && [ -n "$d" ] && [ "$b" -lt "$d" ]'
+# ⭐ 绊线⑥(中继裁定):看门狗对 relay ⛔ 静默戳——中继是反应式角色,没有裁定缺口时静默就是健康态,
+#   照搬 dispatch 的静默戳会让误报随「流水线健康」增长(三约束③ 噪声必须与目标行为同向)。
+t "看门狗 ⛔ 对 relay 发静默戳(nudge 只投 dispatch)" bash -c \
+  '! grep -q "laixin-nudge.*RELAY_WIN" "'"$LANE"'"'
+# ⭐ 绊线⑦:resurrect --full 覆盖中继席位(boot 链 launchd 调的就是它 ⇒ 改这一处即覆盖开机恢复),
+#   且必须以托管标记为闸门(标记不在 = 完全惰性,⛔ 当场变出第二个中继)。
+t "resurrect --full 起 relay 且以托管标记为闸门" bash -c \
+  'body="$(awk "/^cmd_resurrect\(\)/,/^}/" "'"$LANE"'")";
+   grep -q "relay_enabled" <<< "$body" && grep -q "cmd_relay" <<< "$body"'
+# ⭐ 绊线⑧:CDP 端口不撞段。**判据是值域不是占用**——lsof 只证明「此刻没进程监听」,而 CDP 端口
+#   起 Chrome 才监听,任何安静时刻都返回全空闲 ⇒ 它区分不了安全与危险,是与结论无关的绿灯。
+#   这里从源码常量重算值域:lane 兜底 = base..base+mod-1,verify = base..base+mod-1,
+#   relay 端口必须落在两段之外。谁把 %60 改宽(如 %80 → 9233-9312)吞掉 9299,这条立刻变红。
+t "RELAY_CDP_PORT 落在全部派生值域之外(值域判据 ⛔ 占用判据)" bash -c '
+  L="'"$LANE"'"
+  lb=$(grep -o "9233 + \$(printf" "$L" >/dev/null 2>&1; grep "cdp_port_lane()" "$L" | grep -oE "echo \\\$\(\( [0-9]+" | grep -oE "[0-9]+")
+  lm=$(grep "cdp_port_lane()" "$L" | grep -oE "% [0-9]+" | grep -oE "[0-9]+")
+  vb=$(grep "cdp_port_verify()" "$L" | grep -oE "\(\( [0-9]+" | grep -oE "[0-9]+")
+  vm=$(grep "cdp_port_verify()" "$L" | grep -oE "% [0-9]+" | grep -oE "[0-9]+")
+  rp=$(grep -oE "LAIXIN_RELAY_CDP_PORT:-[0-9]+" "$L" | grep -oE "[0-9]+")
+  dp=$(grep -oE "LAIXIN_DISPATCH_CDP_PORT:-[0-9]+" "$L" | grep -oE "[0-9]+")
+  for v in "$lb" "$lm" "$vb" "$vm" "$rp" "$dp"; do [ -n "$v" ] || exit 1; done
+  [ "$rp" -ne "$dp" ] || exit 1
+  [ "$rp" -gt $((lb+lm-1)) ] || exit 1
+  [ "$rp" -lt "$vb" ] || exit 1'
+rm -rf "$R32"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

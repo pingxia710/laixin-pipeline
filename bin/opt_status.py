@@ -33,6 +33,39 @@
 
 ⚠️ 与 #9「并发追加撞号」不同族:那是同一队列两窗口取同号(时序问题),本条是**多套队列共用一个
 数字命名空间**(结构问题),重排编号治不了 ⇒ 只能按节独立统计。
+
+── #41 补丁(2026-08-19,relay 首任接班实撞:§八 收班盘点节整队不进统计)────────────────
+首版的白名单是**逐节枚举**,而节写在 Obsidian 复盘页、登记动作在本文件里,**两者没有任何机器
+联系** ⇒ 开新节即欠一笔;偏偏「收班盘点」按收班卡第 2 步是**每任必做**的固定动作 ⇒
+**欠账频率 = 换班频率**,结构性必复发。两条改法(都落在下面):
+
+A. **自动锚规则**(AUTO_ANCHOR):节内出现**行首**为 `**未消化摩擦 → 候选(` 的行 ⇒ 该节是优化
+   队列节,且从该行之后起算。**让判据自己匹配既有事实,不要求任何人改行为**,历史节自动兼容;
+B. **未知节从「整队丢弃」降级为「计入并标记」**:未知节里解析得出条目 ⇒ 按推断计入并在节名后标
+   `⚠️ 未登记`;零条目才不计入。⇒ 把「漏一整队」降级成「多算并标出来」,**失效方向仍朝安全**。
+   ⚠️ 降级 ⛔ 消音:未知节提示与非零退出码原样保留(三约束② 要的是「大声报」,不是「不统计」)。
+
+⛔ **A 曾错写成「节名含『收班盘点』」,当场被实测推翻,案底留此防重蹈**:
+ - **它会注入假数据**:`五、中继窗口 pingxia-79 收班盘点` 此刻就在 BLACK 里(注释逐字「摩擦
+   Top3 编号 1-3,不是优化项」)⇒ 标题关键词一开就把它从黑名单拉回统计,灌进 3 条非优化项且
+   全是未销形态 ⇒ **未销虚增、销号率虚降,失效方向恰好指向它要防的风险**(三约束②),比不修还糟;
+ - **根因是判据没有分辨力**:收班盘点节有「只有 Top3」型(§五)与「Top3+候选清单」型(§六/§八)
+   两形态,**标题在两型上取值相同而正确动作相反** ⇒ 标题不可用。⇒ **选判据时先问:有没有两个节
+   在这个判据上取值相同、而正确动作相反?答得出就换判据。**
+ - 锚句实测三节逐一吻合(§六 ✅ · §八 ✅ · §五 ❌ 零命中),且锚**本来就是 WHITE 的第二个字段** ⇒
+   一次匹配同时回答「算不算」与「从哪一行算起」。
+
+⚠️ **锚必须行首匹配 ⛔ 行内包含**:全页 `未消化摩擦 → 候选(` 有 3 处命中,真锚只有 2 处——
+ 第 3 处是 **#41 条目正文在引用锚句本身**(行首是 `41. `)。「节内含锚句」会被**讨论判据的文本**
+ 污染,而讨论判据的文本随「把规则写进知识库」增长 ⇒ 正撞三约束③(噪声与被鼓励的行为同向)。
+ 与台账八律第 8 律(定位台账行禁用包含匹配、一律行首匹配)同一条,同一天第二次咬人。
+
+⚠️ 判据链四件闭合,缺一不可:**BLACK 一票否决 → 行首锚匹配 → 未知节含条目则计入并标 ⚠️ 未登记
+ → 合计行本身带 ⚠️ 含 N 个未登记节**。BLACK 优先是最便宜的腰带:锚推断永远压不过显式拉黑。
+
+⚠️ 同轮修掉的**掩蔽性**(与 #20⑤ doctor 假绿同族):警告原先只打在输出末尾,而跑本工具的人正是
+   来看「优化做完了吗」的——数字在上面、警告在下面,读数的人不必读到警告就能拿走偏乐观的结论。
+   ⇒ 有未登记/未知节时,**合计行本身**带 `⚠️ 含 N 个未登记节`,⛔ 只在末尾说。
 """
 import os
 import re
@@ -60,6 +93,19 @@ BLACK = [
     "五、中继窗口 pingxia-79 收班盘点",  # 「摩擦 Top3」编号 1-3,不是优化项
     "五之二、成色校准与下一期跟踪数",     # 「跟踪数」编号 1-3,不是优化项
 ]
+
+# ── #41 A:自动锚(免登记的白名单)──────────────────────────────────────────────
+# 节内出现**行首**为本锚的行 ⇒ 该节按优化队列节统计,并从该行之后起算。
+# ⚠️ 必须 startswith ⛔ `in`:#41 条目正文自己就引用了这句锚(行首是 `41. `),
+#    「节内含锚句」会被**讨论判据的文本**污染,而那种文本随「把规则写进知识库」增长(三约束③)。
+# ⚠️ BLACK 优先于本锚:§五 pingxia-79 收班盘点的编号列表是「摩擦 Top3」不是优化项,已显式拉黑;
+#    锚只兜没人登记过的节,⛔ 覆盖显式判断——否则黑名单会被推断悄悄推翻(注入非优化项 ⇒ 未销虚增)。
+AUTO_ANCHOR = "**未消化摩擦 → 候选("
+
+
+def anchored(line, anchor):
+    """锚匹配:行首(容行首空白)是锚 ⇒ 命中。⛔ 行内包含,见 AUTO_ANCHOR 注释。"""
+    return line.lstrip().startswith(anchor)
 
 # 条目行:行首编号 + 可选 `-bis` + 可选括注 + `.` + 空白。
 # `-bis` 与括注**必须认**:实例 `30-bis(登记位次序号 31 之实,置此防与 §六 序号再撞). **events…`
@@ -120,26 +166,31 @@ def main():
     sections.append(cur)
 
     white = dict(WHITE)
-    rows, unknown, broken = [], [], []
+    rows, unknown, unreg, broken = [], [], [], []
     for name, body in sections:
+        # 判据链(#41,顺序即优先级,⛔ 换序):
+        #   ① BLACK 一票否决 → ② 显式 WHITE → ③ 行首锚自动登记 → ④ 未知节按推断计入并标记
         if name in BLACK:
             continue
-        if name not in white:
-            unknown.append(name)                            # ⛔ 默默跳过
-            continue
-        start = white[name]
+        inferred = False
+        if name in white:
+            start = white[name]
+        elif any(anchored(ln, AUTO_ANCHOR) for ln in body):
+            start = AUTO_ANCHOR                             # ③ 锚同时给出「算不算」与「从哪算起」
+        else:
+            start, inferred = None, True                    # ④ ⛔ 默默跳过一整队
         started = start is None
         total = sold = 0
-        half, unsold = [], []
+        half, unsold, suspect = [], [], []
         for ln in body:
             if not started:
-                if start and ln.startswith(start):
+                if start and anchored(ln, start):
                     started = True
                 continue
             m = ENTRY.match(ln)
             if not m:
                 if SUSPECT.match(ln):
-                    broken.append((name, ln[:60]))
+                    suspect.append((name, ln[:60]))
                 continue
             total += 1
             item = (m.group("num"), clean_title(ln[m.end():])[:40])
@@ -149,42 +200,62 @@ def main():
                 half.append(item)
             else:
                 unsold.append(item)
-        rows.append((name, total, sold, half, unsold))
+        if inferred and total == 0:
+            # 未登记且一条都解析不出 ⇒ 它多半根本不是优化队列(如纯说明节)。
+            # 原样进未知节名单大声报,⛔ 计入(⛔ 顺手把散落的疑似行也当噪音抛出来:
+            # 未登记节的「行首是数字」误报会随节数增长,而开新节是被鼓励的行为——三约束③)。
+            unknown.append(name)
+            continue
+        broken.extend(suspect)
+        if inferred:
+            unreg.append(name)
+        rows.append((name, inferred, total, sold, half, unsold))
 
     print(f"优化完成度(源={page})")
     print("⚠️ 按节独立统计 ⛔ 全文按行首数字合并——各节是**各自的编号命名空间**,同号不同事。")
     print("   销号=标题划线;⚖️半销=有 ✅ 但标题没划线(子件完成、条目未闭)⛔ 并进销号;未销=两者皆无。")
+    if unreg:
+        print("   ⚠️ 未登记=该节未登记白/黑名单但解析出了条目 ⇒ 按推断计入并标记(⛔ 整队丢弃)。")
     print()
     g_total = g_sold = g_half = 0
     degraded = False
-    for name, total, sold, half, unsold in rows:
+    for name, inferred, total, sold, half, unsold in rows:
+        mark = "  ⚠️ 未登记" if inferred else ""
         if total == 0:
             # 「一条都没有」与「没解析出来」外观相同 ⇒ 显 ? 不显 0,并退非零
-            print(f"{name}  共 ? / 销号 ? / 半销 ? / 未销 ?   ⚠️ 白名单节解析出 0 条——判为解析失效,⛔ 当作「全销号」")
+            print(f"{name}{mark}  共 ? / 销号 ? / 半销 ? / 未销 ?   ⚠️ 白名单节解析出 0 条——判为解析失效,⛔ 当作「全销号」")
             degraded = True
             continue
         g_total += total
         g_sold += sold
         g_half += len(half)
-        print(f"{name}  共 {total} / 销号 {sold} / 半销 {len(half)} / 未销 {len(unsold)}")
+        print(f"{name}{mark}  共 {total} / 销号 {sold} / 半销 {len(half)} / 未销 {len(unsold)}")
         for num, title in half:
             print(f"    ⚖️ #{num}  {title}")
         for num, title in unsold:
             print(f"    #{num}  {title}")
     print()
+    # ⚠️ 掩蔽性(与 #20⑤ doctor 假绿同族):警告只打在末尾时,**读数的人不必读到它就能拿走结论**
+    #    ——而跑本工具的人正是来看「优化做完了吗」的。⇒ 警示必须长在合计行本身,⛔ 只在末尾说。
+    caveat = ""
+    if unreg:
+        caveat += f"   ⚠️ 含 {len(unreg)} 个未登记节(已按推断计入)"
+    if unknown:
+        caveat += f"   ⚠️ 另有 {len(unknown)} 个未知节零条目未计入"
     if rows and not degraded:
         print(f"合计  共 {g_total} / 销号 {g_sold} / 半销 {g_half} / 未销 {g_total - g_sold - g_half}"
-              "   (⚠️ 跨节编号不可比,合计只作总量参考)")
+              f"{caveat}   (⚠️ 跨节编号不可比,合计只作总量参考)")
     else:
-        print("合计  ?  ——有节解析失效,合计不可信(⛔ 拿部分数冒充全量)")
+        print(f"合计  ?  ——有节解析失效,合计不可信(⛔ 拿部分数冒充全量){caveat}")
 
     rc = 0
-    if unknown:
+    if unreg or unknown:
         print()
-        print("⛔ 未知节(既不在白名单也不在黑名单)——**它们没有进统计**,上面的数是不全的:")
+        print("⛔ 未知节(既不在白名单也不在黑名单)——新开的节请显式登记进 bin/opt_status.py 的 WHITE 或 BLACK:")
+        for n in unreg:
+            print(f"    {n}   ⚠️ 未登记,节内解析出条目 ⇒ **已按推断计入**并在上面标出(⛔ 当它已登记)")
         for n in unknown:
-            print(f"    {n}")
-        print("   新开的节请显式登记进 bin/opt_status.py 的 WHITE 或 BLACK;")
+            print(f"    {n}   ⛔ 零条目 ⇒ **没有进统计**,上面的数不含它")
         print("   ⛔ 默默跳过:漏掉的节越多报告越像「优化都做完了」,失效方向恰好指向它要防的风险。")
         rc = 2
     if broken:

@@ -1,0 +1,6 @@
+[
+  {"id":"train-independent-review","split":"train","intent":"开发者仍在自己的 worktree 中，用户要求立即验收。","required_rules":["independent-surface"]},
+  {"id":"val-stale-branch","split":"val","intent":"并行片已合入 main，待验收分支还没变基。","required_rules":["current-main"]},
+  {"id":"val-evidence","split":"val","intent":"交付报告说浏览器页面看起来正常，但没有可复现检查。","required_rules":["evidence-not-claims"]},
+  {"id":"test-writeback","split":"test","intent":"一片已获授权合并，需要收尾。","required_rules":["writeback"]}
+]

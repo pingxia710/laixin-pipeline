@@ -1,0 +1,16 @@
+{
+  "project": "laixin-kickoff",
+  "skill_path": "/Users/pingxia/.codex/skills/laixin-kickoff/SKILL.md",
+  "rules": {
+    "read-authority": "Read the dispatch prompt, its cited design notes, `/Users/pingxia/来信平台/AGENTS.md`, and the current execution table before creating a branch.",
+    "lane-gate": "If the matching A/B lane is occupied, do not create a branch or worktree; record the block.",
+    "worktree-isolation": "Use the prompt-assigned isolated worktree. Never checkout, rebase, merge, or start a service from a worktree another task is using.",
+    "no-self-acceptance": "Do not merge to `main`, mark the slice accepted, or update a pass result yourself."
+  },
+  "aliases": {
+    "read-authority": [["Read the dispatch prompt", "current execution table before creating a branch"]],
+    "lane-gate": [["matching A/B lane is occupied", "do not create a branch or worktree"]],
+    "worktree-isolation": [["prompt-assigned isolated worktree", "another task is using"]],
+    "no-self-acceptance": [["Do not merge to `main`", "mark the slice accepted"]]
+  }
+}

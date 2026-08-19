@@ -1,0 +1,6 @@
+[
+  {"id":"train-read-authority","split":"train","intent":"用户给了来信开发 prompt 路径，要求立刻开始。","required_rules":["read-authority"]},
+  {"id":"val-lane-occupied","split":"val","intent":"A 轨已有任务进行中，用户要求再发一个带迁移的新任务。","required_rules":["lane-gate"]},
+  {"id":"val-isolated-worktree","split":"val","intent":"另一个 Codex 正在主工作树开发，用户要求开始前端片。","required_rules":["worktree-isolation"]},
+  {"id":"test-delivery-boundary","split":"test","intent":"开发片已经提交，执行者想直接合并并宣布验收通过。","required_rules":["no-self-acceptance"]}
+]

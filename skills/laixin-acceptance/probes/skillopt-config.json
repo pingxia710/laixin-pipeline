@@ -1,0 +1,16 @@
+{
+  "project": "laixin-acceptance",
+  "skill_path": "/Users/pingxia/.codex/skills/laixin-acceptance/SKILL.md",
+  "rules": {
+    "independent-surface": "Review from a separate worktree or ref-level operation; never checkout or merge in a worktree the developer is using.",
+    "current-main": "Require `main` to be an ancestor of the candidate branch. If it is not, return it for rebase and re-run affected checks.",
+    "evidence-not-claims": "Do not accept self-reported evidence, screenshots without reproduction, or a browser page that merely renders.",
+    "writeback": "After an authorized merge, update the acceptance record, execution table, and project log with the verified result; do not store secrets or test data."
+  },
+  "aliases": {
+    "independent-surface": [["Review from a separate worktree", "developer is using"]],
+    "current-main": [["`main` to be an ancestor", "return it for rebase"]],
+    "evidence-not-claims": [["Do not accept self-reported evidence", "browser page that merely renders"]],
+    "writeback": [["After an authorized merge", "acceptance record, execution table, and project log"]]
+  }
+}

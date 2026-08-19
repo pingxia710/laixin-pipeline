@@ -1,0 +1,4 @@
+interface:
+  display_name: "来信开工闸门"
+  short_description: "按权威提示词和隔离工作树启动来信开发切片并保留可验收交付证据。"
+  default_prompt: "按来信权威 prompt 启动一个开发切片。"

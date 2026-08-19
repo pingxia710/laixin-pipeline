@@ -1,0 +1,6 @@
+interface:
+  display_name: "来信OPC业务"
+  short_description: "推进来信OPC业务、行业情报与产品落地"
+  default_prompt: "Use $laixin-opc-business to read project memory and continue the next 来信OPC business or real 1.0 engineering step."
+policy:
+  allow_implicit_invocation: true

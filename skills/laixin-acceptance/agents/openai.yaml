@@ -1,0 +1,4 @@
+interface:
+  display_name: "来信独立验收"
+  short_description: "独立复核来信开发切片的边界测试浏览器证据与合并条件并写回结论。"
+  default_prompt: "独立验收来信开发切片，核对证据后再决定是否合并。"

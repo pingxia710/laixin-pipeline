@@ -2264,7 +2264,11 @@ $(printf '%s' "$_dl" | cut -c1-360)…
     _vh_old="$(cat "$EV_VAULT_HEAD" 2>/dev/null)"
     if [ -n "$_vh_now" ] && [ "$_vh_now" != "$_vh_old" ]; then
       if [ -n "$_vh_old" ]; then
-        _mf="$(git -C "$EV_VAULT" log --name-only --format= "${_vh_old}..${_vh_now}" 2>/dev/null | ev_material_filter | sort -u)"
+        _mf="$(git -C "$EV_VAULT" -c core.quotePath=false log --name-only --format= "${_vh_old}..${_vh_now}" 2>/dev/null | ev_material_filter | sort -u)"
+        # 🔴 -c core.quotePath=false 不能省(2026-08-20 07:3x 首火实撞,relay 对拍确证):git 对非 ASCII 路径默认输出
+        #   八进制转义加双引号 ⇒ 字面中文 pattern 与 \.md$ 锚定全不命中 ⇒ #105 对全中文路径的来信 vault 100% 静默失效,
+        #   而「没投递」与「没有材料更新」完全同形——发现通道只有完工通报里预写的「未出现即报修」那句。
+        #   全文件同款已排查:仅此处把 git 文件名输出喂给中文 pattern(:1024 计数 / :1494 ls-tree ASCII 路径 / :3891 纯展示)。
         [ -n "$_mf" ] && ev_deliver "材料" "【事件】词表/设计要点已更新(vault $(printf '%s' "$_vh_old" | cut -c1-7)→$(printf '%s' "$_vh_now" | cut -c1-7),#105):
 $_mf
 下一步:判哪些在飞片/在跑验收窗引用这些材料,向它们广播「材料已更新,rebase 认知」(照 main 前进广播形态)——材料到位而实现不知道,正是片⑥ r3 白烧一轮的形态。"

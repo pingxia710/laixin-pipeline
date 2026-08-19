@@ -513,13 +513,28 @@ cmd_ctx() {
   done
   case "$eng" in claude|codex) : ;; *) die "未知 ctx 引擎:$eng(只接受 claude|codex)" ;; esac
   [ "$eng" = "codex" ] && { cmd_ctx_codex "$want"; return $?; }
-  local proj="${LAIXIN_CTX_PROJ:-$HOME/.claude-official/projects/-Users-pingxia}"
+  # 2026-08-19 夜(11B pingxia-37 实撞):原写死 $HOME/.claude-official/projects/-Users-pingxia。双账号软切换(#75 族)后
+  # transcript 按配置目录分家(~/.claude-official 与 ~/.claude-b 各一份)⇒ 新通道全部窗口 ctx 一律「没有匹配」,
+  # ≥70% 交班硬闸门整条通道失明;不带参的列表分支更糟——把**旧通道别人的会话**列给你认领(失效反向)。
+  # ⇒ 枚举全部 ~/.claude*/projects/-Users-pingxia(软切换期两线并存,⛔ 只认当前 claude-launcher 开关那条——开关只管
+  # 新起席位,老线窗口还在跑);LAIXIN_CTX_PROJ 仍可显式覆盖(冒号分隔多目录);一个目录都没有 ⇒ 报不可用退非零
+  # (⛔ 返 0/返空让闸门看着「还早」,#67③ 同规)。输出带所属配置目录名,多通道并存时认领靠它。
+  local proj="${LAIXIN_CTX_PROJ:-}" _d
+  if [ -z "$proj" ]; then
+    for _d in "$HOME"/.claude*/projects/-Users-pingxia; do [ -d "$_d" ] && proj="${proj:+$proj:}$_d"; done
+  fi
+  [ -n "$proj" ] || { echo "⛔ ctx 不可用:找不到任何 claude transcript 目录(~/.claude*/projects/-Users-pingxia)"; return 2; }
   python3 - "$proj" "$want" <<'PY'
 import json,os,sys,glob
 proj,want=sys.argv[1],(sys.argv[2] if len(sys.argv)>2 else "")
 win=int(os.environ.get("LAIXIN_CTX_WINDOW","1000000"))   # 分母可配:换模型必须改,写死会让闸门静默失效
-files=sorted(glob.glob(os.path.join(proj,"*.jsonl")),key=os.path.getmtime,reverse=True)
-if not files: print("找不到 transcript:"+proj); sys.exit(0)
+projs=[p for p in proj.split(":") if p]
+files=sorted(sum([glob.glob(os.path.join(p,"*.jsonl")) for p in projs],[]),key=os.path.getmtime,reverse=True)
+def chan(path):  # transcript 所属配置目录名(.claude-official / .claude-b)
+    d=os.path.dirname(path)
+    while d and os.path.basename(d)!="projects": d=os.path.dirname(d)
+    return os.path.basename(os.path.dirname(d)) if d else "?"
+if not files: print("找不到 transcript:"+" : ".join(projs)); sys.exit(0)
 def read_ctx(path):
     last=None
     for line in open(path,encoding="utf-8",errors="ignore"):
@@ -540,7 +555,7 @@ elif len(files)>1:
     print("   指定自己:laixin-lane ctx <前8位>\n")
     for f in files[:5]:
         c=read_ctx(f)
-        print(f"   {os.path.basename(f)[:8]}…  {(f'{c:,} = {c/win*100:.1f}%' if c else '无 usage 记录'):<26} 改于 {__import__('time').strftime('%H:%M:%S',__import__('time').localtime(os.path.getmtime(f)))}")
+        print(f"   {os.path.basename(f)[:8]}…  {(f'{c:,} = {c/win*100:.1f}%' if c else '无 usage 记录'):<26} 改于 {__import__('time').strftime('%H:%M:%S',__import__('time').localtime(os.path.getmtime(f)))}  [{chan(f)}]")
     print()
     sys.exit(0)
 f=files[0]
@@ -555,7 +570,7 @@ if not last: print("该 transcript 无 usage 记录:"+os.path.basename(f)); sys.
 cur=last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("cache_creation_input_tokens",0)
 pct=cur/win*100
 bar="█"*int(pct//5)+"░"*(20-int(pct//5))
-print(f"会话 {os.path.basename(f)[:8]}…  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
+print(f"会话 {os.path.basename(f)[:8]}… [{chan(f)}]  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
 # ⚠️ 闸门线双真相源:此处 70/55 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
 # 必须同步(一个 bash 一个 python,跨语言共用常量的代价大于收益)。改一处就改另一处。
 if   pct>=70: print("🔴 ≥70% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")

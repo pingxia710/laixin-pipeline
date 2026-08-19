@@ -1168,6 +1168,27 @@ tfail "#67③ codex ctx 取不到读数 ⇒ 报不可用并退非零(⛔ 返 0/�
   env LAIXIN_CODEX_SESSIONS=/nonexistent-codex-sessions-67 "$LANE" ctx --engine codex
 tout "#67③ ctx 默认引擎仍是 claude(claude 路径零行为变化)" 'local eng="claude"' \
   sed -n "/^cmd_ctx() {/,/^}/p" "$LANE"
+# ── ctx 多配置目录枚举(2026-08-19 夜,11B pingxia-37 实撞)──────────────────────────────────
+# 原写死 $HOME/.claude-official/projects/-Users-pingxia;双账号软切换(#75 族)后 transcript 按配置目录分家
+# ⇒ 新通道(.claude-b)全部窗口 `ctx <id>`「没有匹配」,≥70% 交班硬闸门整条通道失明;不带参的列表分支
+# 更糟——把旧通道别人的会话列给你认领(失效反向)。修=枚举 ~/.claude*/projects/-Users-pingxia,输出带通道名。
+VCX="$(mktemp -d)"
+mkdir -p "$VCX/.claude-official/projects/-Users-pingxia" "$VCX/.claude-b/projects/-Users-pingxia"
+printf '%s\n' '{"message":{"usage":{"input_tokens":100000,"cache_read_input_tokens":200000,"cache_creation_input_tokens":0}}}' \
+  > "$VCX/.claude-official/projects/-Users-pingxia/aaaa1111-old.jsonl"
+printf '%s\n' '{"message":{"usage":{"input_tokens":50000,"cache_read_input_tokens":350000,"cache_creation_input_tokens":0}}}' \
+  > "$VCX/.claude-b/projects/-Users-pingxia/bbbb2222-new.jsonl"
+tout "ctx:新通道(.claude-b)会话按 id 能找到并标通道名(⛔ 只认 .claude-official)" "bbbb2222… \[.claude-b\]" \
+  env HOME="$VCX" LAIXIN_CTX_PROJ= "$LANE" ctx bbbb2222
+tout "ctx:旧通道会话仍可读(两线并存,⛔ 只认开关那条)" "aaaa1111… \[.claude-official\]" \
+  env HOME="$VCX" LAIXIN_CTX_PROJ= "$LANE" ctx aaaa1111
+tout "ctx:不带参列表跨两通道并标通道名" "\[.claude-official\]" env HOME="$VCX" LAIXIN_CTX_PROJ= "$LANE" ctx
+tout "ctx:不带参列表含新通道会话" "bbbb2222" env HOME="$VCX" LAIXIN_CTX_PROJ= "$LANE" ctx
+VCX0="$(mktemp -d)"
+tfail "ctx:零 transcript 目录 ⇒ 报不可用退非零(⛔ 返 0/返空让闸门看着「还早」)" "ctx 不可用" \
+  env HOME="$VCX0" LAIXIN_CTX_PROJ= "$LANE" ctx
+t "ctx:⛔ 代码行写死 .claude-official/projects(换账号即失明)" bash -c '! grep -vE "^[[:space:]]*#" "'"$LANE"'" | grep -q "claude-official/projects"'
+rm -rf "$VCX" "$VCX0"
 tout "#67③ codex ctx 分母取会话自带 model_context_window(⛔ 复用 claude 那份手改分母)" \
   "model_context_window" sed -n "/^cmd_ctx_codex/,/^}/p" "$LANE"
 # ⭐ 绊线⑱:confirm_briefed 词表分引擎,第三参缺省=claude ⇒ 既有调用方零行为变化

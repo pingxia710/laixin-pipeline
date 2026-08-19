@@ -3104,7 +3104,13 @@ cmd_dmsg(){  # --from <来源> <正文…>
   [ -n "$text" ] || die "dmsg 需要消息正文"
   ev_deliver "消息" "【消息】来自 ${from}:
 ${text}"
-  board "$(caller_src)" "dmsg→派工窗口(来源=$from):$(head -1 <<< "$text" | cut -c1-70)"
+  # 🔴 截断必须带显式标记(2026-08-19 relay 第十二任实撞报):本行原为裸 `cut -c1-70`,
+  #   ⇒ 看板上那条**读起来是完整的一句话,没有任何信号提示还有下文**,而中继整个角色建立在
+  #   「凭库接班」上 ⇒ 接班方会以为自己掌握了全部明文。**⛔ 静默截断**,要么带标记要么不截。
+  local _first _mark=""
+  _first="$(head -1 <<< "$text")"
+  [ "${#_first}" -gt 70 ] && _mark=" …[截断,全文已投派工窗口输入框]"
+  board "$(caller_src)" "dmsg→派工窗口(来源=$from):$(printf '%s' "$_first" | cut -c1-70)${_mark}"
   if dispatch_alive; then
     echo "已投递进派工窗口(来源=$from)。⚠️ **注入成功 ⛔ 等于已读** —— 它下一轮才会看到;要确认送达等它的可见回应,⛔ 按本命令成功就判送达(#69 同族)。"
   else

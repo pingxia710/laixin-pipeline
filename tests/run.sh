@@ -1380,7 +1380,7 @@ P50="$(mktemp -d)"; mkdir -p "$P50/kb/索引"
 printf '| 转单-9 | x |\n' > "$P50/kb/索引/wiki-裁定池总表.md"
 printf '| R48 | z |\n' > "$P50/kb/索引/wiki-红线清单.md"
 printf '引用 转单-9。\n' > "$P50/p.md"
-tout "prompt-lint 报已核清单" "已核:①文件:行号" env LAIXIN_KB="$P50/kb" "$LANE" prompt-lint "$P50/p.md"
+tout "prompt-lint 报已核清单" "①文件:行号 ②裁定编号" env LAIXIN_KB="$P50/kb" "$LANE" prompt-lint "$P50/p.md"
 printf '报告\n```\n输出\n```\ncommit 数 1,任务数 1,达标\n【交付完成】b t\n' > "$P50/r.md"
 tout "report-lint 总结行报已核四项" "已核:末行契约" "$LANE" report-lint "$P50/r.md"
 rm -rf "$P50"
@@ -1510,6 +1510,15 @@ t "#57d:uptime 今日事件行是完整一行(零命中 ⛔ 断行成两行)" ba
   out="$("$0" uptime 2>&1 | grep "今日事件")"
   [ "$(wc -l <<< "$out" | tr -d " ")" = 1 ] || exit 1
   grep -q "投递 [0-9]* · 暂存 [0-9]* · 看门狗动作 [0-9]*$" <<< "$out"' "$LANE"
+
+# ⑤ start 类命令的启动断言(「脚本说了启动」≠「现场起来了」,#20b 同族;静态——真起会碰常驻)
+tout "#57e:events start 有启动验证两态" "启动验证:ev-loop 进程已在跑" sed -n "/^cmd_events/,/^}/p" "$LANE"
+tout "#57e:watchdog start 有启动验证两态" "启动验证:wd-loop 进程已在跑" sed -n "/^cmd_watchdog/,/^}/p" "$LANE"
+tout "#57e:resurrect --infra 按实测宣布 ⛔ 起完就宣布" "⛔ 当作基础设施已恢复" sed -n "/^cmd_resurrect/,/^}/p" "$LANE"
+# ⑥ 新增输出自审:review-env status 三态(目录在≠worktree 在);prompt-lint 已核行防过度声明
+tout "#57f:review-env status 区分「已注册/目录在未注册/不在」三态" "未注册为本仓库 worktree" \
+  sed -n "/^cmd_review_env/,/^}/p" "$LANE"
+tout "#57f:prompt-lint 已核行自标「适用即核」⛔ 过度声明" "各项适用即核" sed -n "/^cmd_prompt_lint/,/^}/p" "$LANE"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

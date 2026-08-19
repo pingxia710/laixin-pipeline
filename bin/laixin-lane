@@ -550,7 +550,7 @@ for w in warns: print(f"  ⚠️ {w}")
 for e in errs: print(f"  ❌ {e}")
 print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(errs)} 项查无或指纹不符" + (f",{len(warns)} 项提示" if warns else ""))
 # #50:已核清单一行——零报警≠零检查(样本:grep 输出零命中被读成「没有这项检查」)
-print("  已核:①文件:行号 ②裁定编号 ③R编号 · 内容指纹(#五-29,带「」才核) · 词表占位符(#11/#22a) · 消费点提示(#18a) · 供给侧半面提示(#22b)")
+print("  已核(各项适用即核,零适用项≠核过):①文件:行号 ②裁定编号 ③R编号 · 内容指纹(#五-29,带「」才核) · 词表占位符(#11/#22a) · 消费点提示(#18a) · 供给侧半面提示(#22b)")
 sys.exit(1 if errs else 0)
 PYEOF
 }
@@ -684,7 +684,9 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
   case "$mode" in
     --infra)
       ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start; }
-      echo "基础设施已恢复:events 在跑(交付暂存 spool)。引擎点火用:laixin-lane resurrect --full"
+      # #57e:总结行按事实说话——「已恢复」只在 ev_alive 实测为真时宣布(⛔ 起完就宣布)
+      if ev_alive; then echo "基础设施已恢复:events 在跑(交付暂存 spool)。引擎点火用:laixin-lane resurrect --full"
+      else echo "⚠️ events 没起来(见上方 start 自报)——人工核:laixin-lane events status;⛔ 当作基础设施已恢复"; fi
       ;;
     --full)
       # #44:boot 链是无人值守的重生路径,与 wd_loop 同纪律——cmd_dispatch/cmd_watchdog/cmd_relay
@@ -1781,6 +1783,10 @@ cmd_events(){
       sleep 0.3
       tmux send-keys -t "$SESSION:$EV_WIN" "laixin-lane ev-loop 2>>$EV_LOG" C-m
       echo "事件总线已启动(窗口 $EV_WIN;日志 $EV_LOG;stderr 也落此,死因不再无声)"
+      # #57e:「脚本说了启动」≠「现场起来了」(#20b 验尸同族)——1.5s 后进程判活回头核,两态都说话
+      sleep 1.5
+      if ev_alive; then echo "(启动验证:ev-loop 进程已在跑)"
+      else echo "⚠️ 启动后 1.5s 未见 ev-loop 进程——多半起步中或秒退;laixin-lane events status 核现场"; fi
       ;;
     stop)
       pkill -f "laixin-lane ev-loop" 2>/dev/null || true
@@ -2518,6 +2524,10 @@ cmd_watchdog() {
       sleep 0.4
       tmux send-keys -t "$SESSION:$WATCHDOG_WIN" "laixin-lane wd-loop" C-m
       echo "看门狗已启动(tmux 窗口 $WATCHDOG_WIN)。日志:$WD_LOG"
+      # #57e:同 events start——启动断言回头核,⛔ 发完键就宣布成功
+      sleep 1.5
+      if wd_alive; then echo "(启动验证:wd-loop 进程已在跑)"
+      else echo "⚠️ 启动后 1.5s 未见 wd-loop 进程——多半起步中或秒退;laixin-lane watchdog status 核现场"; fi
       ;;
     stop)
       win_exists "$WATCHDOG_WIN" || { echo "看门狗本就没在跑"; return 0; }
@@ -2967,7 +2977,11 @@ cmd_review_env(){
       board "$(caller_src)" "评审环境已回收(端口 $REVIEW_API_PORT/$REVIEW_WEB_PORT 验尸零监听,worktree 已删)"
       ;;
     status)
-      if [ -e "$REVIEW_DIR" ]; then echo "worktree:在($REVIEW_DIR)"; else echo "worktree:不在($REVIEW_DIR)"; fi
+      # #57f(自审新增输出):目录在≠worktree 在——目录存在但未注册(半拆/异物)是第三态,单独报
+      if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qx "worktree $REVIEW_DIR"; then
+        echo "worktree:在且已注册($REVIEW_DIR)"
+      elif [ -e "$REVIEW_DIR" ]; then echo "worktree:⚠️ 目录在但未注册为本仓库 worktree($REVIEW_DIR)——半拆/异物,人工核"
+      else echo "worktree:不在($REVIEW_DIR)"; fi
       local _p2 _o2
       for _p2 in "$REVIEW_API_PORT" "$REVIEW_WEB_PORT"; do
         _o2="$(rev_port_pids "$_p2")"

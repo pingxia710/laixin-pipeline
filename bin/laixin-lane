@@ -2043,7 +2043,7 @@ ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值�
         nxt="$(ev_next_ready "$LN")"
         hint="排队节未解析到该轨可发片 ⇒ 若确无,在总表'进行中'写明原因"
         [ -n "$nxt" ] && hint="该轨下一片:${nxt}(ready 即 fresh+send)"
-        ev_deliver "告警" "【告警】$w 已 $((silent/60)) 分钟无变化(空闲或卡住)。先 laixin-lane peek $lane 30 判断:等回答/做完没落盘/真空闲。${hint}。三选一(派工/现在写/总表写明),同一轮内给出可见结论。"
+        ev_deliver "告警" "【告警】$w 已 $((silent/60)) 分钟无变化(空闲或卡住)。🔴 **先 laixin-lane peek $lane 30 核一眼,⛔ 直接 fresh+send** —— 第①项会打断正在跑的全量,是三选一里最贵的。peek 判:等回答/做完没落盘/真空闲。${hint}。三选一(派工/现在写/总表写明),同一轮内给出可见结论。"
         ;;
       verify-*)
         ev_deliver "告警" "【告警】验收窗口 $w 已 $((silent/60)) 分钟无变化——可能撞上需拍板的问题、卡在权限提示、或已回执未回收。laixin-lane peek-v ${w#verify-} 40 查看;已回执则 vdown 回收。"
@@ -2544,8 +2544,16 @@ lane_busy() {
   win_exists "lane-$1" || return 1
   # #60②:kimi(C 轨)在飞判据=月相转轮/Running/Thinking(2026-08-19 临时会话实测;
   # 「● Running a command」两引擎共词,月相只属 kimi)——按引擎分派 ⛔ 拿 codex 词表量 kimi
-  local _pat="Working|Explored|Reading|Search|Thinking|Applying|Running"
-  [ "$(lane_engine "$1")" = "kimi" ] && _pat="Working|Thinking|Running|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘"
+  # 🔴 `Waiting` 必须在列(2026-08-19 晚,dispatch 第三十八任报、方案窗口第十四任转):codex 等
+  #    后台终端时屏上逐字是 `Waiting for background terminal (2m30s)`,而**在飞判据没有这个词**
+  #    ⇒ 正在跑全量的轨被读成空闲 ⇒ 空闲告警三选一的第①项「有 ready 片就 fresh+send」会**把
+  #    正在跑的全量直接打断**——三选一里最贵的那件。今晚两轨同时在等是干净双样本;零损失纯因
+  #    dispatch 按读屏纪律 peek 了 30/40 行,**夜间无人值守或刚接班的继任照告警办就会撞**。
+  # ⚠️ 只补本函数(在飞判据)。**⛔ 顺手改 send_swallow_check(#40) 的同名词表**——那条裁定逐字
+  #    「⛔ 放宽判据 ⛔ 提高阈值」,它对 `Waiting` 的正确处置是**附状态说明而不动判据**,两者
+  #    目的相反:这里要「别把在飞当空闲」,那里要「别把送达当被吞」。(11B 当轮误改并撤回一次)
+  local _pat="Working|Explored|Reading|Search|Thinking|Applying|Running|Waiting"
+  [ "$(lane_engine "$1")" = "kimi" ] && _pat="Working|Thinking|Running|Waiting|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘"
   tmux capture-pane -p -t "$SESSION:lane-$1" -S -30 2>/dev/null \
     | grep -qE "$_pat"
 }

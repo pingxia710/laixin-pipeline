@@ -2317,6 +2317,20 @@ t "pane_cmd:不存在的窗口必须返回 NONE ⛔ 别人的值(真机)" bash -
 t "判活:NONE ⇒ 存疑不动 ⛔ 判死(三约束②失效必须降级)" bash -c '
   n=$(grep -c "NONE) return 0" "'"$LANE"'"); [ "$n" -ge 2 ]'
 
+# ── lane_busy 必须收 Waiting(2026-08-19;dispatch 第三十八任双样本)────────────────────
+# codex 等后台终端时屏上是 `Waiting for background terminal (2m30s)`,判据没这词 ⇒ 在飞被读成
+# 空闲 ⇒ 空闲告警第①项会打断正在跑的全量。⚠️ 只改 lane_busy,**⛔ 动 #40 send_swallow_check
+# 的同名词表**(那条裁定逐字「⛔ 放宽判据」,目的相反)——11B 当轮误改并撤回一次,本组守住边界。
+t "lane_busy:codex 档收 Waiting" bash -c '
+  sed -n "/^lane_busy()/,/^}$/p" "'"$LANE"'" | grep -q "Applying|Running|Waiting"'
+t "lane_busy:kimi 档同样收 Waiting" bash -c '
+  sed -n "/^lane_busy()/,/^}$/p" "'"$LANE"'" | grep -q "Running|Waiting|🌑"'
+t "边界:#40 的判据⛔ 被顺手放宽(裁定=⛔ 放宽判据)" bash -c '
+  sed -n "/^send_swallow_check()/,/^}$/p" "'"$LANE"'" | grep -q "Read |Thinking|Ran " &&
+  ! sed -n "/^send_swallow_check()/,/^}$/p" "'"$LANE"'" | grep -q "Ran |Waiting"'
+tout "空闲告警:首选项改为先 peek,⛔ 直接 fresh+send" "⛔ 直接 fresh+send" bash -c '
+  grep "分钟无变化(空闲或卡住)" "'"$LANE"'"'
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

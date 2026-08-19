@@ -2405,7 +2405,17 @@ WD_LOG="$HOME/.laixin-lane-watchdog.log"
 # 派工窗口持有合并权,故不禁 merge;只禁推远端(流水线不碰 origin)
 DISPATCH_DENY=( "Bash(git push*)" )
 
-pane_cmd()  { tmux display-message -p -t "$SESSION:$1" '#{pane_current_command}' 2>/dev/null || echo "NONE"; }
+# 🔴 ⛔ 用 `tmux display-message -p -t <目标>` 取窗口前台命令(2026-08-19 晚,中继 relay
+#   第十二任定位、11B 第三方复核):**tmux 的 -t 对解析不到的目标会静默回退到别的窗口**——
+#   实测传一个根本不存在的窗口名返回 `node` 而**不报错** ⇒ 原实现的 `|| echo "NONE"` 兜底
+#   几乎永不触发,真实失效模式是**读到另一个窗口的值**。
+#   后果实证:events/watchdog 的 pane 是 `bash` ⇒ 被读成中继的 pane ⇒ 落进 relay_alive 的
+#   `*)` ⇒ **判一个活着的中继已死并杀掉重起**。当晚 9 次「判中继不在」**9 次都紧跟 ev-loop
+#   重启**(间隔 0–1 分钟,零例外),而这两件事在 wd_loop 里正是同一拍的相邻两行。
+#   ⇒ 改用**枚举 + 精确匹配**:不存在就是不存在,NONE 才真的会发生。
+#   ⭐ 这正是当晚反复吃亏后立的纪律:**优先用枚举,⛔ 用「按目标查询」**——后者解析不到时
+#   的行为往往不是失败,而是**给你另一个东西的答案**。
+pane_cmd()  { tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_current_command}' 2>/dev/null | awk -v W="$1" '$1==W{print $2; f=1} END{exit !f}' || echo "NONE"; }
 pane_claude_age(){  # <窗口名> → stdout=pane 前台 claude 进程存活秒数;无 claude 进程/取不到 → rc1 零输出
   # #58 正向存活信号的取数半边:补偿动作(补 Enter)与它要补偿的故障(Enter 真丢)必须有
   # 可区分的触发判据——「画面静止」两者同形,「claude 进程在且 etime 短」只属于冷启动。
@@ -2543,6 +2553,11 @@ lane_busy() {
 dispatch_alive() {
   win_exists "$DISPATCH_WIN" || return 1
   case "$(pane_cmd "$DISPATCH_WIN")" in
+    NONE) return 0 ;;   # ⚠️ 查询**没拿到答案**(窗口在 win_exists 与本次查询之间消失,或 tmux 未响应)
+                        #    ⇒ **存疑不动**,⛔ 判死 —— 三约束②「失效必须降级 ⛔ 反向」。
+                        #    ⚖️ 同一条纪律在本文件的 RELAY_ENABLED 总闸门上是做对的(注释逐字
+                        #    「标记丢了是不托管…⛔ 不是乱拉窗口」),而此处曾做反:查询不可靠时
+                        #    去**杀掉一个活着的席位**。(relay 第十二任指出该对照)
     node|claude|claude.exe) return 0 ;;   # claude 进程还在
     *) return 1 ;;                        # 掉回 shell = 已死
   esac
@@ -2933,6 +2948,11 @@ relay_enabled() { [ -f "$RELAY_ENABLED" ]; }
 relay_alive() {
   win_exists "$RELAY_WIN" || return 1
   case "$(pane_cmd "$RELAY_WIN")" in
+    NONE) return 0 ;;   # ⚠️ 查询**没拿到答案**(窗口在 win_exists 与本次查询之间消失,或 tmux 未响应)
+                        #    ⇒ **存疑不动**,⛔ 判死 —— 三约束②「失效必须降级 ⛔ 反向」。
+                        #    ⚖️ 同一条纪律在本文件的 RELAY_ENABLED 总闸门上是做对的(注释逐字
+                        #    「标记丢了是不托管…⛔ 不是乱拉窗口」),而此处曾做反:查询不可靠时
+                        #    去**杀掉一个活着的席位**。(relay 第十二任指出该对照)
     node|claude|claude.exe) return 0 ;;   # claude 进程还在
     *) return 1 ;;                        # 掉回 shell = 已死
   esac

@@ -2138,13 +2138,13 @@ t "#60①:Update 菜单安全键=Esc ⛔ Enter(默认项=全局升级,签名库�
   grep -q Escape "$LOG" && ! grep -q "C-m" "$LOG"'
 t "#60①:pane 掉回 shell=秒退即死带现场(lane 验尸判据惯例,⛔ 哑等 90s)" bash -c '
   source "'"$V60F"'"; SESSION=s; SHELL=/bin/zsh; sleep(){ :; }
-  tmux(){ case "$1" in capture-pane) echo "zsh: command not found: codex";; display-message) echo zsh;; esac; }
+  tmux(){ case "$1" in capture-pane) echo "zsh: command not found: codex";; display-message) echo zsh;; list-windows) echo "w zsh";; esac; }
   board(){ :; }; caller_src(){ echo t; }; die(){ echo "die: $*" >&2; exit 1; }
   out="$(vwait_ready_codex w 2>&1)"; rc=$?
   [ $rc -ne 0 ] && grep -q "启动即退" <<< "$out" && grep -q "command not found" <<< "$out"'
 t "#60①:始终未就绪走超时返 1(⛔ 假绿)" bash -c '
   source "'"$V60F"'"; SESSION=s; sleep(){ :; }
-  tmux(){ case "$1" in capture-pane) echo "还在转圈";; display-message) echo node;; esac; }
+  tmux(){ case "$1" in capture-pane) echo "还在转圈";; display-message) echo node;; list-windows) echo "w node";; esac; }
   board(){ echo "board: $*"; }; caller_src(){ echo t; }; die(){ echo "die: $*" >&2; exit 1; }
   out="$(vwait_ready_codex w 2>&1)"; rc=$?
   [ $rc -eq 1 ] && grep -q "启动超时" <<< "$out"'
@@ -2301,6 +2301,21 @@ tout "dmsg:看板长条截断带显式标记(⛔ 静默截断)" "截断,全文�
   sed -n "/^cmd_dmsg()/,/^}$/p" "$LANE"
 t "dmsg:短消息⛔ 误加截断标记(判据按首行长度,⛔ 一律加)" bash -c '
   sed -n "/^cmd_dmsg()/,/^}$/p" "'"$LANE"'" | grep -q "gt 70"'
+
+# ── pane_cmd 必须用枚举 ⛔ 按目标查询(2026-08-19 晚;relay 第十二任定位,11B 复核)────────
+# 缺陷:`tmux display-message -p -t <目标>` 对解析不到的目标**静默回退到别的窗口**(实测传
+# 不存在的窗口名返回 `node` 而不报错)⇒ `|| echo NONE` 兜底永不触发,真实失效是**读到另一个
+# 窗口的值**;events/watchdog 的 pane 是 bash ⇒ 被读成中继 ⇒ **判一个活着的中继已死并杀掉**。
+# 当晚 9 次判中继不在,9 次都紧跟 ev-loop 重启,零例外。
+t "pane_cmd ⛔ 用 display-message -t(它解析不到时回退到别的窗口)" bash -c '
+  ! grep "^pane_cmd()" "'"$LANE"'" | grep -q "display-message"'
+tout "pane_cmd 用枚举+精确匹配(不存在就是不存在)" "list-windows" bash -c '
+  grep "^pane_cmd()" "'"$LANE"'"'
+t "pane_cmd:不存在的窗口必须返回 NONE ⛔ 别人的值(真机)" bash -c '
+  v="$(tmux list-windows -t laixin -F "#{window_name} #{pane_current_command}" 2>/dev/null | awk -v W=绝无此窗口zzz "\$1==W{print \$2; f=1} END{exit !f}" || echo NONE)"
+  [ "$v" = NONE ]'
+t "判活:NONE ⇒ 存疑不动 ⛔ 判死(三约束②失效必须降级)" bash -c '
+  n=$(grep -c "NONE) return 0" "'"$LANE"'"); [ "$n" -ge 2 ]'
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

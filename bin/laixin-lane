@@ -21,6 +21,7 @@
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane whoholds             谁当前持有派工权
+#   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
 #   laixin-lane ctx [会话id前缀]     当前上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)
 #   laixin-lane evidence [片名]      看验收留下的证据文件(回执里的数字须能在此 grep 到)
 #   laixin-lane evid-gc [天数]       清理超期证据目录(默认 7 天)
@@ -584,6 +585,51 @@ cmd_resurrect() {  # 重启/断电后一键重建。--infra:只起 events(不烧
       ;;
     *) die "resurrect 只接受 --infra(默认,只起事件总线) 或 --full(三件套全起,会启动 claude 计费)" ;;
   esac
+  return 0
+}
+
+# #34:丢弃前先固化——一条命令把 git diff 落成带时间戳补丁并**反向校验保真**。
+# 实撞背景:上一事件里这套动作(diff 落补丁+--check -R 反向校验)是**手动**做的,下一个人不一定会;
+# 而 git checkout -- 不进 reflog,一次误操作即永久损失。
+# ⛔ 补丁目录不放 /private/tmp:重启清空是本次实撞过的**次生风险**(固化了却随重启蒸发=假安全)。
+WIP_DIR="${LAIXIN_WIP_DIR:-$HOME/.laixin-lane-wip}"
+
+cmd_wip_save() {
+  local dir="$DEFAULT_DIR"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) dir="${2:?--dir 需要路径}"; shift 2 ;;
+      *) die "未知参数:$1(用法:laixin-lane wip-save [--dir 仓库路径],默认 $DEFAULT_DIR)" ;;
+    esac
+  done
+  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$dir 不是 git 仓库"
+  mkdir -p "$WIP_DIR"
+  local ts f
+  ts="$(date +%Y%m%d-%H%M%S)"
+  f="$WIP_DIR/wip-${ts}-$(basename "$dir").patch"
+  if [ -e "$f" ]; then f="${f%.patch}-$$.patch"; fi   # 同秒重跑不互相覆盖
+  git -C "$dir" diff > "$f"
+  # 射程数字先取好(空 diff 分支也要报,别让人误以为「无未暂存改动=无可失去」)
+  local staged untracked
+  staged="$(git -C "$dir" diff --cached --name-only | grep -c . || true)"
+  untracked="$(git -C "$dir" ls-files --others --exclude-standard | grep -c . || true)"
+  if [ ! -s "$f" ]; then
+    rm -f "$f"
+    echo "工作区无未暂存改动(git diff 为空)——没有要固化的内容"
+    if [ "${staged:-0}" -gt 0 ]; then echo "⚠️ 但有 ${staged} 个已暂存(staged)改动:git diff 拍不到,要固化用 git diff HEAD 手工落"; fi
+    if [ "${untracked:-0}" -gt 0 ]; then echo "⚠️ 另有 ${untracked} 个未跟踪文件:diff 拍不到新文件,丢弃前自行处置"; fi
+    return 0
+  fi
+  # ⭐ 保真判据(#34 配套已实证):git apply --check -R 反向可干净应用 ⇒ 补丁与当前工作区一致,
+  #   丢弃后能凭它还原。⛔ 只看文件生成了——生成≠保真(截断/编码问题会让补丁救不回来)。
+  git -C "$dir" apply --check -R "$f" \
+    || die "⛔ 补丁反向校验失败:${f} 不能干净还原当前改动(文件已保留供诊断)——**先别丢弃工作区**"
+  echo "✅ 已固化并通过反向校验(git apply --check -R):"
+  echo "   ${f}"
+  echo "   还原用:git -C \"${dir}\" apply \"${f}\""
+  # 射程自曝:本命令只固化「未暂存的已跟踪改动」——正是 git checkout -- 会毁掉的那部分
+  if [ "${staged:-0}" -gt 0 ]; then echo "⚠️ 另有 ${staged} 个已暂存(staged)改动不在本补丁里(git diff 不含 staged)"; fi
+  if [ "${untracked:-0}" -gt 0 ]; then echo "⚠️ 另有 ${untracked} 个未跟踪文件不在本补丁里(diff 拍不到新文件)"; fi
   return 0
 }
 
@@ -2421,6 +2467,7 @@ case "${1:-}" in
   install-boot) shift; cmd_install_boot ;;
   claim)    shift; cmd_claim "$@" ;;
   whoholds) shift; cmd_whoholds ;;
+  wip-save) shift; cmd_wip_save "$@" ;;      # 丢弃前先固化:diff 落持久补丁+反向校验(#34)
   ctx)      shift; cmd_ctx "$@" ;;
   evidence) shift; cmd_evidence "$@" ;;
   evid-gc)  shift; cmd_evidence_gc "$@" ;;

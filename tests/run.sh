@@ -902,6 +902,34 @@ rm -rf "$T37"
 tout "#37:cmd_dispatch 起窗挂了回读复核" "confirm_briefed \"\$DISPATCH_WIN\"" sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
 tout "#37:cmd_relay 起窗挂了回读复核(共用路径同修)" "confirm_briefed \"\$RELAY_WIN\"" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
 
+echo "== 6n. #34 wip-save 丢弃前先固化(fixture 仓库,零真实副作用) =="
+W34="$(mktemp -d)"; mkdir -p "$W34/repo" "$W34/wip"
+git -C "$W34/repo" init -q
+printf 'a\nb\n' > "$W34/repo/f.txt"
+git -C "$W34/repo" add f.txt
+git -C "$W34/repo" -c user.email=t@t -c user.name=t commit -qm init
+printf 'a\nCHANGED\n' > "$W34/repo/f.txt"      # 未暂存改动(checkout -- 会毁掉的那部分)
+printf 'new\n' > "$W34/repo/untracked.txt"      # 未跟踪文件(diff 拍不到,须射程自曝)
+tout "#34:固化成功回显「已固化并通过反向校验」+补丁路径" "已固化并通过反向校验" \
+  env LAIXIN_WIP_DIR="$W34/wip" "$LANE" wip-save --dir "$W34/repo"
+# ⭐ 保真非声称:补丁真落盘、真含改动、真能反向干净应用(⛔ 只信回显)
+t "#34 绊线:补丁落在指定持久目录且 git apply --check -R 实测可还原" bash -c '
+  p="$(ls "$1/wip"/wip-*.patch 2>/dev/null | head -1)"; [ -n "$p" ] || exit 1
+  grep -q "CHANGED" "$p" && git -C "$1/repo" apply --check -R "$p"' 34 "$W34"
+tout "#34:射程自曝——未跟踪文件不在补丁里要点名" "未跟踪文件" \
+  env LAIXIN_WIP_DIR="$W34/wip" "$LANE" wip-save --dir "$W34/repo"
+# 空 diff:不造空补丁;且 staged 改动 diff 拍不到也要点名(「无未暂存改动」≠「无可失去」)
+git -C "$W34/repo" checkout -- f.txt
+printf 'a\nb\nstaged\n' > "$W34/repo/f.txt"; git -C "$W34/repo" add f.txt
+t "#34:空 diff 不造空补丁且点名 staged 改动拍不到" bash -c '
+  out="$(env LAIXIN_WIP_DIR="$1/wip" "$2" wip-save --dir "$1/repo")"
+  grep -q "没有要固化的内容" <<< "$out" && grep -q "已暂存" <<< "$out"' 34 "$W34" "$LANE"
+rm -rf "$W34"
+# ⭐ 目录绊线(实撞的次生风险):默认目录必须在 HOME,⛔ /private/tmp(重启清空=固化了也蒸发)
+t "#34 绊线:补丁目录默认挂 HOME ⛔ /tmp 族" bash -c \
+  'grep -q "LAIXIN_WIP_DIR:-\$HOME/" "$0" && ! grep -qE "LAIXIN_WIP_DIR:-/(private/)?tmp" "$0"' "$LANE"
+tout "#34:保真校验在位(⛔ 只看文件生成了)" "apply --check -R" sed -n "/^cmd_wip_save()/,/^}/p" "$LANE"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

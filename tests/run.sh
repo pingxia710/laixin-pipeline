@@ -525,6 +525,29 @@ t "RELAY_CDP_PORT 落在全部派生值域之外(值域判据 ⛔ 占用判据)"
   [ "$rp" -lt "$vb" ] || exit 1'
 rm -rf "$R32"
 
+echo "== 6j. verify-from 自述列全防线(#27) =="
+# 原自述只说「契约与 commit 存在性已校验」,而实际已有四道 ⇒ 三十一任据它反推「闸门会放行」并当盲区上报。
+T27="$(mktemp -d)"
+printf '假报告\n【交付完成】main e9a4acc\n' > "$T27/来信平台-廿七片验收记录.md"
+# ⭐ 绊线①:四道逐一在自述里点名(少一道即红)
+tout "自述点名末行契约(#27)" "①末行契约" "$LANE" verify-from "$T27/来信平台-廿七片验收记录.md" --dry
+tout "自述点名 commit 存在性(#27)" "②commit 在仓库存在" "$LANE" verify-from "$T27/来信平台-廿七片验收记录.md" --dry
+tout "自述点名零 commit 拒接(#27)" "③相对 main 非零 commit" "$LANE" verify-from "$T27/来信平台-廿七片验收记录.md" --dry
+tout "自述点名末行快照过期(#27)" "④末行快照未过期" "$LANE" verify-from "$T27/来信平台-廿七片验收记录.md" --dry
+tout "自述交代 dry 与真起窗的分层(#27)" "只警告、真起窗才拒" "$LANE" verify-from "$T27/来信平台-廿七片验收记录.md" --dry
+tout "自述不影响既有解析行(片名仍可读)" "片名=廿七片" "$LANE" verify-from "$T27/来信平台-廿七片验收记录.md" --dry
+# ⭐ 绊线②(本条真正要防的是「漂移」,而不只是「这一次写对了」):
+#   自述道数必须等于代码里实际防线数 = 2 道常驻(契约/commit 存在)+ **语句位** die 拒绝的条数。
+#   将来谁加第五道防线却忘了回改自述,这条立刻变红——把「回改自述」从靠自觉变成机器强制。
+#   ⚠️ 只数语句位(`^\s*die "`)⛔ 数注释:首版数了含该词的注释,把解释这条判据的注释自己算了进去
+#   (自指污染,实撞一次)——判据的射程必须排除判据自身的说明文字。
+t "自述道数 = 代码实际防线数(#27 防自述再漂)" bash -c '
+  body="$(awk "/^cmd_verify_from\(\)/,/^}/" "'"$LANE"'")"
+  refuse="$(grep -cE "^[[:space:]]*die \"⛔ 拒绝" <<< "$body" || true)"
+  want=$((2 + refuse))
+  [ "$refuse" -ge 1 ] && grep -q "已校验 $want 道" <<< "$body"'
+rm -rf "$T27"
+
 echo "== 6i. log 未标来源要有反馈(#26;fixture 看板,零真实副作用) =="
 L26="$(mktemp -d)"; printf '# 看板\n' > "$L26/b.md"
 # ⭐ 绊线①:未设 LAIXIN_WINDOW 必须**明确提示且告诉你该设什么**——原缺陷是零反馈,连错 18 条

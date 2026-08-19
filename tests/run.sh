@@ -1039,7 +1039,8 @@ echo "== 6p. #67 派工引擎化(默认 claude)+ 出站中转 relay-msg(单向,�
 # dispatch 自读全文(events 的载荷从来不是结构化内容,这正是「讨论也能走落盘」的机关)。
 # ⭐ 绊线①(本批最关键的一条):默认值必须是 claude。#66 的教训=换默认值会让「同一条命令在换代前后
 #   语义不同,而命令本身长得一模一样」;而 dispatch 起窗会被 resurrect/boot 链**无人值守自动调用**。
-tout "#67 派工引擎默认 claude(⛔ 学 #60① 默认 codex:起窗会被 boot/resurrect 无人值守自动调用)" \
+t "#67 派工引擎默认 claude(⛔ 学 #60① 默认 codex:起窗会被 boot/resurrect 无人值守自动调用)" bash -c \
+  'grep -qE "LAIXIN_DISPATCH_ENGINE:-.*echo claude" "'"$LANE"'" && ! grep -qE "LAIXIN_DISPATCH_ENGINE:-codex" "'"$LANE"'"'
   "LAIXIN_DISPATCH_ENGINE:-claude" grep -n "^DISPATCH_ENGINE=" "$LANE"
 t "#67 默认值确实不是 codex(回退检测:谁把默认改了本行立刻红)" bash -c \
   '! grep -q "LAIXIN_DISPATCH_ENGINE:-codex" "'"$LANE"'"'
@@ -1178,6 +1179,19 @@ tout "#67 SKILL.md 写明分流原则(事实类 ⛔ 占用中继那一跳)" "只
   cat "$(cd "$(dirname "$LANE")/.." && pwd)/skills/laixin-pipeline/SKILL.md"
 tout "#67 SKILL.md 写明中继无反向注入能力(换个名字不改变它是同一个动作)" "换个名字不改变它是同一个动作" \
   cat "$(cd "$(dirname "$LANE")/.." && pwd)/skills/laixin-pipeline/SKILL.md"
+
+# ── #75 换账号:起窗入口可覆盖(创始人 2026-08-19 令「流水线全部切到另一个账号」)─────────
+# 换账号走「换配置目录」⛔ 走 /login;路径=复制包装器只改 CLAUDE_OFFICIAL_CONFIG_DIR 一行。
+# ⚠️ 本组最要紧的是第 3 条「三处零遗漏」:改了两处漏一处,那一处会**静默用旧账号**,
+#    而它与改对了在任何回显里都长得一模一样(今日主线:失败态与正常态同形)。
+t "#75 起窗入口默认仍是 claude(⛔ 默认换新,切换要显式;理由同 #66)" bash -c \
+  'grep -qE "LAIXIN_CLAUDE_LAUNCHER:-.*echo claude" "'"$LANE"'"'
+t "#75 起窗入口可被 LAIXIN_CLAUDE_LAUNCHER 覆盖" bash -c \
+  'grep -q "LAIXIN_CLAUDE_LAUNCHER" "'"$LANE"'"'
+t "#75 三处起窗调用点全部走变量,零硬编码 claude(漏一处=该窗口静默用旧账号)" bash -c \
+  'n="$(grep -c "\$CLAUDE_LAUNCHER -n " "'"$LANE"'")"; [ "$n" = 3 ] || { echo "变量调用点=$n,应为3"; exit 1; };
+   h="$(grep -c "\" claude -n " "'"$LANE"'" || true)"; [ "$h" = 0 ] || { echo "仍有 $h 处硬编码 claude -n"; exit 1; }'
+
 
 echo "== 6j. verify-from 自述列全防线(#27) =="
 # 原自述只说「契约与 commit 存在性已校验」,而实际已有四道 ⇒ 三十一任据它反推「闸门会放行」并当盲区上报。

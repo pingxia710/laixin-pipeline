@@ -40,6 +40,7 @@ write_stubs() {  # 落成文件供本进程与 guard 模式的子 bash 共用
   cat > "$TMPD/stubs.sh" <<'STUBS'
 tmux()        { return 0; }     # 所有 tmux 调用惰性化;capture 输出为空
 outside_sessions() { echo 2; }  # 常态拓扑:tmux 外=创始人窗口+方案窗口
+CLAUDE_LAUNCHER="${CLAUDE_LAUNCHER:-claude}"   # #75:顶层变量不被 fns.sh 抽取,set -u 下会静默退出 ⇒ 测试侧补齐
 relay_alive() { return 1; }     # fixture:relay 已死(演练=杀掉它的 claude)
 ev_alive()    { return 0; }     # 事件总线活着 ⇒ wd_loop 不会碰 cmd_events(pgrep/pkill 隔离)
 dispatch_alive(){ return 0; }

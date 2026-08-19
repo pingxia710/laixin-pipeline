@@ -70,7 +70,12 @@ VERIFY_MODEL="${LAIXIN_VERIFY_MODEL:-claude-opus-5}"
 # Claude(Claude 周额度告急+Codex 当 worker 已验证数百片纪律,风险序 worker<派工<验收 里它资历最深)。
 # claude 路径**原样保留**零行为变化,LAIXIN_VERIFY_ENGINE=claude 即回切;是否回切归创始人。
 # VERIFY_MODEL 只在 claude 引擎下参与起窗(doctor §6 的显示同步适配,⛔ 旧文案误导)。
-VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-codex}"
+LANE_SWITCH_DIR="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}"   # 运行时开关的持久化目录(#75)
+# ⚠️ 三个开关一律「env > 状态文件 > 默认」:环境变量只在当次命令有效,而**看门狗/boot 链重生窗口时不继承环境变量**
+#    (`:926` 逐字只带 LAIXIN_BOARD_SRC)⇒ 只用 env 切换的意图**活不过一次重生**,且回退是静默的、发生在无人值守的夜里,
+#    回退后一切照常运转只是账单/引擎变了 —— 成功与失败长得一模一样(2026-08-19 b7 在切换前核出,dispatch 三十六任自核确认)。
+#    ⛔ 改默认值来切换(理由同 #66);⛔ 用函数读取(driver 只把函数抽进 fns.sh,顶层不抽,用函数会在测试里再撞一次未定义)。
+VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/verify-engine" 2>/dev/null || echo codex)}"
 # #60②(同批拍板,临时形态):新增 C 轨,引擎=Kimi Code CLI(K3,创始人判前端开发能力最强;
 # 风险序 worker<派工<验收——K3 先当 worker 验证纪律 ⛔ 直升验收席)。模型**显式钉死** -m:
 # 实测 default_model 已是 kimi-code/k3,仍显式带=防配置漂移,与 claude/codex 位同一条钉死哲学。
@@ -82,6 +87,12 @@ VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-codex}"
 # ⛔ 在 fresh c 派工语里内联协议要点(内联=第二份事实,会与 AGENTS.md 漂移)。
 KIMI_BIN="${LAIXIN_KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
+# 起 claude 类窗口(dispatch/relay/verify)用的入口名。默认 `claude`=01A 包装器 → 配置目录 ~/.claude-official。
+# 换账号走「换配置目录」⛔ 走 /login(创始人 2026-08-19 实试:/login 换不了账号,只会重登当前目录已有的那个);
+# 路径=复制一份包装器、只改其中 CLAUDE_OFFICIAL_CONFIG_DIR 一行(如 ~/.local/bin/claude-b → ~/.claude-b),
+# 专线注入不受影响(它在下游 run-claude-code.sh 里,⛔ 直调 claude-raw——那才会绕过专线)。
+# ⚠️ 默认保持 `claude` ⛔ 学 #60① 默认换新:切换要显式,理由同 #66(同一条命令在换代前后语义不同而命令字面不变)。
+CLAUDE_LAUNCHER="${LAIXIN_CLAUDE_LAUNCHER:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/claude-launcher" 2>/dev/null || echo claude)}"
 DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
 # #67(2026-08-19 创始人拍板「用 codex」,临时形态):派工窗口引擎化。动机=Claude 周额度实测
 # weekly_all 已用 91%(重置 08-20 00:00 CST),dispatch 是单窗口消耗最大的一个;#60① 已把验收窗
@@ -92,7 +103,7 @@ DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
 #   `resurrect`/boot 链**自动调用**(整机重启后无人值守),默认值变更会在**没有人在场**时生效——
 #   届时"起了个派工窗口"这句话在看板上与从前逐字相同,而里面跑的是另一个引擎、另一套通信路径。
 #   ⇒ 切换只由创始人窗口**显式设环境变量**完成,代码里的默认值不动。
-DISPATCH_ENGINE="${LAIXIN_DISPATCH_ENGINE:-claude}"
+DISPATCH_ENGINE="${LAIXIN_DISPATCH_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/dispatch-engine" 2>/dev/null || echo claude)}"
 # 中继窗口(裁定缺口路由)同档钉死(2026-08-19 创始人直裁,#32):中继做的是**核库快裁**——
 # 要的是可靠核查不是极限推理,与 dispatch/verify 同档。⛔ 继承 /model:中继窗口此前由创始人
 # 手开,模型随手边设置漂移;入流水线托管后必须与另两类托管窗口同一条纪律(起窗命令行显式带 --model)。
@@ -2661,7 +2672,7 @@ cmd_dispatch() {
   for _attempt in 1 2; do
     tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
     sleep 0.5
-    tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" claude -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
+    tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" $CLAUDE_LAUNCHER -n \"$DISPATCH_WIN\" --model $DISPATCH_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
     if vwait_ready "$DISPATCH_WIN" "$dir"; then break; fi
     if [ "$_attempt" = 1 ] && tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" 2>/dev/null | grep -q "Claude Code CLI not found"; then
       board "$(caller_src)" "⚠️ dispatch 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
@@ -2831,7 +2842,7 @@ cmd_relay() {
   for _attempt in 1 2; do
     tmux new-window -t "$SESSION" -n "$RELAY_WIN" -c "$dir" 2>/dev/null || true
     sleep 0.5
-    tmux send-keys -t "$SESSION:$RELAY_WIN" "BU_NAME=\"relay\" BU_CDP_URL=\"http://127.0.0.1:$RELAY_CDP_PORT\" claude -n \"$RELAY_WIN\" --model $RELAY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
+    tmux send-keys -t "$SESSION:$RELAY_WIN" "BU_NAME=\"relay\" BU_CDP_URL=\"http://127.0.0.1:$RELAY_CDP_PORT\" $CLAUDE_LAUNCHER -n \"$RELAY_WIN\" --model $RELAY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
     if vwait_ready "$RELAY_WIN" "$dir"; then break; fi
     if [ "$_attempt" = 1 ] && tmux capture-pane -p -t "$SESSION:$RELAY_WIN" 2>/dev/null | grep -q "Claude Code CLI not found"; then
       board "$(caller_src)" "⚠️ relay 起窗撞上 Claude 自更新二进制替换窗口(#20c),20s 后定向重试一次"
@@ -3267,7 +3278,7 @@ cmd_verify() {
   allow="$(printf '"%s" ' "${VERIFY_ALLOW[@]}")"
   deny="$(printf '"%s" ' "${VERIFY_DENY[@]}")"
   ensure_headless_settings
-  tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" claude -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --allowedTools $allow --disallowedTools $deny" C-m
+  tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" $CLAUDE_LAUNCHER -n \"$w\" --model $VERIFY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --allowedTools $allow --disallowedTools $deny" C-m
   vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-v $slice 40"
   sleep 1
 

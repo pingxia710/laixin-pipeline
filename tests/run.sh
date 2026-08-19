@@ -834,6 +834,10 @@ tout "#44:resurrect --full 的 relay 拉起=恢复既有席位(--resurrect)" "cm
   sed -n "/^cmd_resurrect()/,/^}/p" "$LANE"
 t "#44:resurrect --full 内无裸 cmd_relay/cmd_dispatch/cmd_watchdog 调用" bash -c \
   'body="$(sed -n "/^cmd_resurrect()/,/^}/p" "$0")"; ! grep -qE "^[[:space:]]*(cmd_relay|cmd_dispatch|cmd_watchdog)[ )]" <<< "$body" && ! grep -qE "\|\| (cmd_relay|cmd_dispatch|cmd_watchdog) " <<< "$body"' "$LANE"
+# #44 后续:wd_loop 改命令替换收输出后,起窗函数里的后台块若握着继承的 stdout fd,
+# $( ) 会一直读到后台块退出(验尸块=15s)⇒ 后台块必须显式脱离 stdout/stderr
+t "#44:起窗函数内后台块显式脱离 stdout(防拖住 wd_loop 的命令替换读 15s)" bash -c \
+  'for f in cmd_relay cmd_dispatch; do sed -n "/^${f}()/,/^}/p" "$0" | grep -qE "^[[:space:]]*\) &$" && exit 1; done; :' "$LANE"
 
 echo "== 6l. #45 起窗看板来源=真实调用上下文(⛔ 硬编码「看门狗」) =="
 # 实撞(08-19 11:0x):创始人**手工**拉起 relay,看板记「看门狗 起中继窗口」,relay 第二任据此

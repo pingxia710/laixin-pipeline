@@ -1769,7 +1769,7 @@ cmd_dispatch() {
       _tail="$(tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -2 | tr '\n' ' ' | cut -c1-160 || true)"
       board "$(caller_src)" "⚠️ dispatch 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
     fi
-  ) &
+  ) >/dev/null 2>&1 &   # 显式脱离 stdout/stderr:#44 后 wd_loop 用命令替换收本函数输出,后台块握着继承的 fd 会把 $( ) 读拖到 15s 后才返回
   echo "$DISPATCH_WIN 已起并接管。复核:laixin-lane peek-d 30"
 }
 
@@ -1899,7 +1899,7 @@ cmd_relay() {
       _tail="$(tmux capture-pane -p -t "$SESSION:$RELAY_WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -2 | tr '\n' ' ' | cut -c1-160 || true)"
       board "$(caller_src)" "⚠️ relay 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起;末行:${_tail}"
     fi
-  ) &
+  ) >/dev/null 2>&1 &   # 显式脱离 stdout/stderr:#44 后 wd_loop 用命令替换收本函数输出,后台块握着继承的 fd 会把 $( ) 读拖到 15s 后才返回
   echo "$RELAY_WIN 已起并接管(托管已启用)。复核:laixin-lane peek-r 30"
 }
 

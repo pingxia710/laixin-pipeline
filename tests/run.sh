@@ -2380,6 +2380,21 @@ import re,sys
 s=open(sys.argv[1],encoding="utf-8").read()
 hits=[(i,m.group(0)) for i,l in enumerate(s.split("\n"),1) for m in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)(?=[^\x00-\x7f])",l)]
 print(hits); sys.exit(1 if hits else 0)' "$LANE"
+
+# ── 中转回执销账取 id(2026-08-20 01:4x,11B pingxia-37;零实跑史,04:00 dispatch 切 codex 前核出)──
+# 原写法取标记后第 2 字段当 id,而信封要求写 `【中转回执】<id> 已转出 <to>` ⇒ 取到「已转出」⇒ 永远销不了账 ⇒
+# 10 分钟后假「疑似丢失」告警 + 原样重发 ⇒ 中继代发两次。改为按 outbox 里的 id 匹配,格式无关。
+VRA="$(mktemp -d)"; VRAF="$VRA/fn.sh"; VRAO="$VRA/outbox"
+sed -n "/^relay_ack_id()/,/^}/p" "$LANE" > "$VRAF"
+printf '1700000000|ab12cd34|dispatch|裁定请求\n1700000001|zz99yy88|pingxia-fb|另一条\n' > "$VRAO"
+t "中转回执:信封规定格式 <id> 已转出 <to> 能销到 id(原第 2 字段写法取到「已转出」)" bash -c '
+  source "'"$VRAF"'"; [ "$(relay_ack_id "【中转回执】ab12cd34 已转出 dispatch" "'"$VRAO"'")" = "ab12cd34" ]'
+t "中转回执:id 在第二位也能销(格式无关)" bash -c '
+  source "'"$VRAF"'"; [ "$(relay_ack_id "【中转回执】已转出 zz99yy88" "'"$VRAO"'")" = "zz99yy88" ]'
+t "中转回执:末行不含任何 outbox id ⇒ 空(⛔ 误销别的账)" bash -c '
+  source "'"$VRAF"'"; [ -z "$(relay_ack_id "【中转回执】已转出 dispatch" "'"$VRAO"'")" ]'
+t "中转回执:零匹配时 ev_loop 大声记日志 ⛔ 静默" bash -c 'grep -q "中转回执末行未命中任何 outbox id" "'"$LANE"'"'
+rm -rf "$VRA"
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

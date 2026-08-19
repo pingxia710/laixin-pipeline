@@ -1931,6 +1931,15 @@ ev_hb_cutoff(){  # 心跳截止线(2026-08-18 优化推动清单#1,防重扫假�
   if [ -s "$EV_HB" ]; then echo $(( $(cat "$EV_HB") - EV_TICK*2 )); else date +%s; fi
 }
 
+relay_ack_id(){  # <中转回执末行> <outbox 文件> → stdout=末行各字段里与 outbox 某条 id 匹配的那个(空=无匹配)
+  # 判据与取数分离:纯判定,可直接喂行测。outbox 行格式 epoch|id|目标|摘要(RELAY_OUTBOX)。
+  local line="$1" ob="$2" w
+  [ -s "$ob" ] || return 0
+  for w in ${line#【中转回执】}; do
+    if grep -q "^[0-9]*|${w}|" "$ob" 2>/dev/null; then printf '%s\n' "$w"; return 0; fi
+  done
+  return 0
+}
 ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能再触发;验收方追加结论后自然退出集合)
   # #67③:再扩两个末行标记,仍是**同一套**扫描/基线/心跳截止/spool(⛔ 平行实现):
   #   【中转回执】=relay 已把某条转办发出去了(销 outbox 那条账);
@@ -2119,13 +2128,18 @@ ev_loop(){
       # 扫描/基线/心跳截止线全共用,只有投递文案与 M1 登记不同(回执 ⛔ 进 M1,见 ev_deliver 注)。
       case "$lastline" in
         【中转回执】*)
-          # relay 已转出 ⇒ 销 outbox 那条账(id 在末行第二个字段);⛔ 只报不销(账留着会一直告警)
-          _rid="$(awk '{print $2}' <<< "${lastline#【中转回执】}")"
-          [ -z "$_rid" ] && _rid="$(awk '{print $1}' <<< "${lastline#【中转回执】}")"
-          if [ -n "$_rid" ] && [ -s "$RELAY_OUTBOX" ]; then
+          # relay 已转出 ⇒ 销 outbox 那条账;⛔ 只报不销(账留着会一直告警)
+          # 🔴 2026-08-20 01:4x(11B pingxia-37,04:00 dispatch 切 codex 前核 relay 收方半边时发现,零实跑史):原写法取标记后
+          #   **第 2 字段**当 id,而信封 :3227 要求中继逐字写 `【中转回执】<id> 已转出 <to>` ⇒ 取到的是「已转出」⇒ 按信封
+          #   写对了也永远销不了账 ⇒ 10 分钟后 dispatch 收「疑似丢失」告警并原样重发 ⇒ 中继代发两次——而「我写了回执」
+          #   与「回执生效」在中继眼里同形。改为:在标记后各字段里找与 outbox 某条 id 匹配的那个(格式无关),零匹配大声记。
+          _rid="$(relay_ack_id "$lastline" "$RELAY_OUTBOX")"
+          if [ -n "$_rid" ]; then
             grep -v "^[0-9]*|${_rid}|" "$RELAY_OUTBOX" > "$RELAY_OUTBOX.new" 2>/dev/null
             mv -f "$RELAY_OUTBOX.new" "$RELAY_OUTBOX"
             ev_log "#67 转办销账:$_rid(relay 已确认转出)"
+          else
+            ev_log "⚠️ 中转回执末行未命中任何 outbox id(末行:${lastline:0:80};outbox $(wc -l < "$RELAY_OUTBOX" 2>/dev/null | tr -d ' ') 条)——不销账,10 分钟后会告警;中继核末行是否带 id"
           fi
           ev_deliver "回执" "【事件】中转回执落盘:$f
 末行:$lastline

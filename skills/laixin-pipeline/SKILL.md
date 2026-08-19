@@ -586,31 +586,35 @@ dispatch/relay,跨通道消息发不到,它没有任何可通信对象却照样�
 # 1) 通道是预分配的,先看自己的:
 echo "$BU_NAME $BU_CDP_URL"          # 端口取 URL 末段
 PORT="${BU_CDP_URL##*:}"
-# 2) 用该端口起自己的 headless Chrome(独立临时 profile):
-# 🔴 必须 nohup + disown,⛔ 裸 `&`——那正是 #42「lane 侧自起的后台进程活不过命令会话」
-#    的成因:裸 & 起的 Chrome 会随本条命令的会话一起被收走,**短暂输出 DevTools 地址随即全空**,
-#    下一条命令 curl 就已经连不上了(2026-08-19 三次实撞:b86 开工即停车 · 11B 探针原样重现)。
-nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --headless=new --remote-debugging-port="$PORT" \
-  --user-data-dir="$(mktemp -d)" --no-first-run about:blank >/dev/null 2>&1 &
-disown
-sleep 2 && curl -s "http://127.0.0.1:$PORT/json/version" | head -1   # 有 JSON 回显=通道就绪
-# ⚠️ 这一步**无回显就是没起成**,⛔ 往下走也 ⛔ 判「环境坏/变量为空」——回到本块重起一次。
+# 2) 两态(2026-08-20 立):端口已监听=派工侧预起的常驻实例已就位 ⇒ 直接用,⛔ 自起、⛔ 第 4 步 pkill
+#    (pkill 会打掉派工方的常驻实例=#42 vdown/cdp_sweep 冲突的收方侧);无监听才自起。
+SELF_STARTED=""
+if curl -s "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; then
+  : # 常驻实例已在,直接进第 3 步
+else
+  # 🔴 自起必须 nohup + disown,⛔ 裸 `&`——裸 & 起的 Chrome 随本命令会话被收走(#42,b86 开工即停车 · 11B 探针原样重现)。
+  nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    --headless=new --remote-debugging-port="$PORT" \
+    --user-data-dir="$(mktemp -d)" --no-first-run about:blank >/dev/null 2>&1 &
+  disown; SELF_STARTED=1
+  sleep 2 && curl -s "http://127.0.0.1:$PORT/json/version" | head -1   # 有 JSON 回显=通道就绪
+  # ⚠️ 无回显就是没起成,⛔ 往下走也 ⛔ 判「环境坏/变量为空」——回到本分支重起一次。
+fi
 # 3) browser-harness 自动读环境里的 BU_NAME/BU_CDP_URL,直接用:
 browser-harness <<'PY'
 new_tab("http://localhost:<你的应用端口>/<路径>")
 wait_for_load()
 print(page_info())   # 采集前先断言 URL(上节硬规则)
 PY
-# 4) 验收收尾:杀掉自己的 Chrome,别留孤儿进程(创始人:用完要关):
-pkill -f "remote-debugging-port=$PORT"
+# 4) 验收收尾:仅当本段自起时才杀,别留孤儿进程(创始人:用完要关);走「已监听」那支的 ⛔ pkill(那是别人的常驻实例):
+[ -n "$SELF_STARTED" ] && pkill -f "remote-debugging-port=$PORT"
 ```
 
 `vdown`/`down`/`fresh`/`halt` 回收窗口时会**机器兜底清扫同端口的 headless**(`cdp_sweep`)——兜底存在不豁免第 4 步,自己关是本分。
 
 ⚠️ **本机没有 `setsid`——想让进程脱离会话时 ⛔ 写 `setsid nohup …`,用 `nohup … &` 加 `disown`**(2026-08-19 dispatch 第三十三任实撞报修,中继 relay 第二任实测 `command -v setsid` 零输出后落卡)。`setsid` 是 Linux util-linux 的命令,macOS 不带 ⇒ **失败形态是「整条命令 exit 1、根本没跑」,不是「进程起来了又死了」**,而排查时人会一路往 Chrome/端口/profile 上找。⭐ **这是预防型落卡**:全库与全部技能卡此前对 `setsid` **零命中**(即没有人被它坑过的记录),立它的理由不是纠错,是它属于**「本机没有、但读起来完全合理」**那一类——任何人想让进程活过当前会话都会自然想到它,而它的失败方式有误导性。**成本一行,收益是省掉一次找错方向的排查。**
 
-📌 **相关但不同的一件事(⛔ 混为一谈)**:lane 侧「后台进程活不过命令会话」是**环境级进程回收**,与 `setsid` 存不存在无关——已裁定走 `fresh` 时预起常驻 headless(11B #42;该修法落地时**宪法头第 12 条那段必须同轮改**,否则开发方收尾 `pkill` 会打掉派工方的常驻实例)。上面这条治的是**你写的命令没跑起来**,#42 治的是**跑起来了但活不过命令边界**。
+📌 **相关但不同的一件事(⛔ 混为一谈)**:lane 侧「后台进程活不过命令会话」是**环境级进程回收**,与 `setsid` 存不存在无关——已裁定走 `fresh` 时预起常驻 headless(11B #42;该修法落地时**宪法头第 12 条那段必须同轮改** —— ✅ 2026-08-20 已把宪法头模板第 12 条与本走查段双双改成两态:端口已监听⇒直接用⛔pkill,无监听才自起自清;⚠️ 仍未做的是 `cdp_sweep` 白名单——vdown/halt 回收窗口时仍按端口扫,会扫掉预起的常驻实例=#42 收方侧缺口,归 fresh --with-headless 落地一并做)。上面这条治的是**你写的命令没跑起来**,#42 治的是**跑起来了但活不过命令边界**。
 
 细节疑难查 browser-harness 官方 interaction-skills/connection.md;⛔ 不设 BU_NAME 单给 BU_CDP_URL(daemon 按名单例,会命中别人的默认 daemon——本节案发机理)。
 

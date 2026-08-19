@@ -2182,6 +2182,32 @@ t "#60①:outside_sessions 空 sock 报 0 ⛔ 负数(tty 配对 ⛔ 按窗口数
   [ "$(outside_sessions)" = "0" ]'
 rm -rf "$V60"
 
+# ── 通道一致性(账号隔离,2026-08-19;创始人「claude 和 claude-b 分开通道」)────────────────
+# 实撞:19:34~19:58 方案窗口已在 .claude-b 而三件套仍在 .claude-official ⇒ 两侧互不可见、
+# SendMessage 发不到,**而两边各自都"一切正常"、零告警**,是事后复盘拓扑才发现的。
+# ⇒ 判定函数只读 stdin ⛔ 引用顶层变量(#75:顶层不被抽取,set -u 下静默退出)——
+#   下面五条能在**裸 source**(不补任何桩)下跑通,本身就是那条约束的绊线。
+VCH="$(mktemp -d)"; VCHF="$VCH/fn.sh"
+sed -n "/^channel_verdict()/,/^}/p" "$LANE" > "$VCHF"
+tout "通道:同目录判一致" "通道一致" bash -c '
+  source "'"$VCHF"'"; printf "1 /Users/x/.claude-b\n2 /Users/x/.claude-b\n3 /Users/x/.claude-b\n" | channel_verdict'
+tout "通道:跨目录判分裂(半切形态)" "通道分裂" bash -c '
+  source "'"$VCHF"'"; printf "1 /Users/x/.claude-b\n2 /Users/x/.claude-official\n" | channel_verdict'
+tout "通道:分裂结论须点明「静默」⛔ 只说不一致" "静默断链" bash -c '
+  source "'"$VCHF"'"; printf "1 /a\n2 /b\n" | channel_verdict'
+tout "通道:空输入报不适用 ⛔ 报一致(那是假绿)" "不适用" bash -c '
+  source "'"$VCHF"'"; printf "" | channel_verdict'
+t "通道:rc 三态可分辨(0一致/1分裂/2无数据)" bash -c '
+  source "'"$VCHF"'"
+  printf "1 /a\n2 /a\n" | channel_verdict >/dev/null; [ $? -eq 0 ] || exit 1
+  printf "1 /a\n2 /b\n" | channel_verdict >/dev/null; [ $? -eq 1 ] || exit 1
+  printf "" | channel_verdict >/dev/null; [ $? -eq 2 ] || exit 1'
+tout "通道:取数走 sock 名 ⛔ pgrep(调用者看不见自己那个 claude 进程)" "CC_SOCKS_DIR" \
+  sed -n "/^session_config_dirs()/,/^}/p" "$LANE"
+tout "通道:doctor 已接入该检查(⛔ 只有函数没人调)" "channel_verdict" \
+  sed -n "/^cmd_doctor()/,/^}/p" "$LANE"
+rm -rf "$VCH"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

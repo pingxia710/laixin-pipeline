@@ -244,6 +244,20 @@ ensure_session() {
   tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n "hub" -c "$HOME"
 }
 
+# ── codex 席位起窗的**唯一构造点**(2026-08-19 立,#67 与缺口① 的现场)────────────────
+# 此前 codex 起窗写在两处且**逐字相同**:cmd_dispatch(派工窗口 codex 形态)与 cmd_verify
+# (方案 B 的 codex 验收窗)。两处各自维护 ⇒ 改 BU_* 注入要改两遍,**漏一遍就是两套行为而
+# 看板上长得一模一样**(与 #66 同族)。
+# 🔴 尤其要紧:`BU_NAME`/`BU_CDP_URL` 的这个前缀注入形态,正是「codex 窗口里 Bash 读不到
+#   BU_*」那条未结悬案(暂停基点缺口①)的现场 ⇒ **悬案一旦判死,修法必须一次覆盖两个席位**;
+#   收成一个构造点是"能被一次修好"的前提。⛔ 在调用点自行拼这两个变量。
+# ⚠️ claude 席位(dispatch/relay/verify 的 claude 形态)**本次不动** —— 它们的启动串各带
+#   不同的 --model/--allowedTools/--disallowedTools,合并收益小而改动面大;且脚本既有纪律
+#   是「claude 路径原样保留零行为变化」。
+codex_launch_cmd(){  # <BU_NAME> <cdp端口> <mcp关闭串> → stdout=完整启动命令串
+  printf 'BU_NAME="%s" BU_CDP_URL="http://127.0.0.1:%s" codex %s' "$1" "$2" "$3"
+}
+
 target() { echo "$SESSION:$(win "$1")"; }
 
 has_window() {
@@ -1631,6 +1645,16 @@ cmd_doctor() {
     [ "${vs:-0}" -gt 0 ] && ok "在跑的验收窗口:$vs 个" || ok "无在跑的验收窗口"
   else bad "tmux 会话 $SESSION 不存在"; fi
 
+  # 通道一致性(账号隔离):⛔ 放进上面的 has-session 块 —— 会话分区与 tmux 无关,
+  # 无 tmux 时(方案窗口 + 手开窗口)分裂同样成立且同样静默。
+  local _chv _chr
+  _chv="$(session_config_dirs | channel_verdict)"; _chr=$?
+  case "$_chr" in
+    0) ok "$_chv" ;;
+    1) bad "🔴 $_chv —— 先把落单的一方迁到同一配置目录(换账号走包装器入口,⛔ 走 /login)" ;;
+    *) echo "  ℹ️ 通道一致性:$_chv" ;;
+  esac
+
   echo "== 5. 发车位硬闸门(A 轨主树必须干净) =="
   if [ -d "$DEFAULT_DIR/.git" ]; then
     local dirty; dirty="$(git -C "$DEFAULT_DIR" status -s -- '*.py' '*.ts' '*.tsx' 2>/dev/null | head -5)"
@@ -2630,6 +2654,40 @@ outside_sessions() {
   echo $(( total - inside ))
 }
 
+# ── 通道一致性(账号隔离,2026-08-19 立;创始人「claude 和 claude-b 分开通道」)────────────
+# 实证:窗口互见(ListAgents)与 SendMessage 寻址按 **CLAUDE_OFFICIAL_CONFIG_DIR 分区** ——
+# 方案窗口 19:3x 在 .claude-b 时看不到尚在 .claude-official 的 dispatch/relay;三件套 19:58
+# 迁入同目录后三方对称互见(dispatch/relay/11B 各见另外两个,且各不含自己)。
+# 🔴 危害形态与 #75/#66 同族:**半切期间两边各自都"一切正常"**,而方案窗口与派工/中继之间
+#   的通道已经断了、零告警 ⇒ 成功与失败长得一模一样。2026-08-19 19:34~19:58 真实发生过一次,
+#   无人察觉,是事后复盘拓扑才发现的 ⇒ **必须由机器判,⛔ 靠人记得"我切全了没"**。
+# ⛔ 用 pgrep 找会话进程:**调用者看不见自己所在会话的 claude 进程**(当日三方对称实证:
+#   dispatch/relay/11B 各自跑 `pgrep -f claude` 都缺自己那个 pid,relay 因此把污染误判为
+#   "没复现")⇒ 走 sock 名即 PID;`ps` 按 pid 读是可靠的(relay 实测读到自己 781 字符命令行)。
+session_config_dirs() {  # → stdout 每行 "<pid> <配置目录>";读不到该变量的会话跳过
+  local sk pid dir
+  for sk in "$CC_SOCKS_DIR"/*.sock; do
+    [ -S "$sk" ] || continue
+    pid="$(basename "$sk" .sock)"
+    ps -p "$pid" >/dev/null 2>&1 || continue
+    dir="$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
+           | grep -m1 '^CLAUDE_OFFICIAL_CONFIG_DIR=' | cut -d= -f2-)"
+    [ -n "$dir" ] && printf '%s %s\n' "$pid" "$dir"
+  done
+}
+
+# 判定与取数**分离**:本函数只读 stdin、⛔ 引用任何顶层变量 —— #75 的教训逐字适用
+# (顶层变量不被绊线的函数抽取带走,引用它会在测试里静默撞 set -u)⇒ 两个分支都可直接喂数据测。
+channel_verdict() {  # stdin=每行 "<pid> <配置目录>" → stdout=一行人读结论;rc 0=一致 1=分裂 2=无数据
+  local tally n
+  tally="$(awk '{print $2}' | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')"
+  n="$(wc -w <<< "$tally" | tr -d ' ')"
+  if [ "$n" -eq 0 ]; then echo "未读到任何会话的配置目录 ⇒ 不适用"; return 2; fi
+  if [ "$n" -eq 1 ]; then echo "通道一致:${tally% }"; return 0; fi
+  echo "通道分裂:活跃 claude 会话分处 $n 个配置目录 ⇒ 跨目录 ListAgents 互不可见、SendMessage 发不到(静默断链,⛔ 等人发现)。分布:${tally% }"
+  return 1
+}
+
 # 防撞:两个派工窗口同时动 lane 会把 Codex 上下文搞乱(2026-08-13 实际险些发生,靠人工提醒才没撞)
 check_rival_dispatch() {
   rival_holds_dispatch || return 0
@@ -2693,7 +2751,7 @@ cmd_dispatch() {
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
   tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
   sleep 0.5
-  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "BU_NAME=\"dispatch\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" codex $_mcp_off" C-m
+  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "$(codex_launch_cmd "dispatch" "$_cdp_port" "$_mcp_off")" C-m
   vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"
   fi
   sleep 1
@@ -3318,7 +3376,7 @@ EOF
   #   events 复用交付监听同机制投递 dispatch;③红线约束进指令本体——codex 无 disallowedTools 等价物,
   #   ⛔ push/merge/reset --hard/动 lane 靠指令明写+dispatch 合并侧校验(evidence 复查+merge-guard)兜底。
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
-  tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" codex $_mcp_off" C-m
+  tmux send-keys -t "$SESSION:$w" "$(codex_launch_cmd "$bu" "$port" "$_mcp_off")" C-m
   vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-v $slice 40"
   sleep 1
 

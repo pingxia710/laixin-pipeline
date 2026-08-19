@@ -145,6 +145,54 @@ def clean_title(text):
     return text.strip()
 
 
+# ── #61 (a):锚句被三级标题切走 —— 独立预扫闸(⛔ 侵入切节逻辑与四段判据链)──────────────
+# 失败样本(2026-08-19 方案窗口第十二任写收班盘点,relay 四任报):#53「盘点节 ⛔ 三级标题」已落卡,
+# **下一个人照样踩** —— 锚句写进 `###` 子节,按既有「### 也切节」规则,锚连同其后条目被切离主节 ⇒
+# `##` 主节自身零条目、整节不进统计,而**页面看起来完全合法、写的人零报错**(失败静默)。
+# 本工具原本只报得出**症状**(「白名单节解析出 0 条」/未知节零条目),⛔ 指病灶,收班卡明写「指症状
+# 不指病灶」⇒ 本闸把症状升成病灶,并给出「改哪一行」。
+#
+# 判据**免语义**(⛔ 看标题含不含「收班盘点」):#41 已实测标题在两型盘点节上取值相同而正确动作相反
+# ⇒ 标题不可用。改用结构形态,两条缺一不可:
+#   ①`##` 节**自身** body(不含 ### 子节)零 ENTRY 条目;且
+#   ②其某 `###` 子节 body 含**行首**锚 AUTO_ANCHOR。
+# 只看 ② 会误伤「主节自己也有条目、子节另起一队」的合法写法;只看 ① 会误伤纯说明节(它们本来就
+# 既没条目也没锚)。⛔ 误伤 §五之二:它是 `## 五、新拓扑首日复盘` 下的 ###,**无锚句**且主节自身
+# 有条目 ⇒ ①② 都不中(真页实测)。
+# 行号是本闸的交付物,而现有 sections 结构不带行号 ⇒ 独立函数走 enumerate 重扫一遍,**零侵入**既有
+# ①BLACK→②WHITE→③行首锚→④推断 判据链(改判据链=拿本工具唯一还在正确工作的部分去冒险)。
+def inventory_cut_check(lines):
+    """返回 [(## 节名, ## 行号, ### 子节名, ### 行号, 锚句行号), ...];空列表 = 未命中。"""
+    hits, sec, sub = [], None, None
+
+    def close(s):
+        if not s or s[2]:            # s[2] = ## 自身 body 的条目数;>0 ⇒ 锚没被切走,不是本闸的事
+            return
+        for sub_name, sub_ln, anchor_ln in s[3]:
+            if anchor_ln:
+                hits.append((s[0], s[1], sub_name, sub_ln, anchor_ln))
+
+    for no, ln in enumerate(lines, 1):
+        m = HEADING.match(ln)
+        if m:
+            if len(m.group(1)) == 2:                    # ## ⇒ 结上一节、开新节
+                close(sec)
+                sec, sub = [strip_paren(m.group(2)), no, 0, []], None
+            elif sec is not None:                       # ### ⇒ 开子节(挂在当前 ## 下)
+                sec[3].append([strip_paren(m.group(2)), no, 0])
+                sub = sec[3][-1]
+            continue
+        if sec is None:                                 # 页首(第一个 ## 之前)不参与
+            continue
+        if sub is None:
+            if ENTRY.match(ln):
+                sec[2] += 1
+        elif not sub[2] and anchored(ln, AUTO_ANCHOR):  # 锚同样只认行首(三约束③,同 AUTO_ANCHOR)
+            sub[2] = no
+    close(sec)
+    return hits
+
+
 def main():
     page = os.environ.get("LX_OPT_PAGE") or ""
     argv = sys.argv[1:]
@@ -161,6 +209,21 @@ def main():
     except OSError as e:                                    # 读不了要自曝,⛔ 静默出空报告
         print(f"opt-status: 数据源失效自曝——复盘页读取失败:{e}", file=sys.stderr)
         return 2
+
+    # ── #61 (a) 预扫:先报病灶再出数 ──────────────────────────────────────────────
+    # ⚠️ 必须打在**报告最前面** ⛔ 末尾:跑本工具的人正是来看「优化做完了吗」的,而本闸命中意味着
+    #    下面那份统计**漏了一整节** —— 警告排在数字后面,读数的人不必读到它就能拿走偏乐观的结论
+    #    (#20⑤ doctor 假绿 / #41 掩蔽性同族;那一课的结论是「警示要长在人一定会读到的位置」)。
+    cut = inventory_cut_check(lines)
+    if cut:
+        print("⛔ 锚句被三级标题切走(收班卡「盘点节 ⛔ 三级标题」;#53 落卡、#61 裁定机器闸)"
+              "——该 ## 节自身零条目,锚句与其后条目被 ### 切进子节 ⇒ **整节不进下面的统计**,"
+              "而页面看起来完全合法、写的人零报错:")
+        for _name, _ln, _sub, _sln, _aln in cut:
+            print(f"    ## {_name}(第 {_ln} 行)自身零条目;锚句落在 ### {_sub}"
+                  f"(第 {_sln} 行)之下的第 {_aln} 行")
+        print("   修法:锚句与其后条目移回 ## 节自身正文,子标题改加粗行 ⛔ 用 ###。")
+        print()
 
     # ── 按 ##/### 切节。### 也切:§五之二 是 ### 且挂在 §五 之下,不切就会把它的
     #    「跟踪数 1-3」并进 §五 的优化队列(非优化项混入,本条立项根因之二)。 ──
@@ -274,6 +337,8 @@ def main():
             print(f"    [{n}] {s}")
         rc = 2
     if degraded:
+        rc = 2
+    if cut:                     # #61 (a):病灶已在最前面报过,退非零 ⇒ 调用方脚本也拦得住
         rc = 2
     # ⛔ 未销数不改退出码:**报告非闸门**(与 #28 copy-audit 同规矩)。
     return rc

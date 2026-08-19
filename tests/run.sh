@@ -1081,6 +1081,30 @@ t "#25:release_stale——软链指向仓库工作树(开发直连态)⇒ 不适
   source "$1/fn.sh"
   export LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_RELEASE_BIN="$1/bin/laixin-lane" LAIXIN_RELEASE_DIR="$1/rel"
   ! release_stale' 25 "$R25"
+
+# ⭐ #59:发布单元=运行单元——helper(bin/*.py)全集随行,差集自检,版本目录隔离
+printf '#!/bin/bash\necho v4-good\n' > "$R25/repo/bin/laixin-lane"   # 前序 HEAD 是坏语法版,先提交好版
+git -C "$R25/repo" add bin/laixin-lane
+git -C "$R25/repo" -c user.email=t@t -c user.name=t commit -qm v4good
+printf 'print("h1")
+' > "$R25/repo/bin/opt_status.py"
+printf 'print("h2")
+' > "$R25/repo/bin/copy_audit.py"
+git -C "$R25/repo" add bin/opt_status.py bin/copy_audit.py
+git -C "$R25/repo" -c user.email=t@t -c user.name=t commit -qm helpers
+tout "#59:发布回显 helper 全集随行" "helper 全集随行" "${RENV[@]}" "$LANE" release
+t "#59 绊线:发布目录 git 内 bin/*.py 差集为空,且与主脚本同目录(dirname 可解)" bash -c '
+  tgt="$(readlink "$1/bin/laixin-lane")"; d="$(dirname "$tgt")"
+  [ -f "$d/opt_status.py" ] && [ -f "$d/copy_audit.py" ] && grep -q h1 "$d/opt_status.py"' 59 "$R25"
+t "#59 绊线:两次发布版本目录隔离(旧版本目录的 helper 不被新发布覆盖)" bash -c '
+  old_d="$(dirname "$(readlink "$1/bin/laixin-lane")")"
+  printf "print(\"h1v2\")\n" > "$1/repo/bin/opt_status.py"
+  git -C "$1/repo" add bin/opt_status.py
+  git -C "$1/repo" -c user.email=t@t -c user.name=t commit -qm h1v2
+  env LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_RELEASE_BIN="$1/bin/laixin-lane" LAIXIN_RELEASE_DIR="$1/rel" "$2" release >/dev/null 2>&1
+  new_d="$(dirname "$(readlink "$1/bin/laixin-lane")")"
+  [ "$old_d" != "$new_d" ] && grep -q "h1\"" "$old_d/opt_status.py" && grep -q h1v2 "$new_d/opt_status.py"' 59 "$R25" "$LANE"
+
 rm -rf "$R25"
 # 结构绊线:doctor 挂了发布代龄提示(提示级 wrn ⛔ 强制);原子换链走「临时链+mv」⛔ ln -sfn 直写
 tout "#25:doctor 挂发布代龄检查" "发布版落后仓库已提交版" sed -n "/^cmd_doctor/,/^cmd_[a-z_]*()/p" "$LANE"
@@ -1091,6 +1115,7 @@ t "#25 绊线:换链=临时链+mv 原子替换,⛔ ln -sfn 直写正式链(macOS
   grep -q "ln -s \"\$rel\" \"\$ltmp\"" <<< "$body" || exit 1
   grep -q "mv -f \"\$ltmp\" \"\$lbin\"" <<< "$body" || exit 1
   ! grep -q "ln -sfn" <<< "$body"' "$LANE"
+
 
 echo "== 8b. #58 盲补 Enter 改正向信号(冷启动≠消息被吞;fixture 桩,零真实按键) =="
 # 机理:#37 的补偿(补 Enter)只看「画面有无变化」,claude 冷启动「只思考不产字」与「Enter 真丢」

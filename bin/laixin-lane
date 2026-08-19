@@ -1140,9 +1140,14 @@ cmd_release(){  # #25 部署原子化:把仓库**已提交版**发布到版本�
     die "⛔ 工作树不干净,拒绝发布(发布=已提交态,与 backup 只推已提交同哲学;先 commit/stash):
 $(head -5 <<< "$dirty")"
   fi
-  mkdir -p "$rel_dir" || die "建发布目录失败:$rel_dir"
-  local rel="$rel_dir/laixin-lane-$hash" tmp
-  tmp="$(mktemp "$rel_dir/.rel.XXXXXX")" || die "建临时文件失败:$rel_dir"
+  # #59(2026-08-19 复工试火第 1 条当场翻车,relay 四任报+dispatch 判据):**发布单元必须等于运行单元**——
+  # 子命令走 readlink -f "$0" 取同级 .py(opt_status/copy_audit),首版只复制主脚本 ⇒ 发布目录里没有它们,
+  # 两条子命令响亮不可用;tests 全绿零分辨力(fixture 跑仓库布局,「发布目录」在测试里不存在)。
+  # 修法=版本化目录 <hash>/ 装主脚本+**枚举 git 内 bin/*.py 全集**(⛔「修这两个」——第三个会在某次收班才现形),
+  # 差集自检,软链指目录内主脚本 ⇒ dirname 解析落版本目录,零改子命令、多版本零错配(旧进程配旧 helper)。
+  local rel_home="$rel_dir/$hash" rel="$rel_dir/$hash/laixin-lane" tmp
+  mkdir -p "$rel_home" || die "建发布目录失败:$rel_home"
+  tmp="$(mktemp "$rel_home/.rel.XXXXXX")" || die "建临时文件失败:$rel_home"
   # 从 git 对象取已提交版(⛔ 拷工作树文件:干净判定与拷贝之间仍有窗口,git show 无此竞态)
   if ! git -C "$repo" show "HEAD:bin/laixin-lane" > "$tmp" 2>/dev/null; then
     rm -f "$tmp"; die "读已提交版失败(HEAD:bin/laixin-lane)"
@@ -1151,6 +1156,21 @@ $(head -5 <<< "$dirty")"
   bash -n "$tmp" 2>/dev/null || { rm -f "$tmp"; die "⛔ 已提交版语法检查未过(bash -n),拒绝发布"; }
   chmod +x "$tmp"
   mv -f "$tmp" "$rel" || { rm -f "$tmp"; die "落发布文件失败:$rel"; }   # 同目录 rename,半写态不可见
+  # helper 全集随行(枚举 git 清单 ⛔ 硬编码文件名)+ 差集自检(缺一即撤本次发布目录拒绝换链)
+  local py helpers=""
+  while IFS= read -r py; do
+    [ -n "$py" ] || continue
+    if ! git -C "$repo" show "HEAD:$py" > "$rel_home/$(basename "$py")" 2>/dev/null; then
+      rm -rf "$rel_home"; die "⛔ 读 helper 失败($py),已撤本次发布目录拒绝换链"
+    fi
+    helpers="$helpers $(basename "$py")"
+  done <<< "$(git -C "$repo" ls-tree --name-only "HEAD" -- bin/ | grep '\.py$' || true)"
+  local missing=""
+  while IFS= read -r py; do
+    [ -n "$py" ] || continue
+    [ -f "$rel_home/$(basename "$py")" ] || missing="$missing $(basename "$py")"
+  done <<< "$(git -C "$repo" ls-tree --name-only "HEAD" -- bin/ | grep '\.py$' || true)"
+  [ -z "$missing" ] || { rm -rf "$rel_home"; die "⛔ 发布目录 helper 差集非空:$missing——拒绝换链(#59)"; }
   [ ! -d "$lbin" ] || die "⛔ $lbin 解析为目录——mv 会移进去而非替换,人工处理"
   mkdir -p "$(dirname "$lbin")" || die "建软链目录失败"
   local old ltmp; old="$(readlink "$lbin" 2>/dev/null || echo "(无/非软链)")"
@@ -1162,7 +1182,7 @@ $(head -5 <<< "$dirty")"
   echo "     旧 → $old"
   echo "     新 → $(readlink "$lbin")"
   echo "   运行中的旧进程握旧 inode 不受影响;常驻循环(ev/wd)换代仍需 stop && start(#20⑥)"
-  echo "   已核:工作树干净(已提交态) · bash -n 语法 · 同目录原子换链(#50 通过态可见)"
+  echo "   已核:工作树干净(已提交态) · bash -n 语法 · 同目录原子换链 · helper 全集随行(差集空:${helpers:-无 py helper})(#50/#59)"
 }
 
 cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史

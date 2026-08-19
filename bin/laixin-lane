@@ -40,6 +40,7 @@
 #   laixin-lane audit-queue          台账巡检(排队/验收中 × 看板合并记录,揪陈旧行)
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
+#   laixin-lane opt-status [--page P] 优化条目销号率(#33):按节独立统计各队列共/销号/未销+未销条目点名
 set -euo pipefail
 
 # ---- 配置(全部可被环境变量或 config 文件覆盖;默认值=来信平台) ----
@@ -2166,6 +2167,14 @@ cmd_copy_audit() {
   LX_REPO="$DEFAULT_DIR" LX_KB="$KB" python3 "$(dirname "$self")/copy_audit.py" "$@"
 }
 
+# opt-status(#33):优化条目销号率按节统计——逻辑全在 bin/opt_status.py(检查器三约束见其头注),
+# 这里只做接线(同 copy-audit:软链启动也要找得到兄弟文件,readlink -f 解链)。
+OPT_PAGE="${LAIXIN_OPT_PAGE:-$HOME/Obsidian/项目入口/laixin开发流水线/知识库/wiki/运行复盘与优化推动-20260818.md}"
+cmd_opt_status() {
+  local self; self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  LX_OPT_PAGE="$OPT_PAGE" python3 "$(dirname "$self")/opt_status.py" "$@"
+}
+
 # #19-(a) 在班行为续期:派工窗口的日常动作不止 send——持有者跑任一 duty 命令即证明在班。
 # 身份校验在 lock_renew_if_holder 内(调用者==持有者才续),其余窗口跑同名命令零影响。
 case "${1:-}" in
@@ -2185,6 +2194,7 @@ case "${1:-}" in
   audit-queue) cmd_audit_queue ;;  # 台账巡检:排队/验收中片名×看板合并记录,揪陈旧行(接班/交班各跑一次)
   facts-fresh) cmd_facts_fresh ;;  # 事实表表头 main@commit×当前 main+codegraph sync(kb-commit 涉总表时自动跑;#14)
   copy-audit) shift; cmd_copy_audit "$@" ;;  # 词表覆盖率审计(#28):三列清单+统计,报告非闸门零命中不改退出码
+  opt-status) shift; cmd_opt_status "$@" ;;  # 优化条目销号率(#33):按节独立统计,未知节/解析失效自曝退非零
   backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
   kb-commit) shift; cmd_kb_commit "$@" ;;    # 知识库提交守卫:只收文件路径拒目录旗标(P1-2 互扫防线)
   install-backup) cmd_install_backup ;;      # 每小时备份 launchd

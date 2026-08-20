@@ -1758,6 +1758,13 @@ cmd_doctor() {
     else ok "近 400 条看板交班条与复盘页盘点节全配对"; fi
   else wrn "复盘页或看板不可读,本项跳过(跳过 ⛔ 当通过)"; fi
 
+  echo "== 9. 席位活性(#130:注册表在班的 tmux 外席位须有活会话;tmux 内归看门狗) =="
+  local _sl9
+  _sl9="$(seat_liveness 2>/dev/null)"
+  if [ -n "$_sl9" ]; then
+    while IFS='|' read -r _r9 _n9 _w9; do [ -n "$_n9" ] && wrn "「${_r9}」(${_n9})${_w9}——可能已崩,请人工核"; done <<< "$_sl9"
+  else ok "注册表在班席位活性全绿(或全为 tmux 托管/待接)"; fi
+
   echo
   echo "体检结果:$fail 个错误 / $warn 个警告"
   [ "$fail" -eq 0 ] && echo "可以开工。" || echo "先修错误再开工。"
@@ -2058,6 +2065,38 @@ handover_unpaired(){  # <看板尾部文件> <复盘页文件> → stdout=有交
       done
 }
 
+seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死席一行;全活零输出(#130,2026-08-20 十五任优化轮)
+  # 失败样本=11B pingxia-37 晨退无接班登记零告警,靠 relay 人工 ListAgents 发现——tmux 外窗口无看门狗,
+  # 「窗口崩了」与「窗口安静」在一切机器眼里同形。射程=注册表「当前在班」表里 tmux 外的席位;
+  # tmux 托管席(单元格含「看门狗托管」)由看门狗管,本函数跳过;标「待接」不算死(交接中属正常)。
+  # 判活=名下有 sessions/*.json 且其 pid 的 socket 存在且 updatedAt 距今 < 45 分钟(三跳逐跳可见,通则五)。
+  local reg="${1:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-窗口角色注册表.md}"
+  local sess_dir="${LAIXIN_CC_SESS:-$HOME/.claude-b/sessions}"
+  [ -f "$reg" ] || { echo "注册表不可读|—|跳过(⛔ 当通过)"; return 0; }
+  grep -E '^\| \*\*' "$reg" | while IFS= read -r row; do
+    local cell name role
+    # 分列用 cut ⛔ awk -F 正则(转义两层易炸;首版即因此取错列造假阴性,受控真火抓出)
+    role="$(printf '%s' "$row" | cut -d'|' -f2 | sed -E 's/[*]//g; s/^ +| +$//g' | cut -c1-20)"
+    cell="$(printf '%s' "$row" | cut -d'|' -f3)"
+    printf '%s' "$cell" | head -c 200 | grep -q '看门狗托管' && continue
+    printf '%s' "$cell" | head -c 90 | grep -q '待接' && continue
+    printf '%s' "$cell" | head -c 200 | grep -q '在班' || continue
+    name="$(printf '%s' "$cell" | grep -oE '`[a-z0-9-]+`' | head -1 | tr -d '\`')"
+    [ -n "$name" ] || continue
+    local hit=0 j pid upd now
+    now="$(date +%s)"
+    for j in "$sess_dir"/*.json; do
+      [ -f "$j" ] || continue
+      grep -q "\"name\":\"$name\"" "$j" || continue
+      pid="$(basename "$j" .json)"
+      [ -S "${LAIXIN_CC_SOCKS:-/tmp/cc-socks}/$pid.sock" ] || continue
+      upd="$(grep -oE '"updatedAt":[0-9]+' "$j" | grep -oE '[0-9]+' | head -1)"
+      [ -n "$upd" ] && [ $(( now - upd/1000 )) -lt 2700 ] && { hit=1; break; }
+    done
+    [ "$hit" = 1 ] || printf '%s|%s|注册表标在班但无活会话(socket 缺或心跳超 45 分钟)\n' "$role" "$name"
+  done
+}
+
 ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付(事实)暂存,告警(瞬时)丢弃
   local kind="$1"; shift
   local text="$*"
@@ -2265,6 +2304,19 @@ $(printf '%s' "$_dl" | cut -c1-360)…
         done
       fi
       printf '%s\n' "$_bl_now" > "$EV_BOARD_POS"
+    fi
+    # 2.6-bis) #130 席位活性(2026-08-20 十五任优化轮):tmux 外在班席位崩=零信号(11B 晨崩实撞)。
+    # 频控 30 分钟/席;告警只报人 ⛔ 自动拉起(与 M1 同哲学:开窗是人的决定)。
+    _sl="$(seat_liveness 2>/dev/null)"
+    if [ -n "$_sl" ]; then
+      while IFS='|' read -r _srole _sname _swhy; do
+        [ -n "$_sname" ] || continue
+        _skey="$EV_DIR/seat.alerted.$_sname"
+        if [ ! -f "$_skey" ] || [ $(( $(date +%s) - $(stat -f %m "$_skey" 2>/dev/null || echo 0) )) -gt 1800 ]; then
+          touch "$_skey"
+          ev_deliver "告警" "【告警】席位活性:注册表标在班的「${_srole}」(${_sname})${_swhy}——窗口可能已崩。请人工核(ListAgents/开新窗接任)并更新注册表;⛔ 自动拉起(#130)。"
+        fi
+      done <<< "$_sl"
     fi
     # 2.7) #105 材料更新广播:词表/设计要点落库(kb-commit)⇒ 投 dispatch——片⑥ r3 白烧一轮的根治半边。
     _vh_now="$(git -C "$EV_VAULT" rev-parse HEAD 2>/dev/null)"

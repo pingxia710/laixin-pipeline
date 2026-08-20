@@ -60,8 +60,17 @@ sudo -u laixin bash -c 'cd /opt/laixin; set -a; . /etc/laixin/laixin.env; set +a
 
 ### 推代码
 ```bash
-git push ssh://root@121.196.192.44/srv/git/laixin.git main   # 需经代理;裸仓属主与 push 身份不同时,服务器上先 git config --global --add safe.directory /srv/git/laixin.git
+# 实测可用(2026-08-20 V0.1 部署;直连 22 会被安全组拦,必须显式带跳板与密钥):
+GIT_SSH_COMMAND='ssh -J wyinmac-vps-gateway -i ~/.ssh/aliyun-laixin-ed25519 -o BatchMode=yes' \
+  git push ssh://root@121.196.192.44/srv/git/laixin.git main
+# 裸仓属主与 push 身份不同时,服务器上先 git config --global --add safe.directory /srv/git/laixin.git
+# tag 同法推:...git push ssh://... v0.1
 ```
+
+### 执行者归属(2026-08-20 方案窗口第十六任裁,授权-2;V0.1 部署当日两份材料指向不同执行者后定论)
+- **部署执行者=方案窗口**(先例=第十二任首次上线与第十六任 V0.1 部署均方案窗口执行;本卡「发布后·记录」条也写明窗口=方案窗口)。dispatch 职责=封版前置读数(hash/待合/在飞)与部署后台账入账,⛔ 执行部署;
+- **`git tag vX.Y` 由方案窗口在创始人确认封盘后打**,⛔ dispatch 打、⛔ 未经创始人确认打;
+- 两窗口交接包/台账凡与本节冲突,以本节为准(单点源)。
 
 ### 部署(在服务器)
 ```bash

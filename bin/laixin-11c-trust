@@ -1,0 +1,98 @@
+#!/bin/bash
+# laixin-11c-trust —— 11C 圆桌 codex 座席信任预写(独立 11C 脚本,⛔ 并入 laixin-lane:
+#   首局 R4 快查②实锤 lane 的事件目录与 dispatch 锁均 HOME 级全局单例,11C 工具一律独立成脚本)
+#
+# 拍板依据(2026-08-20 首局 R4,创始人「好的,都过」):trust 处置分引擎——
+#   codex=预写(~/.codex/config.toml 为 TOML 声明式配置,库内 59 处 [projects."<路径>"] trust_level
+#   先例,属官方配置格式);claude=保留人工节点 ⛔ 手改存储文件(格式可观察≠官方支持预写)。
+#   本脚本只做 codex 半边;⛔ 扩展到 claude——那要等台账取证任务单查到官方持久方式再议。
+#
+# 用法:laixin-11c-trust <绝对目录>          预写该目录为 codex trusted(幂等)
+#       laixin-11c-trust --check <绝对目录>  只读核查(0=已信任,1=未信任)
+# 环境:LAIXIN_CODEX_CONFIG 覆盖配置路径(默认 ~/.codex/config.toml;测试用)
+#
+# 纪律(全部有案底):
+#   · 目录白名单=仅 $HOME/.laixin-11c/ 下(圆桌专用起席区;⛔ vault ⛔ 停更副本 ⛔ 任意目录——
+#     信任范围最小化,首局丙案原文);
+#   · 幂等判据=键值本身 ⛔ mtime(首局④-bis 方法论:多会话同写场景 mtime 零分辨力);
+#   · 改前备份(deploy 卡 DNA:凡改共享配置先 cp -a);
+#   · 改后自证=before/after diff+TOML 可解析(拍板逐字「before/after diff」);
+#   · 重复表=TOML 致命错(会打挂 codex 全部会话)⇒ 已存在即零写盘。
+set -uo pipefail
+
+CFG="${LAIXIN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
+ALLOW_ROOT="$HOME/.laixin-11c"
+
+die(){ echo "❌ $*" >&2; exit 1; }
+
+usage(){ sed -n '5,8p' "$0"; exit 1; }
+
+check_only=0
+if [ "${1:-}" = "--check" ]; then check_only=1; shift; fi
+DIR="${1:-}"
+[ -n "$DIR" ] || usage
+
+# ── 入参闸门 ──────────────────────────────────────────────────────────────
+case "$DIR" in
+  /*) : ;;
+  *) die "必须是绝对路径(收到:$DIR)" ;;
+esac
+case "$DIR" in
+  "$ALLOW_ROOT"|"$ALLOW_ROOT"/*) : ;;
+  *) die "目录白名单外:仅允许 $ALLOW_ROOT 及其子目录(信任范围最小化,⛔ vault ⛔ HOME ⛔ 停更副本)" ;;
+esac
+case "$DIR" in
+  *'"'*|*$'\n'*) die "路径含引号或换行,拒绝(TOML 注入面)" ;;
+esac
+DIR="${DIR%/}"   # 去尾斜杠,统一键形
+
+[ -f "$CFG" ] || die "codex 配置不存在:$CFG(⛔ 代建——配置该由 codex 自己初始化)"
+
+# ── 幂等核查(键值为准 ⛔ mtime)──────────────────────────────────────────
+has_entry(){
+  python3 - "$CFG" "$DIR" 2>/dev/null <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(3)   # 无 tomllib ⇒ 退回 grep 判
+with open(sys.argv[1],'rb') as f:
+    d = tomllib.load(f)
+sys.exit(0 if sys.argv[2] in d.get('projects',{}) else 1)
+PY
+  local rc=$?
+  if [ $rc -eq 3 ]; then
+    grep -qF "[projects.\"$DIR\"]" "$CFG"; return $?
+  fi
+  return $rc
+}
+
+if has_entry; then
+  echo "✅ 已信任(零写盘):[projects.\"$DIR\"] 已在 $CFG"
+  exit 0
+fi
+[ $check_only -eq 1 ] && { echo "未信任:$DIR"; exit 1; }
+
+# ── 预写(备份 → 追加 → diff 自证 → TOML 解析自证)───────────────────────
+TS=$(date +%Y%m%d-%H%M%S)
+BAK="$CFG.bak-11ctrust-$TS"
+cp -a "$CFG" "$BAK" || die "备份失败:$BAK"
+
+printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$DIR" >> "$CFG"
+
+echo "── before/after diff(拍板自证件)──"
+diff "$BAK" "$CFG" || true
+
+# TOML 完整性自证:解析失败=立即回滚(⛔ 留下打挂 codex 的配置)
+if ! python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],"rb"))' "$CFG" 2>/dev/null; then
+  if python3 -c 'import tomllib' 2>/dev/null; then
+    cp -a "$BAK" "$CFG"
+    die "写后 TOML 解析失败,已回滚至备份 $BAK"
+  else
+    echo "⚠️ 本机无 tomllib,跳过解析自证(diff 与键值核查仍有效)"
+  fi
+fi
+has_entry || { cp -a "$BAK" "$CFG"; die "写后键值核查未命中,已回滚"; }
+
+echo "✅ 预写完成:$DIR → trusted;备份=$BAK"
+echo "📌 首用前演练(D2 拍板):在该目录起一次 codex 席验证零 trust 弹窗,演练结果落看板。"

@@ -2444,6 +2444,26 @@ t "中转回执:末行不含任何 outbox id ⇒ 空(⛔ 误销别的账)" bash 
   source "'"$VRAF"'"; [ -z "$(relay_ack_id "【中转回执】已转出 dispatch" "'"$VRAO"'")" ]'
 t "中转回执:零匹配时 ev_loop 大声记日志 ⛔ 静默" bash -c 'grep -q "中转回执末行未命中任何 outbox id" "'"$LANE"'"'
 rm -rf "$VRA"
+
+# ── laixin-11c-trust:codex 座席信任预写(2026-08-20 首局 R4 拍板;独立 11C 脚本 ⛔ lane 子命令)──
+# 全部走 LAIXIN_CODEX_CONFIG 临时副本,⛔ 碰真 ~/.codex/config.toml
+T11C="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-11c-trust"
+TTD="$(mktemp -d)"; TCFG="$TTD/config.toml"
+printf 'model = "gpt-5.6-terra"\n\n[projects."/Users/pingxia"]\ntrust_level = "trusted"\n' > "$TCFG"
+TDIR="$HOME/.laixin-11c/测试-预写-$$"
+tfail "11c-trust:相对路径拒绝" "绝对路径" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" foo/bar
+tfail "11c-trust:白名单外目录拒绝(vault/HOME 不许信任)" "白名单外" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" "$HOME/Obsidian/某处"
+tfail "11c-trust:路径含引号拒绝(TOML 注入面)" "注入面" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" "$HOME/.laixin-11c/a\"b"
+tfail "11c-trust:配置不存在拒绝且不代建" "不存在" env LAIXIN_CODEX_CONFIG="$TTD/没有.toml" "$T11C" "$TDIR"
+tout "11c-trust:--check 未信任报 1" "未信任" bash -c 'LAIXIN_CODEX_CONFIG="'"$TCFG"'" "'"$T11C"'" --check "'"$TDIR"'"; true'
+tout "11c-trust:预写成功且出 before/after diff" "before/after diff" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" "$TDIR"
+t "11c-trust:写后 TOML 仍可解析且键在" python3 -c 'import tomllib,sys; d=tomllib.load(open(sys.argv[1],"rb")); assert sys.argv[2] in d["projects"]' "$TCFG" "$TDIR"
+tout "11c-trust:二次运行幂等零写盘(键值判据 ⛔ mtime)" "零写盘" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" "$TDIR"
+t "11c-trust:幂等未产生重复表(重复表=TOML 致命)" bash -c '[ "$(grep -cF "[projects.\"'"$TDIR"'\"]" "'"$TCFG"'")" = "1" ]'
+t "11c-trust:既有条目(/Users/pingxia)原样未动" bash -c 'grep -qF "[projects.\"/Users/pingxia\"]" "'"$TCFG"'"'
+t "11c-trust:备份文件已生成" bash -c 'ls "'"$TTD"'"/config.toml.bak-11ctrust-* >/dev/null'
+rm -rf "$TTD"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

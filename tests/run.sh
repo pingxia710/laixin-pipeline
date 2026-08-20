@@ -2258,6 +2258,8 @@ t "#106 直令过滤:句中的真口径变更必须搬运(⛔ 按位置收窄—
 t "#106 直令过滤:方案窗口普通裁定不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:03 | 方案窗口 | 裁(授权-2)普通一件 |" | ev_directive_filter >/dev/null'
 t "#105 材料过滤:词汇表命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/索引/wiki-供给侧词汇表.md" | ev_material_filter >/dev/null'
 t "#105 材料过滤:设计要点命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/4-开发层/来信平台-首页门户改版-设计要点.md" | ev_material_filter >/dev/null'
+t "#105-fix2 材料过滤:新目录(3-方案层/前端设计)的设计要点命中——按文件名特征 ⛔ 绑目录前缀" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/3-方案层/前端设计/来信平台-首页信息推演与重做-设计要点.md" | ev_material_filter >/dev/null'
+t "#105-fix2 反向:同目录非材料文件不命中(特征匹配 ⛔ 目录放行)" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "项目入口/来信平台/知识库/3-方案层/前端设计/来信平台-前端开源参照调研.md" | ev_material_filter >/dev/null'
 t "#105 材料过滤:看板与执行总表不命中(⛔ 全 vault 广播)" bash -c 'source "'"$V16F"'"; ! printf "%s\n%s\n" "项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md" "项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md" | ev_material_filter >/dev/null'
 cat > "$V16/board" <<'BEOF'
 | 08-20 03:27 | 方案窗口 | 方案窗口第十四任 pingxia-fb 交班(六步…) |

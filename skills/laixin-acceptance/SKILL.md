@@ -96,6 +96,15 @@ browser-harness 实测,不看截图不看描述;消费者侧核 375px 无横滚;
 
 > 准入规则:**没有失败样本,不准往本卡加规则**。
 
+## ⚠️ 边界四条实跑——全片通用判据(2026-08-20 立,R1 J3 改判配套;方案窗口第十六任裁,dispatch 43 拟稿)
+
+**自「R1 模块 README 与边界契约起步」合入 main 起**,每片验收的标准判据里加跑四条(命令名已对 R1 分支实物逐字核过):`npm run test:imports`(import-linter,后端契约)· `npm run test:dependencies`(dependency-cruiser)· `npm run test:circular`(madge)· `npm run test:reduced-motion`——**各贴完整输出,⛔ 只写「已跑」**。前三条有聚合入口 `npm run test:boundaries`,分跑聚跑均可,但每条输出都要可见;`npm run lint` 链已含全部四条(R1 整改轮 `fb12d15`),跑 lint 贴全输出亦等价。
+
+- **为什么落在验收卡而不是 workflow 文件**:本项目**当前无 PR 合并流程**,合并是 dispatch 的 ref 级快进 ⇒ 即使建 GitHub Actions,红灯也拦不住任何合并——那是标准的 R42 假门(能力上线、门没装在能拦住的位置)。本项目的真执行点是**流水线验收**,「违反即红」的落点必须是验收判据。
+- **射程:全片通用,⛔ 只在动前端的片上跑**——import-linter 与 madge 管的是后端与全仓依赖边界;下一节「前端片必跑全部 `test:*`」照旧,本节是它面向全片的扩展,两节并行不替代。
+- **GitHub Actions 冻结候审**:项目转 PR 合并流程后再立,届时本条与 workflow 并存(验收判据管「合并前」,workflow 管「推送后」)。
+- **R1 合入前的过渡**:R1 尚未合入时,四条命令在 main 上不存在,本节不生效 ⛔ 拿它拦 R1 之前的片;R1 本片的验收按其 prompt 改判后判据走。
+
 ## ⚠️ 前端片必跑全部 `test:*` 脚本(2026-08-13 新增,验收方自曝的缺口;同日改为不写死数量)
 
 **只跑 pytest + lint + build,看不见前端单测** —— 它们既不在 lint 里也不在 build 里。

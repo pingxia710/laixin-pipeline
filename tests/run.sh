@@ -2281,6 +2281,8 @@ V16F2="$(mktemp)"; cp "$V16F" "$V16F2"
 # #105 端到端:真 git 仓 + 中文路径 + 默认 quotePath——跑生产同款管道,防「fixture 全绿真环境必不命中」重演
 V105="$(mktemp -d)"; ( cd "$V105" && git init -q . && mkdir -p 索引 && echo a > 索引/wiki-测试词汇表.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm base && echo b >> 索引/wiki-测试词汇表.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
 t "#105 E2E:中文路径经 quotePath=false 管道命中" bash -c 'source "'"$V16F2"'"; git -C "'"$V105"'" -c core.quotePath=false log --name-only --format= HEAD~1..HEAD | ev_material_filter | grep -q 词汇表'
+t "#108-fix 提及型不误报:窗口条目里提及他窗口交班的句子不算交班条" bash -c 'source /tmp/lx-hb-fn.sh 2>/dev/null || awk "/^handover_unpaired\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-hb-fn.sh && source /tmp/lx-hb-fn.sh; printf "%s\n" "| 08-20 10:40 | 方案窗口 | dispatch 41 交班三件处置:①CDP skill 片 |" "| 08-20 11:15 | 方案窗口 | 收口读数入账 方案窗口第十五任真正收摊,第十六任在班 |" > /tmp/lx-hb-b.md; printf "## 占位\n" > /tmp/lx-hb-p.md; [ -z "$(handover_unpaired /tmp/lx-hb-b.md /tmp/lx-hb-p.md)" ]'
+t "#108-fix 真交班条仍报:正文开头形态命中" bash -c 'source /tmp/lx-hb-fn.sh; printf "%s\n" "| 08-20 10:58 | 方案窗口 | 方案窗口第十五任 pingxia-8a 交班(date 10:58 实测封班) |" > /tmp/lx-hb-b.md; printf "## 占位\n" > /tmp/lx-hb-p.md; handover_unpaired /tmp/lx-hb-b.md /tmp/lx-hb-p.md | grep -q 第十五任'
 t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bash -c 'source "'"$V16F2"'"; ! git -C "'"$V105"'" log --name-only --format= HEAD~1..HEAD | ev_material_filter >/dev/null'
 t "#105 接线:生产调用带 quotePath=false" bash -c 'grep -qF -- "quotePath=false log --name-only" "'"$LANE"'"'
 rm -rf "$V105"

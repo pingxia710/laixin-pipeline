@@ -54,7 +54,33 @@ This repo is the accumulated answer to those.
 | `skills/laixin-acceptance` | Independent acceptance: **accepts no self-report, only reproducible evidence** |
 | `skills/laixin-deploy` | Production release card built on one principle: *a failed deploy and a successful one look identical* — every step needs a criterion that tells them apart |
 | `skills/laixin-pipeline` | The operating manual for the whole topology |
+| `bin/laixin-11c-seat` | Seats a model at the roundtable: launches Fable / K3 / Codex-terra / Codex-luna in its own tmux window, auto-answers the startup dialogs, and refuses to report "seated" until the engine's own banner is on screen |
 | `tests/run.sh` | Tripwire tests — fixtures constructed so that reverting a fix turns them red |
+
+## The two rooms: 11B and 11C
+
+Two standing bodies sit on top of the pipeline. They are not code — they are **operating procedures**, and both are included here in full.
+
+### 11B — the tool shop (`AGENTS.md`, `11b/`)
+
+Owns this repository. Three tiers of commit rights, an explicit ban on `git add -A` (multiple windows share one worktree), and a rule that every bug fix ships with a tripwire test. `11b/` holds its shift-handover snapshots and briefings — what a window hands to its successor so the work survives a context reset.
+
+### 11C — the multi-model roundtable (`11c/`)
+
+When a decision is too consequential for one model, it goes to a **double-blind roundtable**: several different engines (Fable, Kimi K3, two Codex reasoning tiers) are seated in separate windows, each reads the full material and writes an independent proposal **under a codename, with no sight of the others**, before anything is opened. The chair sees only codenames.
+
+`11c/` contains the entire apparatus, not a sanitized version of it:
+
+- `11C-圆桌总纲.md` — the charter: seating, blind rounds, how a verdict is reached
+- `11C-议题档模板.md` / `11C-调研包模板.md` — the templates every session must fill
+- `议题/` — real session records, including the arguments that did **not** win
+- `调研/` — the research packs that fed those sessions (engine quota-readout differences, multi-agent communication overhead, knowledge-base versioning options)
+- `11C-优化台账.md` — the running ledger of what the mechanism itself got wrong and how it was fixed
+- `11C-设立沿革与创始人原话-20260820.md` — why it was created, in the founder's own words
+
+The interesting part is the failure log. A roundtable of models converges on whatever the first speaker said unless you actively prevent it — most of `11C-优化台账.md` is about building that prevention, and finding out where it leaked.
+
+> Both are written in Chinese. That's where the substance is; translating them would cost the precision that makes them useful.
 
 ## Hard-won lessons
 

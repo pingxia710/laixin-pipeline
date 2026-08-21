@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# laixin-11c-seat —— 11C 圆桌席位起停(独立 11C 脚本)
+#
+# ⛔ 并入 laixin-lane：首局 R4 快查②实锤 lane 的事件目录与 dispatch 锁均 HOME 级全局单例，
+#    11C 工具一律独立成脚本(创始人常令「11B 不能破坏」)。本脚本零 import laixin-lane。
+#
+# 立项依据(全部为 2026-08-20/21 实撞，非空想)：
+#   · 局二 R1 段 46m54s，近一半耗在起席阻塞与权限等待；
+#   · 起席要人工过 3 个交互框(trust folder / MCP servers / 外部 CLAUDE.md import)，
+#     且 **trust 记录绑 cwd**，而每局暂存目录都是新的 ⇒ 每开一局必卡一次，不是一次性摩擦；
+#   · 2026-08-21 创始人直令：11C 技术自负责，⛔ 拿 yes/no 问他。
+#
+# 设计要点：
+#   1) claude 系席位 cwd 用已信任的 $HOME，暂存区用 --add-dir 挂入。
+#      ⚠️ **实测更正(2026-08-21 自测)**：这样**仍会弹 trust 框**——`--add-dir` 新挂入的目录
+#      同样要过 trust，不是只认 cwd。原先「cwd 用已信任目录就零框」的预期**不成立**，
+#      已由本脚本的启动序列自动应答兜住 ⇒ 对使用者仍是零交互，但机制要如实记：
+#      框还在，只是不再需要人。(根因实查仍成立：~/.claude-b/.claude.json 的 projects
+#      只有 /Users/pingxia 一条，trust 绑目录；对暂存区「人工按一次」永远不落盘，
+#      因为每局暂存目录都是新的。)
+#   2) kimi/codex 无 --add-dir 等价物 ⇒ cwd 必须是 workdir，改用各自的 trust 预写。
+#   3) **MCP 默认全关、codex 分支仅放 exa**：MCP 是任意可执行程序、能读本机 OAuth 凭据，
+#      01A 判为封号路径。kimi=trust 预写拒绝判据;fable=MCP 提示 Escape;codex=启动命令拼
+#      enabled=false 关闭串(2026-08-21 seat-luna-research 实撞后补——此前 codex 分支裸起,
+#      一窗带起 12 个 MCP 含 OAuth 型,撞「默认关、选择性开」直令)。exa 例外的依据:
+#      hosted 匿名端点、零本地可执行零凭据(~/.codex/config.toml 该节有安全选型记录),
+#      是创始人 2026-08-21 直令给 codex 装的检索通道,调研席(luna)靠它做外证。
+#      plugin 自带 MCP 关不掉(codex 无 per-invocation 通道),见 codex_mcp_off_flags
+#      注释的「已知残留」段。
+#   4) 就绪判据 = **画面出现引擎特征** ⛔ 窗口存在(局二书记员自升的判据，防「空 shell 当已起席」)。
+#   5) ⛔ eval ⛔ 接受任意命令串：引擎启动命令硬编码，请求方只能选枚举。
+
+set -Eeuo pipefail
+
+SESSION="laixin-11c"
+ALLOW_ROOT="$HOME/.laixin-11c"
+KIMI_BIN="${LAIXIN_KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
+KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
+KIMI_TRUST_DIR="${LAIXIN_KIMI_TRUST_DIR:-$HOME/.kimi-code/workspace-trust}"
+SEAT_SETTINGS="${LAIXIN_11C_SEAT_SETTINGS:-$ALLOW_ROOT/seat-settings.json}"
+READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
+
+die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
+note(){ printf '   %s\n' "$*" >&2; }
+
+usage(){
+  cat >&2 <<'USAGE'
+用法:
+  laixin-11c-seat start <席位名> <引擎> <议题暂存目录>   起席(自动过启动序列，就绪才返回)
+  laixin-11c-seat stop  <席位名>                        收席
+  laixin-11c-seat status <席位名>                       单席位状态
+  laixin-11c-seat list                                  列出全部席位
+
+引擎(枚举，⛔ 任意命令):
+  fable   claude-b + Fable 5     cwd=$HOME(已信任) + --add-dir 暂存区
+          ⚠️ trust 框**仍会弹,由本脚本自动应答** ⛔ 读成「零框」——
+             据「零框」判断本脚本不需要 trust 应答能力,改脚本时会把应答段删掉
+  k3      kimi + K3              cwd=暂存区 + kimi 信任预写(含 project MCP 拒绝判据)
+  terra   codex + gpt-5.6-terra  cwd=暂存区 + laixin-11c-trust 预写
+  luna    codex + gpt-5.6-luna   同上;**强制 max effort**(创始人 2026-08-21 直令「用 luna max」)
+          ⚠️ luna 默认档只有 medium,本脚本对 luna 一律显式带 max ⛔ 依赖默认
+
+议题暂存目录必须在 ~/.laixin-11c/ 下(白名单根，realpath 解析后校验，防 ../ 逃逸)。
+USAGE
+  exit 64
+}
+
+# ── 参数校验 ──────────────────────────────────────────────────────────────
+valid_seat(){ [[ "$1" =~ ^seat-[a-z0-9][a-z0-9-]{0,30}$ ]]; }
+
+resolve_workdir(){  # <路径> → stdout=realpath；越界即 die
+  # ⚠️ 先解析+校验，**通过了才 mkdir**：否则未校验的入参能让本脚本在任意位置建目录
+  #    (自测实撞：传 /tmp/xxx 虽被正确拒绝，但目录已经建出来了)。
+  #    realpath 用 python 解析——路径尚不存在时 `cd` 解析不了，而校验必须先于创建。
+  local d="$1" rp root_rp
+  root_rp="$(cd "$ALLOW_ROOT" 2>/dev/null && pwd -P)" || die "白名单根缺失：$ALLOW_ROOT"
+  rp="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$d" 2>/dev/null)" \
+    || die "议题暂存目录无法解析：$d"
+  case "$rp" in
+    "$root_rp"/*) : ;;
+    *) die "议题暂存目录越界：$rp ⛔ 不在 $root_rp 下(白名单根)" ;;
+  esac
+  mkdir -p "$rp" 2>/dev/null || die "议题暂存目录不可创建：$rp"
+  printf '%s\n' "$rp"
+}
+
+# ── kimi 信任预写(照 laixin-lane 逻辑独立实现，⛔ import) ──────────────────
+kimi_wd_key(){
+  local p="$1" base slug hash
+  p="${p%"${p##*[!/]}"}"
+  base="${p##*/}"
+  slug="$(LC_ALL=C printf '%s' "$base" | LC_ALL=C tr 'A-Z' 'a-z' \
+          | LC_ALL=C sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' \
+          | LC_ALL=C cut -c1-40 | LC_ALL=C sed -E 's/^-+//; s/-+$//')"
+  case "$slug" in ""|"."|"..") slug="workspace" ;; esac
+  hash="$(printf '%s' "$p" | shasum -a 256 | cut -c1-12)"
+  printf 'wd_%s_%s\n' "$slug" "$hash"
+}
+
+kimi_project_mcp(){  # 逐行打印存在的 project 级 MCP 配置；零输出=没有
+  local d="$1" root=""
+  [ -f "$d/.kimi-code/mcp.json" ] && echo "$d/.kimi-code/mcp.json"
+  root="$d"
+  while :; do
+    if [ -e "$root/.git" ]; then break; fi
+    case "$root" in ""|"/") root=""; break ;; esac
+    root="$(dirname "$root")"
+  done
+  [ -n "$root" ] && [ -f "$root/.mcp.json" ] && echo "$root/.mcp.json"
+  return 0
+}
+
+kimi_trust_prewrite(){
+  # ⚠️ ⛔ 无条件预写：kimi 的 trust 语义逐字是「启用 project MCP servers」，
+  #    project 级 stdio 条目会话启动即起进程 ⇒ 无条件预写=替人按掉一个安全决定(#68 判据)。
+  #    该判据每次起席都跑 ⛔ 一次性——目录将来可能新增 MCP 配置，而已有信任记录会让它无声生效。
+  local d="$1" key f mcp
+  mcp="$(kimi_project_mcp "$d" || true)"
+  if [ -n "$mcp" ]; then
+    die "⛔ 拒绝自动信任 $d：发现 project 级 MCP 配置
+$(echo "$mcp" | sed 's/^/     /')
+   kimi 的 trust 语义逐字是「启用 project MCP servers」，stdio 条目会话启动即起进程。
+   要起该席：先人工确认这些 MCP 条目可信，再手动在 kimi 里选 Trust(或删掉该配置)。"
+  fi
+  key="$(kimi_wd_key "$d")"
+  f="$KIMI_TRUST_DIR/$key"
+  [ -f "$f" ] && { note "kimi 信任记录已存在($key)，幂等跳过"; return 0; }
+  mkdir -p "$KIMI_TRUST_DIR" && chmod 700 "$KIMI_TRUST_DIR" 2>/dev/null || true
+  printf '{"root":"%s","trustedAt":%s}' "$d" "$(python3 -c 'import time;print(int(time.time()*1000))')" > "$f"
+  chmod 600 "$f" 2>/dev/null || true
+  note "已预写 kimi 信任记录 $key"
+}
+
+# ── codex MCP 默认关(照 laixin-lane 手法独立实现，⛔ import) ────────────────
+# 立项:2026-08-21 seat-luna-research 实撞——codex 分支裸起 `codex`,一窗带起 12 个 MCP
+#   (含 linear 等 OAuth 型与 node_repl 等本地可执行),撞创始人准则 2(MCP=凭据外流实源)
+#   与 2026-08-18「默认关、选择性开」直令。kimi/fable 分支各有兜底,唯 codex 分支裸奔。
+# 手法:`-c mcp_servers.<名>.enabled=false`,key 一律裸拼零引号——codex -c 的 dotted path
+#   是纯字符串切分,引号包 key 会被当字面名建新表 ⇒ 整份 config 拒载、codex 秒退
+#   (laixin-lane 2026-08-18 实撞;`codex mcp list -c 'mcp_servers."node_repl".enabled=false'`
+#   可复现拒载)。
+# ⛔ 硬编码名单:lane 的十名单就漏了后来新增的 codegraph——静态名单会烂。改为起席时从
+#   ~/.codex/config.toml 现场取全量 [mcp_servers.*] 名,除白名单(仅 exa)外全关;
+#   名字含裸拼不了的字符时 die ⛔ 静默漏关(bare dotted path 关不掉它=席位会带着它起来)。
+# ⚠️ 已知残留(2026-08-21 实测,本脚本修不掉,如实记 ⛔ 读成「席位零 MCP」):
+#   plugin 自带的 MCP 不吃本关闭串——实测起席后仍有 playwright@claude-plugins-official
+#   (npx playwright-mcp)与 data-analytics@openai-curated-remote(server.cjs)两个进程,
+#   且 `codex mcp list` 连后者都不显示(list 不是 plugin 层的 ground truth)。
+#   已试尽 per-invocation 通道:对其名拼 mcp_servers.<名>.enabled=false ⇒ 整份 config
+#   拒载(实测复现);-c plugins.<键>.enabled=false 裸拼/引号两式在 mcp list 与真实会话
+#   均无效(进程照起)。唯一关法=改 plugin 缓存 .mcp.json 或 config [plugins] 节,
+#   属持久全局改动、影响创始人自用 codex ⇒ 超出席位脚本射程,残留面已上报方案窗口。
+#   真实态=config 级全关 + exa 放行 + plugin 层残留(全机 codex 会话共有,非席位特有)。
+codex_mcp_off_flags(){
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml" allow=" exa " s out="" seen=" " closed=""
+  [ -f "$cfg" ] || return 0   # 无 config 即无 MCP,零关闭串是真实状态
+  while IFS= read -r s; do
+    case "$seen" in *" $s "*) continue ;; esac   # 去重([mcp_servers.x.env] 等子表同名)
+    seen="$seen$s "
+    case "$allow" in *" $s "*) continue ;; esac
+    [[ "$s" =~ ^[A-Za-z0-9_-]+$ ]] \
+      || die "MCP 名含裸拼不了的字符:$s——关闭串关不掉它,⛔ 静默漏关(人工处理后再起席)"
+    out="$out -c mcp_servers.$s.enabled=false"
+    closed="$closed $s"
+  done < <(sed -n 's/^\[mcp_servers\.\([^].]*\).*/\1/p' "$cfg")
+  [ -n "$closed" ] && note "codex MCP 默认全关(仅放 exa):${closed# }"
+  printf '%s' "$out"
+}
+
+# ── 启动序列自动应答 ──────────────────────────────────────────────────────
+# 每个分支都对应一次实撞或 laixin-lane 既有处理，⛔ 见框就回车
+answer_prompts(){  # <window> <pane文本>
+  local w="$1" pane="$2"
+  case "$pane" in
+    *"MCP servers"*)
+      # 安全默认:全部拒绝。席位不需要 MCP;MCP=任意可执行程序,能读 OAuth 凭据(01A 封号路径)
+      tmux send-keys -t "$SESSION:$w" Escape; note "MCP 提示 → 全部拒绝(Escape)"; return 0 ;;
+    *"trust this folder"*|*"Do you trust the files"*)
+      tmux send-keys -t "$SESSION:$w" C-m; note "trust 提示 → 确认(暂存区为本机自建目录)"; return 0 ;;
+    *"external"*"imports"*|*"CLAUDE.md file imports"*)
+      tmux send-keys -t "$SESSION:$w" C-m; note "外部 import 提示 → 确认(本机自有文件)"; return 0 ;;
+    *"Update available"*)
+      tmux send-keys -t "$SESSION:$w" Escape; note "更新提示 → 跳过"; return 0 ;;
+  esac
+  return 1
+}
+
+seat_ready(){  # <引擎> <pane文本> → 0=就绪。判据=画面出现引擎特征 ⛔ 窗口存在
+  local engine="$1" pane="$2"
+  case "$engine" in
+    fable) [[ "$pane" == *"auto mode on"* || "$pane" == *"Fable 5"* ]] ;;
+    k3)    [[ "$pane" == *"Kimi Code"* || "$pane" == *"No session yet"* || "$pane" == *"K3"* ]] ;;
+    terra|luna) [[ "$pane" == *"Codex"* || "$pane" == *"codex"* ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# ── 起席 ──────────────────────────────────────────────────────────────────
+cmd_start(){
+  local seat="${1:-}" engine="${2:-}" wd_in="${3:-}"
+  [ -n "$seat" ] && [ -n "$engine" ] && [ -n "$wd_in" ] || usage
+  valid_seat "$seat" || die "席位名不合法：$seat(须匹配 ^seat-[a-z0-9][a-z0-9-]{0,30}\$)"
+  case "$engine" in fable|k3|terra|luna) : ;; *) die "未知引擎：$engine(只接受 fable|k3|terra|luna)" ;; esac
+
+  local wd; wd="$(resolve_workdir "$wd_in")"
+
+  tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n hub
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$seat"; then
+    die "席位窗口已存在：$seat(先 stop，⛔ 覆盖起窗)"
+  fi
+
+  # 引擎特定的 trust 前置 + 启动命令(硬编码，⛔ 拼接外部输入为命令)
+  local launch cwd _mcp_off
+  case "$engine" in
+    fable)
+      # cwd 用已信任的 $HOME，暂存区用 --add-dir 挂入(trust 框仍会出现，由启动序列应答)
+      # --settings：仅含 remoteControlAtStartup=false，**结构性关掉 Remote Control**——
+      #   席内 /rc active 意味着会话可从 claude.ai 侧访问，对双盲是多余的暴露面；
+      #   起席后再关需向席内发输入、污染派题前的干净基线(方案窗口 2026-08-21 提，实据=自测
+      #   画面右下 `/rc connecting…`)。该文件不含 permissions ⇒ ⛔ 触发专线自检。
+      [ -f "$SEAT_SETTINGS" ] || {
+        printf '{\n  "remoteControlAtStartup": false\n}\n' > "$SEAT_SETTINGS"
+        note "已生成席位 settings：$SEAT_SETTINGS(仅关 RC，⛔ 含 permissions)"
+      }
+      cwd="$HOME"
+      launch="claude-b -n $seat --model claude-fable-5 --permission-mode auto"
+      launch="$launch --settings $SEAT_SETTINGS --add-dir $wd"
+      ;;
+    k3)
+      kimi_trust_prewrite "$wd"
+      cwd="$wd"
+      launch="\"$KIMI_BIN\" --auto -m $KIMI_MODEL"
+      ;;
+    terra)
+      if command -v laixin-11c-trust >/dev/null 2>&1; then
+        laixin-11c-trust "$wd" >/dev/null || die "codex trust 预写失败：$wd"
+        note "已对 $wd 跑 laixin-11c-trust"
+      else
+        note "⚠️ laixin-11c-trust 不在 PATH，codex 可能弹 trust 框(将由启动序列应答兜底)"
+      fi
+      cwd="$wd"
+      _mcp_off="$(codex_mcp_off_flags)"
+      launch="codex$_mcp_off"
+      ;;
+    luna)
+      # 调研席/批量席配型(创始人 2026-08-21 直令「用 luna max」「错配的那个 sol 改成 luna max」)
+      # ⚠️ luna 的 default_reasoning_level = medium,**必须显式带 max** ⛔ 依赖默认档
+      #    (max 逐字="Maximum reasoning depth for the hardest problems",高于 terra 现用 xhigh)
+      # ⚠️ 通道注记:codex 系无原生网页搜索(search_tool removed / web_search_* deprecated /
+      #    standalone_web_search 未上线,仅 browser_use stable)⇒ 本席做消化判断,
+      #    **检索那半按配型表走 claude 通道或 browser_use** ⛔ 指望它端到端出调研包。
+      if command -v laixin-11c-trust >/dev/null 2>&1; then
+        laixin-11c-trust "$wd" >/dev/null || die "codex trust 预写失败：$wd"
+        note "已对 $wd 跑 laixin-11c-trust"
+      else
+        note "⚠️ laixin-11c-trust 不在 PATH，codex 可能弹 trust 框(将由启动序列应答兜底)"
+      fi
+      cwd="$wd"
+      _mcp_off="$(codex_mcp_off_flags)"
+      launch="codex -m gpt-5.6-luna -c model_reasoning_effort='\"max\"'$_mcp_off"
+      ;;
+  esac
+
+  tmux new-window -d -t "$SESSION" -n "$seat" -c "$cwd"
+  tmux send-keys -t "$SESSION:$seat" "$launch" C-m
+  note "已起窗 $SESSION:$seat(引擎=$engine cwd=$cwd)"
+
+  # 轮询：过启动序列 + 等就绪
+  local waited=0 pane
+  while [ "$waited" -lt "$READY_TIMEOUT" ]; do
+    sleep 3; waited=$((waited+3))
+    tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$seat" \
+      || die "席位窗口在启动中消失：$seat(引擎异常退出，⛔ 当作已起席)"
+    pane="$(tmux capture-pane -t "$SESSION:$seat" -p -S -40 2>/dev/null || true)"
+    if seat_ready "$engine" "$pane"; then
+      printf '✅ 席位就绪：%s(引擎=%s，耗时约 %ss，⛔ 已向席内发送任何输入)\n' "$seat" "$engine" "$waited"
+      return 0
+    fi
+    answer_prompts "$seat" "$pane" || true
+  done
+  die "席位 ${READY_TIMEOUT}s 未就绪：$seat —— 窗口保留供人工深读(⛔ 自动收席，现场即证据)"
+}
+
+cmd_stop(){
+  local seat="${1:-}"; [ -n "$seat" ] || usage
+  valid_seat "$seat" || die "席位名不合法：$seat"
+  tmux kill-window -t "$SESSION:$seat" 2>/dev/null && printf '已收席：%s\n' "$seat" || die "席位不存在：$seat"
+}
+
+cmd_status(){
+  local seat="${1:-}"; [ -n "$seat" ] || usage
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$seat"; then
+    printf '%s：窗口在\n--- 画面末 8 行 ---\n' "$seat"
+    tmux capture-pane -t "$SESSION:$seat" -p -S -8 2>/dev/null
+  else
+    printf '%s：窗口不存在\n' "$seat"; return 1
+  fi
+}
+
+cmd_list(){
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "session $SESSION 不存在"; return 0; }
+  printf '%s 的窗口：\n' "$SESSION"
+  tmux list-windows -t "$SESSION" -F '  #{window_index}: #{window_name}'
+}
+
+case "${1:-}" in
+  start)  shift; cmd_start "$@" ;;
+  stop)   shift; cmd_stop "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  list)   shift; cmd_list "$@" ;;
+  *) usage ;;
+esac

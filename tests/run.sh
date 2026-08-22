@@ -1083,6 +1083,17 @@ tfail "#67 doctor 在 codex 引擎下点名 push 锁失效(⛔ 只写在提交�
   bash -c 'env LAIXIN_DISPATCH_ENGINE=codex "'"$LANE"'" doctor | grep "工具层锁"; exit 1'
 tout "#67 doctor 在 claude 引擎下旧文案逐字保留" "派工窗口钉:" \
   env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
+# * 绊线⑦(2026-08-22 实撞,创始人窗口修):`else` 写在 die 那一行的**行尾** ⇒ bash 把它当成 die 的
+#   参数字符串吃掉,if/elif/else 塌成两支:引擎=codex 先起 codex **再接着起一遍 kimi**(同一函数内
+#   两次 new-window ⇒ 两个同名 dispatch 窗口 ⇒ tmux 按名寻址歧义,报 `can't find window: dispatch`
+#   —— 错误信息指向「窗口不存在」而真相是「窗口有两个」,**方向相反**,检查器三约束②的实例);
+#   引擎=kimi 则 if/elif 都不成立而 else 已不存在 ⇒ **一个窗口都不建**。claude 路径不受影响 ⇒
+#   581 项测试全绿、doctor 全绿、`bash -n` 也过(语法合法)⇒ 潜伏两天:08-20 04:38「切 codex 失败」
+#   当时归因为 codex 自更新,实为本 bug。两条递进:①本处结构;②全文件同族 lint(bash -n 查不出)。
+tout "#67-fix codex 分支 die 行尾 ⛔ 挂 else(挂上=codex 起完再起 kimi;kimi 引擎零窗口)" "OK" \
+  bash -c 'n=$(grep -n "vwait_ready_codex .* || die" "'"$LANE"'" | head -1 | cut -d: -f1); [ "$(sed -n "$((n+1))p" "'"$LANE"'" | tr -d "[:space:]")" = "else" ] && echo OK'
+tout "#67-fix 全文件禁「引号行尾挂 else/fi/then/do」(同族一律被当参数吞掉)" "ZERO" \
+  bash -c 'grep -nE "\"[[:space:]]+(else|fi|then|do|done)[[:space:]]*\$" "'"$LANE"'" || echo ZERO'
 # ⭐ 绊线⑥:派单指令必须告诉 codex「回程不会弹进你的输入框」——否则它会干等一个永远不来的消息
 tout "#67 codex 派单指令写明回程走落盘+路径指针(⛔ 等它直接注入)" "那条路不存在" \
   sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
@@ -2200,9 +2211,14 @@ t "#60①:dispatch 不在时回执 spool 暂存(事实 ⛔ 丢),告警仍丢" ba
 t "#60①:M1 登记仍只收交付(回执进台账=立即被误销账)" bash -c \
   'sed -n "/^ev_deliver()/,/^}/p" "$0" | grep -q "if \[ \"\$kind\" = \"交付\" \]"' "$LANE"
 # ⭐ doctor §6 引擎适配:codex 报引擎行(VERIFY_MODEL 不适用),claude 旧文案逐字保留(#27 自述同步族)
-tout "#60①:doctor 引擎=codex 报引擎行 ⛔ 旧文案误导" "验收引擎:codex" "$LANE" doctor
+# 🔴 引擎类断言必须**把两个引擎变量都钉死**(2026-08-22 实撞,创始人窗口修):这两条原先只钉
+#   VERIFY_ENGINE,DISPATCH_ENGINE 落回读 ~/.laixin-lane-switch/dispatch-engine ⇒ **本机开关一改,
+#   测试就红**,而红的原因与被测行为无关。当日派工席切 codex 后立即复现:doctor 输出正确、断言却红。
+#   这与「一套会因机器忙而变红的测试比没有测试更糟」同族——判据必须只依赖被测对象,⛔ 依赖本机可变状态。
+tout "#60①:doctor 引擎=codex 报引擎行 ⛔ 旧文案误导" "验收引擎:codex" \
+  env LAIXIN_VERIFY_ENGINE=codex LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
 tout "#60①:doctor 引擎=claude 旧文案逐字保留" "验收窗口钉:claude-opus-5  派工窗口钉" \
-  env LAIXIN_VERIFY_ENGINE=claude "$LANE" doctor
+  env LAIXIN_VERIFY_ENGINE=claude LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
 # ⭐ outside_sessions 改 tty 精确配对:codex 验收窗 pane 同为 node 但不产 cc-sock,按窗口数减会把
 #   计数减成负、且恰在真有第二个手开 claude 时把它减没(失效指向要防的风险,三约束②)
 OS60="$V60/socks-empty"; mkdir -p "$OS60"

@@ -3070,7 +3070,8 @@ cmd_dispatch() {
   tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
   sleep 0.5
   tmux send-keys -t "$SESSION:$DISPATCH_WIN" "$(codex_launch_cmd "dispatch" "$_cdp_port" "$_mcp_off")" C-m
-  vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"  else
+  vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"
+  else
   # ── kimi 引擎(方案 C):起窗形态与 lane 的 C 轨同一份(kimi_launch_cmd)。
   # #68:kimi 对每个新工作目录弹 `Trust this folder?`,两个选项都是坑(不信任=直接退出)
   # ⇒ **起窗前预写信任记录**,⛔ 起完再想办法点按钮——托管窗口无人可点。

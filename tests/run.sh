@@ -1106,12 +1106,17 @@ tout "#67-fix 全文件禁「引号行尾挂 else/fi/then/do」(同族一律被�
 #   于是「服务好好的只是慢」被读成「服务没了」。⇒ 探活与拉数分开判,措辞必须不同。
 tfail "通道额度:仪表盘未监听时说「未在监听」(⛔ 与「拉取超时」同一句话)" "未在监听" \
   bash -c 'env LAIXIN_USAGE_PROBE=http://127.0.0.1:1/ LAIXIN_USAGE_API=http://127.0.0.1:1/nope "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+# ⚠️ 探活靶子 ⛔ 用外网(首版用 example.com,当轮网络一慢就返 000 ⇒ 断言红而代码是对的)——
+#   **会因环境忽红忽绿的测试比没有测试更糟**,这条本仓写过。改起一个本地极简 HTTP 服务当靶子。
+UPORT=18763; python3 -m http.server "$UPORT" --bind 127.0.0.1 >/dev/null 2>&1 & UPID=$!
+for _i in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 1 -o /dev/null "http://127.0.0.1:$UPORT/" && break; sleep 0.3; done
 tfail "通道额度:在跑但拉取超时说「在跑但额度拉取超时」(⛔ 读成服务没了)" "在跑但额度拉取超时" \
-  bash -c 'env LAIXIN_USAGE_PROBE=https://example.com/ LAIXIN_USAGE_API=http://10.255.255.1:9/ LAIXIN_USAGE_TIMEOUT=1 "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+  bash -c 'env LAIXIN_USAGE_PROBE=http://127.0.0.1:'"$UPORT"'/ LAIXIN_USAGE_API=http://10.255.255.1:9/ LAIXIN_USAGE_TIMEOUT=1 "'"$LANE"'" doctor | grep "通道额度"; exit 1'
 # ⚠️ 靶子必须**真的超时**:首版用 example.com/slow,它 1s 内就返 404 ⇒ 落进「不是 JSON」分支,
 #   断言红。改用**不可路由地址**(10.255.255.1:9)——它只会挂到超时,不会提前给出任何响应。
 tfail "通道额度:响应不是 JSON 时降级 ⛔ 当成额度充裕" "不是 JSON" \
-  bash -c 'env LAIXIN_USAGE_PROBE=https://example.com/ LAIXIN_USAGE_API=https://example.com "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+  bash -c 'env LAIXIN_USAGE_PROBE=http://127.0.0.1:'"$UPORT"'/ LAIXIN_USAGE_API=http://127.0.0.1:'"$UPORT"'/ "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+kill "$UPID" 2>/dev/null || true
 # 5h 窗口(session)与周额度**处置完全不同**:前者几小时自愈=等重置或临时换,后者=按剧本轮换 ⇒ ⛔ 混成一条
 tout "通道额度:5h 窗口纳入判据(⛔ 只看周额度——5h 打满同样当场停摆且更容易撞)" "5h窗口" \
   bash -c 'sed -n "/^channel_quota_verdict()/,/^}/p" "'"$LANE"'"'
@@ -2353,6 +2358,14 @@ t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bas
 t "#105 接线:生产调用带 quotePath=false" bash -c 'grep -qF -- "quotePath=false log --name-only" "'"$LANE"'"'
 rm -rf "$V105"
 rm -rf "$V16" "$V16F2"
+# ── 验收窗口 CDP 通道可用性(2026-08-22 监测中实撞)────────────────────────────────
+# cmd_verify 给每个验收窗口分配独立端口并注入 BU_CDP_URL,cdp_sweep 回收时又清理该端口的
+# headless Chrome —— **两头都假定它存在,而没有任何一步负责让它存在**(历史上靠 dispatch 手工
+# nohup 起)。后果:走查类片跑到最后一步才发现通道不通,而验收方看到的现象是「变量像是没注入」。
+tout "验收起窗:CDP 端口无监听要当场报(⛔ 让走查片跑到最后一步才发现)" "无监听" \
+  bash -c 'sed -n "/^cmd_verify()/,/^}/p" "'"$LANE"'"'
+tout "验收起窗:报警要给出起浏览器的命令(⛔ 只说不通)" "remote-debugging-port" \
+  bash -c 'sed -n "/^cmd_verify()/,/^}/p" "'"$LANE"'"'
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
 # 12:54 验收回执落盘。两处叠加:

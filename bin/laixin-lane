@@ -4153,6 +4153,16 @@ EOF
   tmux send-keys -t "$SESSION:$w" C-m
   # #57(#45 族残余):起窗类条目的来源=真实调用上下文——verify 常由派工窗口调,但方案/创始人窗口
   # 应急代起真实存在;硬编码「最常见调用方」=为非常规调用制造伪证,而排查恰恰全是非常规调用
+  # 🔴 CDP 通道**可用性**必须当场可见(2026-08-22 实撞):本函数给每个验收窗口分配独立端口并注入
+  #   BU_CDP_URL,`cdp_sweep` 回收时又去清理该端口的 headless Chrome —— **两头都假定它存在,
+  #   而没有任何一步负责让它存在**。历史上是 dispatch 手工 `nohup` 起(看板 08-20 04:23 那次)。
+  #   后果:走查类片一路跑到**最后一步**才发现通道不通,而验收方看到的现象是「变量像是没注入」
+  #   (当日 13:25 验收窗口即如此报;实测变量注入正常,是端口上没人听)。
+  #   ⇒ 起窗当口探一次,不通就**大声报**并给出起浏览器的命令。⛔ 在这里自动起 Chrome:
+  #   那是有副作用的动作(profile/窗口/清理),要单独验证后再上,⛔ 混在本次「让失效可见」里。
+  if ! curl -s -m 2 "http://127.0.0.1:$port/json/version" >/dev/null 2>&1; then
+    board "$(caller_src)" "⚠️ 验收窗口 $w 的 CDP 通道 127.0.0.1:$port **无监听** —— 变量已注入,但端口上没有浏览器。**含浏览器走查的片到最后一步才会发现**;需要走查就先起:nohup <chrome> --headless=new --remote-debugging-port=$port --user-data-dir=/tmp/cdp-$port >/dev/null 2>&1 & disown,再 curl 127.0.0.1:$port/json/version 见 JSON 才算通"
+  fi
   board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)引擎=$VERIFY_ENGINE"
   echo "$w 已起并派单(引擎=$VERIFY_ENGINE)。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
   if [ "$VERIFY_ENGINE" = "claude" ]; then

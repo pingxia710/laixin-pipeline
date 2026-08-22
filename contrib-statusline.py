@@ -16,8 +16,8 @@ import json
 import sys
 
 # ── 交班闸门(与 laixin-lane ctx 保持一致;改这里要同步改那边)────────────
-GATE_HARD = 70   # 硬闸门:立刻写状态 → 写交接包 → 起新窗口
-GATE_WARN = 55   # 预备区:开始准备交接
+GATE_HARD = 75   # 硬闸门:立刻写状态 → 写交接包 → 起新窗口
+GATE_WARN = 65   # 预备区:开始准备交接
 
 R = "\033[0m"
 DIM = "\033[2m"

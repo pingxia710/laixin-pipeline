@@ -1044,21 +1044,30 @@ echo "== 6p. #67 派工引擎化(默认 claude)+ 出站中转 relay-msg(单向,�
 # 背景:Claude 周额度实测 weekly_all 91%,dispatch 是单窗口消耗最大的一个;#60① 已换验收窗,本批换派工窗。
 # codex 没有 SendMessage ⇒ 出站走中继代发;**回程 ⛔ 反向注入**——对方落盘、events 投**路径指针**,
 # dispatch 自读全文(events 的载荷从来不是结构化内容,这正是「讨论也能走落盘」的机关)。
-# ⭐ 绊线①(本批最关键的一条):默认值必须是 claude。#66 的教训=换默认值会让「同一条命令在换代前后
-#   语义不同,而命令本身长得一模一样」;而 dispatch 起窗会被 resurrect/boot 链**无人值守自动调用**。
-t "#67 派工引擎默认 claude(⛔ 学 #60① 默认 codex:起窗会被 boot/resurrect 无人值守自动调用)" bash -c \
-  'grep -qE "LAIXIN_DISPATCH_ENGINE:-.*echo claude" "'"$LANE"'" && ! grep -qE "LAIXIN_DISPATCH_ENGINE:-codex" "'"$LANE"'"'
-  "LAIXIN_DISPATCH_ENGINE:-claude" grep -n "^DISPATCH_ENGINE=" "$LANE"
-t "#67 默认值确实不是 codex(回退检测:谁把默认改了本行立刻红)" bash -c \
-  '! grep -q "LAIXIN_DISPATCH_ENGINE:-codex" "'"$LANE"'"'
-# ⭐ 绊线②:值打错在**动窗口之前**拒(同 #60① 一课)——dispatch 起窗会先 kill 掉旧窗口,
-#   校验放后面等于「参数打错就把正在派工的窗口杀了」。
-tfail "#67 未知派工引擎被拒且指明合法值" "只接受 codex|claude" \
-  env LAIXIN_DISPATCH_ENGINE=bogus LAIXIN_SESSION=bogus-d67 "$LANE" dispatch   # ⚠️ 样本原为 kimi,
-  # 2026-08-19 kimi 成为**合法**第三引擎后必须换掉:否则本条不再测「拒绝」而是真的起一个 kimi
-  # 派工窗口,并在 fixture 会话里留下残渣。⇒ **加新引擎时先查有没有绊线拿它当反例。**
-t "#67 未知引擎被拒时零 tmux 副作用(⛔ 留下半个死会话)" bash -c \
-  '! tmux has-session -t bogus-d67 2>/dev/null'
+# ⭐ 绊线①(2026-08-22 16:34 起由「默认值必须是 claude」升级为**常量锁**):创始人直令「派工窗口立即换回
+#   claude code 引擎,⛔ 再用 codex」+ 当面追加「后面这个位置只放 claude code」。当日实撞=看门狗循环 15:52 起、
+#   内存里攥着当时的 codex 值,16:43 手工切回 claude 后 WD_LOG 无重起记录 ⇒ 派工窗口若死掉会被它按 codex 重起——
+#   「进程启动时读一次」的开关在无人值守重生路径上会无声回退,一个会被旧进程回退的开关不是锁。
+#   ⇒ 决策变量必须是常量;LAIXIN_DISPATCH_ENGINE/开关文件只进 _REQ 供告警,⛔ 参与决策。
+#   ⚠️ 原 tfail「未知引擎被拒」那条**必须撤**:锁下 `LAIXIN_DISPATCH_ENGINE=bogus dispatch` 不再被拒,会真的起一个
+#   claude 派工窗口到 fixture 会话里(与当年 kimi 成合法引擎后那次同形)——改为跑只读的 doctor。
+t "#67🔒 派工引擎是常量 claude(DISPATCH_ENGINE=\$DISPATCH_ENGINE_LOCK,⛔ 读 env/开关文件)" bash -c \
+  'l="$(grep -E "^DISPATCH_ENGINE=" "$1")"; [ "$l" = "DISPATCH_ENGINE=\"\$DISPATCH_ENGINE_LOCK\"" ] && grep -q "^DISPATCH_ENGINE_LOCK=\"claude\"$" "$1"' _ "$LANE"
+t "#67🔒 决策变量 ⛔ 再读 LAIXIN_DISPATCH_ENGINE/开关文件(残值只进 _REQ)" bash -c \
+  'l="$(grep -E "^DISPATCH_ENGINE=" "$1")"; ! grep -q "LAIXIN_DISPATCH_ENGINE" <<< "$l" && grep -q "^DISPATCH_ENGINE_REQ=.*LAIXIN_DISPATCH_ENGINE" "$1"' _ "$LANE"
+tout "#67🔒 LAIXIN_DISPATCH_ENGINE=codex 下 doctor 仍走 claude 派工行(锁生效于运行时,⛔ 只看源码)" "派工窗口钉:" \
+  env LAIXIN_DISPATCH_ENGINE=codex "$LANE" doctor
+tout "#67🔒 残值在 doctor 里被点名(⛔ 静默忽略——照旧记忆写开关文件的人要当场知道没生效)" "派工引擎开关残值「codex」" \
+  env LAIXIN_DISPATCH_ENGINE=codex "$LANE" doctor
+tout "#67🔒 bogus 残值同样只告警不致死(⛔ 让过期开关有权停掉自愈)" "派工引擎开关残值「bogus」" \
+  env LAIXIN_DISPATCH_ENGINE=bogus "$LANE" doctor
+tout "#67🔒 无残值时锁定态可见(#50:「没报警」与「没这项检查」不得同形)" "派工引擎锁定:claude" \
+  env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
+t "#67🔒 起窗残值点名在 ensure_session 之前且 ⛔ die(无人值守重生不许被过期开关拦停)" bash -c \
+  'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")";
+   c="$(grep -n "忽略派工引擎请求" <<< "$b" | head -1 | cut -d: -f1)";
+   e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)";
+   [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ] && seg="$(sed -n "${c},$((c+2))p" <<< "$b")" && ! grep -q "die " <<< "$seg"' _ "$LANE"
 t "#67 引擎校验在 ensure_session/kill-window 之前" bash -c \
   'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "'"$LANE"'")";
    c="$(grep -n "未知派工引擎" <<< "$b" | head -1 | cut -d: -f1)";
@@ -1071,19 +1080,20 @@ tout "#67 claude 起窗命令行原样保留(--disallowedTools)" "disallowedTool
 tout "#67 claude 路径保留 #20c 自更新定向重试(codex 无此因 ⛔ 照抄)" "Claude Code CLI not found" \
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
 # ⭐ 绊线④:codex 路径起窗形态=照 cmd_verify 的 codex 分支(MCP 全关 + 通道注入 + codex 就绪判据)
-tout "#67 codex 起窗 MCP 全量关闭(照 lane/verify 同一函数,⛔ 另拼)" "lane_mcp_off_flags" \
+#   (2026-08-22 🔒 后:该分支**锁下不可达**,保留为回切形态;下列断言钉的是形态不是行为)
+tout "#67[回切形态] codex 起窗 MCP 全量关闭(照 lane/verify 同一函数,⛔ 另拼)" "lane_mcp_off_flags" \
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
-tout "#67 codex 就绪判据复用 vwait_ready_codex(⛔ 拿 claude 输入框判据量 codex)" "vwait_ready_codex \"\$DISPATCH_WIN\"" \
+tout "#67[回切形态] codex 就绪判据复用 vwait_ready_codex(⛔ 拿 claude 输入框判据量 codex)" "vwait_ready_codex \"\$DISPATCH_WIN\"" \
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
 # ⭐ 绊线⑤:工具层锁失效必须**明写进派单指令**——DISPATCH_DENY 实测只有 git push 一条,
 #   codex 无 disallowedTools 等价物 ⇒ 锁静默失效,而「锁在」与「锁没了」在体检输出里原本同形。
-tout "#67 codex 派单指令明写 git push 禁令(工具层锁失效的补位)" "⛔ git push" \
+tout "#67[回切形态] codex 派单指令明写 git push 禁令(工具层锁失效的补位)" "⛔ git push" \
   sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
 # 措辞随 #67④(2026-08-22 自述改实测)变过一次:原为「工具层锁**不生效**」,现为
 # 「工具层 push 锁不生效」+ git 层兜底实测结论。**断言意图不变**——doctor 必须当面点名
 # 工具层锁失效这件事,⛔ 只写在提交信息里;字面串跟着措辞走,⛔ 因为串对不上就删掉这条。
-tfail "#67 doctor 在 codex 引擎下点名 push 锁失效(⛔ 只写在提交信息里)" "push 锁不生效" \
-  bash -c 'env LAIXIN_DISPATCH_ENGINE=codex "'"$LANE"'" doctor | grep "push 锁"; exit 1'
+# (2026-08-22 🔒 后)原 tfail「doctor 在 codex 引擎下点名 push 锁失效」随锁撤:那一行在锁下不可达,留着会逼人
+#   为了让测试绿而去解锁(测试不该对抗裁定)。push 锁的源码级断言仍在下方 #67④ 两条。
 tout "#67 doctor 在 claude 引擎下旧文案逐字保留" "派工窗口钉:" \
   env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
 # * 绊线⑦(2026-08-22 实撞,创始人窗口修):`else` 写在 die 那一行的**行尾** ⇒ bash 把它当成 die 的
@@ -2436,6 +2446,14 @@ t "ctx:ctx-all 必须留下「codex 自行翻页」的结论(⛔ 只删措辞不
   bash -c 'sed -n "/^cmd_ctx_all()/,/^}/p" "'"$LANE"'" | grep -qF "自行 reset"'
 t "ctx:ctx_watch_tick 函数保留但 ⛔ 被任何地方调用(留作说明,⛔ 留作可随手接回的开关)" \
   bash -c 'grep -qF "ctx_watch_tick()" "'"$LANE"'" && [ "$(grep -v "^[[:space:]]*#" "'"$LANE"'" | grep -c "ctx_watch_tick")" = 1 ]'
+# ⭐ 2026-08-22 16:43 dispatch 换回并锁定 claude 后,wd_loop 0.7 段必须**写明「引擎换回不是恢复巡检的理由」**——
+#   否则下一任读到「撤因=dispatch 是 codex」会顺手把巡检接回去(引擎换了、纪律跟着换错方向,是同一族失效)。
+t "ctx:wd_loop 0.7 段已写明 dispatch 换回 claude 后仍不恢复巡检(statusline 65/75 已在当事人眼前)" \
+  bash -c 'sed -n "/^wd_loop()/,/^}/p" "'"$LANE"'" | grep -qF "引擎换回不是恢复巡检的理由"'
+# ⭐ AGENTS.md「双真相源」条的机器化(立规先问机器化):contrib-statusline.py 的闸门线与 cmd_ctx claude 分支必须同步。
+#   2026-08-22 实撞:bash 侧 07f59d2 上调 65/75,contrib 副本仍 55/70,AGENTS.md 原文也还写着 70/55——三处两真相。
+t "statusline 双真相源:contrib-statusline.py 闸门线与 cmd_ctx 一致(75/65)" bash -c \
+  'c="$(dirname "$1")/../contrib-statusline.py"; grep -q "^GATE_HARD = 75" "$c" && grep -q "^GATE_WARN = 65" "$c" && b="$(sed -n "/^cmd_ctx()/,/^}/p" "$1")" && grep -q "pct>=75" <<< "$b" && grep -q "pct>=65" <<< "$b"' _ "$LANE"
 
 # ── 看门狗反向守护:自愈链的根不许是单点(2026-08-22 生产级)──────────────────────
 # 盘点时发现:wd 管 ev/relay/dispatch,而 wd 自己死了**没有任何东西管它**;两个 launchd 项

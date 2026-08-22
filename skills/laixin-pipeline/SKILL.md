@@ -59,6 +59,12 @@ laixin-lane relay [--fresh]                # 常驻中继(claude,看门狗保活
 laixin-lane relay-once <件名> --file <正文.md> [--engine claude|codex]   # 一次性应召中继窗:按件点名、件毕即收
                                            #   引擎 claude 默认 / codex 第二(2026-08-22 创始人定案);回复落盘 记录/<件名>-中转回复.md
                                            #   末行【中转回复】⇒ events 投路径指针给派工窗口;收:laixin-lane rdown <件名>
+laixin-lane m-up <件名> --task <任务单.md> --dir <worktree>   # M 轨机动窗(2026-08-22 首发):codex,配置=与 A/B 开发轨同源吃全局默认
+                                           #   ⛔ 钉模型 ⛔ luna;起窗即派任务单;--dir 必填=各件独立 worktree(⛔ A 轨主树);并发多开
+                                           #   自证①窗内自报模型=全局默认(不符 ⇒ 不派任务、die)· 自证② BU/端口互异(mlist 可核)
+                                           #   交付契约:记录/M轨-<件名>-报告.md 末行【交付完成】M轨-<件名> <commit|no-commit>
+                                           #   ⇒ events 投「机动件交付」给派工窗口:按件轻量复核(⛔ verify-from)→ laixin-lane m-down <件名>
+laixin-lane mlist / peek-m <件名> [N] / m-down <件名>   # 机动窗清单 / 看现场 / 回收(件毕即收 ⛔ 常驻)
 ```
 
 多行文本(打回问题清单)走 stdin:`laixin-lane send a <<'EOF' ... EOF`
@@ -145,6 +151,8 @@ SendMessage / ListAgents 之类的工具」)。⇒ 派工窗口一旦切到 kimi
 超时事件总线会告警并给出原文路径。随时可查:`laixin-lane relay-msg --status`。
 
 📌 **一次性中继窗同契约**(2026-08-22):回复落 `记录/<件名>-中转回复.md`,末行 `【中转回复】<件名> 来自 relay-once`;件名即 id;随件落账取常驻期精神(摩擦如实落盘 · 悬空核对),⛔ 走收班五步。
+
+🛠️ **M 轨机动窗 `laixin-lane m-up <件名> --task <任务单.md> --dir <worktree>`**(2026-08-22 方案窗口规格→11B 首发;执行总表 M 子节「11B:M 件常规起窗命令」销号)——**角色常设 · 窗口应召**的 M 轨载体:承载**非产品代码**的执行类活(工具修理实施 · 档面批处理 · 复现实验与采样 · 调研外证实施),产品代码一律仍走 A/B/C ⛔ 借 M 轨绕片级闸门。**与 relay-once 的唯一本质差别=引擎配置**:M 件(开发/修理/实施类)= 与 A/B 开发轨同一条 codex 起动串、吃 `config.toml` 全局默认(现行 terra/xhigh)**⛔ 钉模型 ⛔ luna**(创始人:「M 轨不要用 luna,用 AB 轨一样的配置」;中继件/验收窗照旧 luna/max——模型按活的性质分 ⛔ 一刀切)。**起窗前校验全在动窗口之前**:`--task` 任务单必须存在(起窗即派任务单路径;四要件=目标/射程/自证判据/交付物)、`--dir` 必填且 ⛔ A 轨主树(各件独立 worktree,取号 `next-worktree` + `git worktree add`)、同件不重复起、CDP 端口与在跑一次性窗不撞。**双向自证**(规格两条,起窗时机器做):①就绪后先读窗内自报模型(底栏 `gpt-… xhigh`)与全局默认比对——**不符则不派任务、die 并上看板**(窗口保留供 `peek-m`,处置后 `m-down`);②BU_NAME=`m<cksum>`、端口=`cdp_port_verify(窗名)` 与验收窗/中继窗同段派生,`mlist` 一屏可核各窗 BU/端口/worktree 互异。**交付契约**:`记录/M轨-<件名>-报告.md` 末行 `【交付完成】M轨-<件名> <commit|no-commit>`——events 扫到后投「机动件交付落盘」(**⛔ 进 M1 待认领台账**,它不起 verify 窗;下一步=按件轻量复核任务单自证判据 ⛔ verify-from)→ 通过 `laixin-lane m-down <件名>` 回收 + 总表 M 子节销号。看板来源按窗名自动标「机动窗」;看门狗对话框扫描与 `wd_fuel` 燃料判据都把 `m-*` 算作在跑一次性窗。
 #### 🔁 中继侧:收方半边(2026-08-20 01:4x 立;relay 第十四任核源码提出「全库零常驻落点」,11B pingxia-37 落卡并同轮修掉销账取 id 的 bug;**上节全是 dispatch 侧动作,本节是中继接到 `【转:给X】` 后要做的事**——中继是托管席位随时换人,恰恰最需要常驻落点)
 
 1. **回执落点只有一个**:`$KB/4-开发层/记录/<id>-中转回执.md`(`KB` 默认 `~/Obsidian/项目入口/来信平台/知识库`)——事件总线 `ev_scan_deliveries` **只扫这一个目录**的 `*.md` 末行;**落在别处=等于没落**:outbox 不销账 → 10 分钟后 dispatch 收「疑似丢失」告警 → 原样重发 → **同一条被代发两次**。而在中继眼里「我写了回执」与「回执生效」完全同形。

@@ -2631,7 +2631,7 @@ tout "rowin 转义 tmux 目标字符(与 vwin 同款:. : % \$ @ 空格 斜杠)" 
 t "seat_src_infer:relay-* → 一次性中继窗(看板来源自动标)" bash -c \
   'b="$(sed -n "/^seat_src_infer()/,/^}/p" "$1")"; grep -q "relay-\*)   echo \"一次性中继窗\"" <<< "$b"' _ "$LANE"
 t "看门狗对话框扫描覆盖 relay-*(同为无人值守一次性席位)" bash -c \
-  'b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"; grep -q "grep -E .\^(verify|relay)-." <<< "$b"' _ "$LANE"
+  'b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"; grep -q "grep -E .\^(verify|relay|m)-." <<< "$b"' _ "$LANE"
 tout "doctor §6 报一次性中继引擎(默认 claude)" "一次性中继引擎:claude" env LAIXIN_RELAY_ONCE_ENGINE=claude "$LANE" doctor
 tout "doctor §6 报一次性中继引擎=codex(第二方案)" "一次性中继引擎:codex" env LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" doctor
 tout "doctor §6 一次性中继引擎非法值点名" "一次性中继引擎请求「bogus」无效" env LAIXIN_RELAY_ONCE_ENGINE=bogus "$LANE" doctor
@@ -3044,6 +3044,93 @@ t "#138:M1 登记同片去重(已在台账不重复登记)+ E 态超期出清(EV
   d="$(sed -n "/^ev_deliver()/,/^}$/p" "$1")"; e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
   grep -qF "grep -qF \"|\${_slug}|\" \"\$EV_PENDING\"" <<< "$d" && grep -q "不重复登记" <<< "$d" &&
   grep -q "EV_PENDING_TTL" <<< "$e" && grep -q "M1 台账出清" <<< "$e"' _ "$LANE"
+
+# ── M 轨机动窗 m-up/m-down/peek-m/mlist(2026-08-22 方案窗口规格 → 11B 首发批;执行总表 M 子节「11B:M 件常规起窗命令」)──
+echo "== M 轨机动窗 m-up(codex 全局默认 ⛔ 钉模型;件毕即收;各件独立 worktree;双向自证)=="
+TM="$(mktemp -d)"; printf '# 任务单\n' > "$TM/task.md"; mkdir -p "$TM/wt" "$TM/main"
+printf 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "xhigh"\n' > "$TM/config.toml"
+MUP_ENV=(env LAIXIN_CODEX_CONFIG="$TM/config.toml" LAIXIN_REPO="$TM/main" LAIXIN_KB="$TM/kb")
+sed -n "/^mwin()/,/^}/p" "$LANE" > "$TM/mwin.sh"
+tout "m-up:窗名转义同 vwin/rowin(. : % $ @ 空格斜杠 → -)" "m-V0-2包①a-b" bash -c 'die(){ echo "$*" >&2; exit 1; }; source "$1/mwin.sh"; mwin "V0.2包①a b"' _ "$TM"
+tfail "m-up:缺 --task 拒(任务单是唯一依据,起窗即派任务单路径)" "必须 --task" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --dir "$TM/wt" --dry
+tfail "m-up:任务单不存在拒" "任务单不存在" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/没有.md" --dir "$TM/wt" --dry
+tfail "m-up:缺 --dir 拒(各件独立 worktree 机器执法 ⛔ 靠自觉)" "必须 --dir" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dry
+tfail "m-up:--dir 不存在拒(窗口未动)" "目录不存在" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/没有" --dry
+tfail "m-up:--dir=A 轨主树拒(两轨对写同一工作树同族)" "不得落 A 轨主树" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/main" --dry
+MUP_DRY="$("${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/wt" --dry 2>&1)"
+t "m-up --dry:起动串与开发轨同源——含 codex、零 -m、零推理档、零 luna(⛔ codex_launch_cmd 的 luna/max)" bash -c '
+  l="$(grep "起动串:" <<< "$1")"; [ -n "$l" ] || exit 1
+  grep -q "BU_NAME=" <<< "$l" && grep -q "BU_CDP_URL=" <<< "$l" && grep -q " codex " <<< "$l" &&
+  ! grep -q " -m " <<< "$l" && ! grep -q "luna" <<< "$l" && ! grep -q "model_reasoning_effort" <<< "$l"' _ "$MUP_DRY"
+tout "m-up --dry:全局默认读自 config.toml(LAIXIN_CODEX_CONFIG 可覆盖)" "全局默认=gpt-5.6-terra xhigh" echo "$MUP_DRY"
+tout "m-up --dry:交付契约=记录/M轨-<件名>-报告.md 末行【交付完成】M轨-<件名>" "M轨-测试件-报告.md 末行【交付完成】M轨-测试件" echo "$MUP_DRY"
+tout "m-up --dry:窗名 m-<slug>,BU 以 m 开头,端口落验收段 93xx-99xx" "窗口=m-测试件" echo "$MUP_DRY"
+t "m-up 点名指令:含任务单路径/worktree/四要件/红线(⛔ push/merge/reset/dmsg/起新窗)/⛔ 自收/按件轻量复核/⛔ 借 M 轨绕片级闸门" bash -c '
+  b="$(sed -n "/^cmd_mup()/,/^}$/p" "$1")"
+  for k in "任务单(先通读" "工作目录=本 worktree" "四要件" "⛔ git push" "⛔ laixin-lane dmsg" "⛔ 起任何新窗口" "你 ⛔ 自收" "轻量复核" "⛔ 借 M 轨绕" "机动窗"; do
+    grep -qF "$k" <<< "$b" || { echo "缺:$k"; exit 1; }
+  done' _ "$LANE"
+t "m-up:自证①先于派单(模型≠全局默认 ⇒ die 且不 paste 任务单);luna 二字在 die 文案里点名" bash -c '
+  b="$(sed -n "/^cmd_mup()/,/^}$/p" "$1")"
+  a=$(grep -n "m_self_attest_model" <<< "$b" | head -1 | cut -d: -f1); p=$(grep -n "laixin-mmsg" <<< "$b" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$p" ] && [ "$a" -lt "$p" ] && grep -q "自证①失败" <<< "$b" && grep -q "⛔ luna" <<< "$b"' _ "$LANE"
+sed -n "/^codex_global_default()/,/^}/p" "$LANE" > "$TM/gd.sh"
+t "codex_global_default:读 model+effort;缺项显 ?(读不到 ⛔ 显默认);文件不存在显「? ?」" bash -c '
+  source "$1/gd.sh"
+  [ "$(LAIXIN_CODEX_CONFIG="$1/config.toml" codex_global_default)" = "gpt-5.6-terra xhigh" ] || exit 1
+  printf "model = \"gpt-x\"\n" > "$1/c2.toml"; [ "$(LAIXIN_CODEX_CONFIG="$1/c2.toml" codex_global_default)" = "gpt-x ?" ] || exit 2
+  [ "$(LAIXIN_CODEX_CONFIG="$1/没有.toml" codex_global_default)" = "? ?" ]' _ "$TM"
+{ sed -n "/^cdp_port_verify()/,/^}/p" "$LANE"; sed -n "/^oneshot_port_clash()/,/^}/p" "$LANE"; } > "$TM/clash.sh"
+t "oneshot_port_clash:同端口在跑一次性窗被点名(verify/relay/m 三族都在射程),排除自身,无撞为空" bash -c '
+  source "$1/clash.sh"; SESSION=s
+  tmux(){ printf "%s\n" "verify-x" "relay-y" "m-z" "lane-a"; }
+  p="$(cdp_port_verify m-z)"; [ "$(oneshot_port_clash "$p")" = "m-z" ] || exit 1
+  [ -z "$(oneshot_port_clash "$p" m-z)" ] || exit 2
+  [ -z "$(oneshot_port_clash 1)" ]' _ "$TM"
+sed -n "/^m_self_attest_model()/,/^}/p" "$LANE" > "$TM/attest.sh"
+t "m_self_attest_model:横幅 model: 行优先(实屏形态);底栏兜底(terra xhigh / luna max 都读得出);空屏退 1" bash -c '
+  source "$1/attest.sh"; SESSION=s; sleep(){ :; }
+  tmux(){ echo "│ model:       gpt-5.6-terra xhigh   fast   /model to cha… │"; echo "  gpt-5.6-terra default · ~/x"; }; [ "$(m_self_attest_model m-x)" = "gpt-5.6-terra xhigh" ] || { echo "横幅优先失败:$(m_self_attest_model m-x)"; exit 1; }
+  tmux(){ echo " gpt-5.6-terra xhigh fast · ~/来信平台-m1"; }; [ "$(m_self_attest_model m-x)" = "gpt-5.6-terra xhigh" ] || exit 2
+  tmux(){ echo "  gpt-5.6-luna max · ~/x"; }; [ "$(m_self_attest_model m-x)" = "gpt-5.6-luna max" ] || exit 3
+  tmux(){ :; }; ! m_self_attest_model m-x' _ "$TM"
+t "m_self_attest_model:底栏过渡态「… default」先等(2026-08-22 首火实撞:横幅已 xhigh 底栏仍 default 被误判不符),等满仍 default 才照实返回" bash -c '
+  source "$1/attest.sh"; SESSION=s; sleep(){ :; }; CNT="$1/cnt"; : > "$CNT"
+  tmux(){ echo x >> "$CNT"; if [ "$(wc -l < "$CNT")" -le 2 ]; then echo "  gpt-5.6-terra default · ~/x"; else echo "  gpt-5.6-terra xhigh fast · ~/x"; fi; }   # 计数走文件:桩在 $(…) 子 shell 里跑,内存计数不回传
+  [ "$(m_self_attest_model m-x)" = "gpt-5.6-terra xhigh" ] || exit 1
+  tmux(){ echo "  gpt-5.6-terra default · ~/x"; }; [ "$(m_self_attest_model m-x)" = "gpt-5.6-terra default" ]' _ "$TM"
+t "机动窗:win() 映射 m-*→「机动窗」;doctor §4 列在跑机动窗;看门狗对话框扫描与 wd_fuel 的一次性窗正则都含 m" bash -c '
+  grep -q "m-\*)       echo \"机动窗\"" "$1" && grep -q "在跑的机动窗" "$1" &&
+  [ "$(grep -c "(verify|relay|m)-" "$1")" -ge 3 ]' _ "$LANE"
+t "机动窗:events——M 件交付 ⛔ 进 M1 台账;ev_loop 有机动件分支(⛔ verify-from,按件轻量复核 + m-down)" bash -c '
+  d="$(sed -n "/^ev_deliver()/,/^}$/p" "$1")"; e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
+  grep -qF "! grep -q '"'"'/M轨-'"'"' <<< \"\$text\"" <<< "$d" &&
+  grep -q "【交付完成】M轨-\*)" <<< "$e" && grep -q "机动件交付落盘" <<< "$e" && grep -q "m-down" <<< "$e"' _ "$LANE"
+t "机动窗:帮助文本与子命令分发齐全(m-up/m-down/peek-m/mlist)" bash -c '
+  for c in m-up m-down peek-m mlist; do grep -q "^#   laixin-lane $c" "$1" || { echo "help 缺 $c"; exit 1; }; grep -qE "^  $c\)" "$1" || { echo "分发缺 $c"; exit 2; }; done' _ "$LANE"
+tout "m-down:不存在的窗幂等(本就不存在)" "本就不存在" "${MUP_ENV[@]}" "$LANE" m-down 从未起过的件
+# 信任前置核(2026-08-22 隔离首火实撞:新目录起 codex 撞「Do you trust…」对话框哑等 90s)
+{ sed -n "/^codex_trust_root()/,/^}/p" "$LANE"; sed -n "/^codex_dir_trusted()/,/^}/p" "$LANE"; } > "$TM/trust.sh"
+git -C "$TM/main" init -q 2>/dev/null && git -C "$TM/main" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null && git -C "$TM/main" worktree add -q --detach "$TM/wt2" HEAD 2>/dev/null
+t "codex_trust_root:git worktree ⇒ 主仓根(物理路径);主仓 ⇒ 自身;非 git ⇒ 目录本身" bash -c '
+  source "$1/trust.sh"; R="$(cd "$1/main" && pwd -P)"
+  [ "$(codex_trust_root "$1/wt2")" = "$R" ] || { echo "wt2→$(codex_trust_root "$1/wt2") ≠ $R"; exit 1; }
+  [ "$(codex_trust_root "$1/main")" = "$R" ] || exit 2
+  [ "$(codex_trust_root "$1/wt")" = "$(cd "$1/wt" && pwd -P)" ]' _ "$TM"
+t "codex_dir_trusted:主仓已信任 ⇒ 其 worktree 判已信任(0);别的目录 1;配置不可读 2" bash -c '
+  source "$1/trust.sh"; R="$(cd "$1/main" && pwd -P)"
+  printf "[projects.\"%s\"]\ntrust_level = \"trusted\"\n" "$R" > "$1/trust.toml"
+  LAIXIN_CODEX_CONFIG="$1/trust.toml" codex_dir_trusted "$1/wt2" || exit 1
+  LAIXIN_CODEX_CONFIG="$1/trust.toml" codex_dir_trusted "$1/wt"; [ $? -eq 1 ] || exit 2
+  LAIXIN_CODEX_CONFIG="$1/没有.toml" codex_dir_trusted "$1/wt"; [ $? -eq 2 ]' _ "$TM"
+tout "m-up --dry 报信任根与状态" "codex 信任根=" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/wt" --dry
+t "m-up:目录未信任 ⇒ 起窗前 die(零窗口零会话;⛔ 哑等对话框)" bash -c '
+  out="$(env LAIXIN_CODEX_CONFIG="$1/config.toml" LAIXIN_REPO="$1/main" LAIXIN_KB="$1/kb" LAIXIN_SESSION="lx-nowin-$$" LAIXIN_BOARD="$1/b.md" "$2" m-up 测试件 --task "$1/task.md" --dir "$1/wt" 2>&1)"; rc=$?
+  [ $rc -ne 0 ] && grep -q "未信任该目录的项目根" <<< "$out" && ! tmux has-session -t "lx-nowin-$$" 2>/dev/null' _ "$TM" "$LANE"
+t "vwait_ready_codex:信任对话框快速失败并点名根因(⛔ 自动选默认项 ⛔ 哑等 90s)" bash -c '
+  b="$(sed -n "/^vwait_ready_codex()/,/^}/p" "$1")"; grep -q "Do you trust the contents of this directory" <<< "$b" && grep -q "⛔ 自动按 Enter/默认项" <<< "$b"' _ "$LANE"
+git -C "$TM/main" worktree remove --force "$TM/wt2" 2>/dev/null || true
+rm -rf "$TM"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then

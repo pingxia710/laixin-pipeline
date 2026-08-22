@@ -31,6 +31,14 @@
 #                                    末行【中转回复】,events 投路径指针给派工窗口;常驻中继 `relay` 仍是 claude(结构:代发 SendMessage)
 #   laixin-lane rdown <件名>         回收一次性中继窗(+清其 CDP 通道)
 #   laixin-lane peek-ro <件名> [N]   看一次性中继窗最近 N 行
+#   laixin-lane m-up <件名> --task <任务单.md> --dir <worktree> [--with-mcp 名]... [--dry]
+#                                    起 **M 轨机动窗**(一次性应召;执行总表 M 子节规格,2026-08-22):引擎 codex,
+#                                    配置=与 A/B 开发轨同源吃 config.toml 全局默认 **⛔ 钉模型 ⛔ luna**;起窗即派任务单路径;
+#                                    各件独立 worktree(--dir 必填且 ⛔ A 轨主树);双向自证=窗内自报模型=全局默认 + BU/端口互异
+#                                    交付契约:记录/M轨-<件名>-报告.md 末行【交付完成】M轨-<件名> <commit|no-commit>(events 投派工窗口)
+#   laixin-lane m-down <件名>        回收机动窗(+清其 CDP 通道;件毕即收 ⛔ 常驻)
+#   laixin-lane peek-m <件名> [N]    看机动窗最近 N 行
+#   laixin-lane mlist                在跑机动窗清单(BU/端口/worktree,自证② 可核)
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane channel-of <会话名>  它在哪个 CC 通道(配置目录)与账号;查不到即说查不到 ⛔ 猜
@@ -203,6 +211,7 @@ seat_src_infer(){  # tmux 窗口名 → 角色名;推不出则空。⛔ 依赖�
     dispatch)  echo "派工窗口" ;;
     relay)     echo "中继窗口" ;;
     relay-*)   echo "一次性中继窗" ;;
+    m-*)       echo "机动窗" ;;
     verify-*)  echo "验收窗口" ;;
     lane-a|lane-b|lane-c) echo "$w" ;;
     *) : ;;
@@ -1957,6 +1966,8 @@ cmd_doctor() {
     [ "${vs:-0}" -gt 0 ] && ok "在跑的验收窗口:$vs 个" || ok "无在跑的验收窗口"
     local ros; ros="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^relay-' || true)"
     [ "${ros:-0}" -gt 0 ] && ok "在跑的一次性中继窗:$ros 个(件毕即收 ⛔ 常驻;回收:laixin-lane rdown <件名>)" || ok "无在跑的一次性中继窗(应召形态,不跑是常态)"
+    local mws; mws="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^m-' || true)"
+    [ "${mws:-0}" -gt 0 ] && ok "在跑的机动窗:$mws 个(M 轨一次性应召;件毕即收,回收:laixin-lane m-down <件名>;清单:laixin-lane mlist)" || ok "无在跑的机动窗(应召形态,不跑是常态)"
     # 🔴 非 claude 派工席(kimi 顶班)出站靠 relay-msg 注入**常驻**中继代发——常驻中继不在班 ⇒ 它的请裁/上报整条断掉,
     #    而「注入失败」只在它跑 relay-msg 那一刻才暴露。体检当面报 ⛔ 等它撞上。
     if [ "$DISPATCH_ENGINE" != "claude" ] && ! relay_alive; then
@@ -2502,7 +2513,8 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
     # #60①:回执 ⛔ 进 M1 台账——M1 的销账判据是「该片 verify-* 窗口存在」,而回执落盘时该窗口
     # **恰好还在**(vdown 在合并后才跑)⇒ 一登记即被误销账,台账只会说谎;回执无人接由
     # 卡住告警(verify-* 静默监视)+人工巡检兜,⛔ 复用一个判据方向相反的机制。
-    if [ "$kind" = "交付" ]; then   # M1:登记待认领(slug 取报告名同 verify-from 口径)
+    # M 件(记录/M轨-*)⛔ 进 M1:它走「按件轻量复核 + m-down」不起 verify 窗,两条销账判据都够不着 ⇒ 登了必成假「无人认领」(与回执 ⛔ 进 M1 同理)
+    if [ "$kind" = "交付" ] && ! grep -q '/M轨-' <<< "$text"; then   # M1:登记待认领(slug 取报告名同 verify-from 口径)
       local _slug; _slug="$(echo "$text" | grep -oE '[^/]+\.md' | head -1 | sed -E 's/\.md$//; s/(验收记录|-?交付报告)$//; s/^来信平台-//' | tr ' /' '--' | cut -c1-24)"
       if [ -n "$_slug" ]; then
         # #138:同片重投(整改重交/去抖漏网)⛔ 各登一条——已在台账则不重复登记(保留最早那条,升级阈值按首投算;
@@ -2723,6 +2735,11 @@ ev_loop(){
           ev_deliver "回执" "【事件】验收回执落盘:$f
 末行:$lastline
 下一步:laixin-lane evidence <片名> 复查回执数字(grep 不到即退回重验)→ 通过则按 laixin-pipeline 卡合并(merge-guard 收尾)+ vdown 回收;打回则转发该轨整改(方向性打回=挂起该轨报方案窗口)。" ;;
+        【交付完成】M轨-*)
+          # M 轨机动件(m-up 起的窗):⛔ verify-from——按件轻量复核(对任务单自证判据)后 m-down 回收
+          ev_deliver "交付" "【事件】机动件交付落盘:$f
+末行:$lastline
+下一步:读报告全文,对任务单自证判据逐条**轻量复核**(M 件不走验收七步 ⛔ verify-from);通过 ⇒ laixin-lane m-down <件名> 回收机动窗 + 总表 M 子节销号;不通过 ⇒ laixin-lane peek-m <件名> 看现场后整改/退回。" ;;
         *)
           ev_deliver "交付" "【事件】交付落盘:$f
 末行:$lastline
@@ -4113,6 +4130,194 @@ cmd_peekro() {
   tmux capture-pane -p -t "$SESSION:$(rowin "$item")" -S "-$n"
 }
 
+# ══ M 轨机动窗(2026-08-22 方案窗口规格 → 11B 首发批;执行总表 M 子节「11B:M 件常规起窗命令」)═══════════════════
+# 规格(排队节该行逐字):吃全局默认 ⛔ 钉模型 · 件毕即收 · 并发多开且各件独立 worktree · 起窗即派任务单路径 ·
+#   双向自证=起窗后窗内自报模型等于全局默认(非 luna)+ 并发两件互不串台。
+# 形态照 relay-once(起窗/点名/回收三件套 + 窗名转义同 vwin/rowin);**唯一本质差别=引擎配置**:
+#   M 件(开发/修理/实施类)= 与 A/B 开发轨**同一条** codex 起动串(cmd_up 的 _launch:`codex <mcp关闭串>`,零 -m 零推理档)
+#   ⛔ codex_launch_cmd(那条显式钉 luna/max,是验收窗与中继件的射程;协作流程 :38「模型按活的性质分 ⛔ 一刀切」——
+#   创始人:「M 轨不要用 luna,用 AB 轨一样的配置」)。自证①先于派单:模型不对就 ⛔ 把任务交给它。
+mwin() {  # 件名 → m-<slug>(转义规则与 vwin/rowin 逐字同款——tmux 目标字符 . : % $ @ 与空格斜杠)
+  local slug; slug="$(echo "$1" | tr ' /.:%$@' '-------' | cut -c1-24)"
+  [ -n "$slug" ] || die "件名不能为空"
+  echo "m-$slug"
+}
+codex_global_default(){  # → stdout="<model> <effort>"(读 config.toml 全局默认;LAIXIN_CODEX_CONFIG 可覆盖路径——与 11c-trust 同名同义)
+  # 拿不到显 ? ⛔ 显默认值(工具自身不许重蹈它要解决的毛病:读不到≠等于默认)
+  local cfg="${LAIXIN_CODEX_CONFIG:-$HOME/.codex/config.toml}" m e
+  m="$(grep -E '^model *= *"' "$cfg" 2>/dev/null | head -1 | sed -E 's/^model *= *"([^"]*)".*/\1/')"
+  e="$(grep -E '^model_reasoning_effort *= *"' "$cfg" 2>/dev/null | head -1 | sed -E 's/^model_reasoning_effort *= *"([^"]*)".*/\1/')"
+  printf '%s %s' "${m:-?}" "${e:-?}"
+}
+oneshot_port_clash(){  # <端口> [排除窗名] → stdout=与之同端口的在跑一次性窗名(verify-*/relay-*/m-*);空=无撞;恒返 0
+  local p="$1" skip="${2:-}" w
+  for w in $(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -E '^(verify|relay|m)-' || true); do
+    [ "$w" = "$skip" ] && continue
+    [ "$(cdp_port_verify "$w")" = "$p" ] && echo "$w"
+  done
+  return 0
+}
+m_self_attest_model(){  # <窗名> → stdout="<model> <effort>";取不到退 1(最多等 ~12s)
+  # 首选横幅行 `model:       gpt-5.6-terra xhigh   fast`(会话配置的权威自报);兜底底栏 `gpt-5.6-terra xhigh fast · ~/…`。
+  # 🔴 底栏起步瞬间先显「gpt-5.6-terra default」再换成真实档位(2026-08-22 隔离首火实撞:横幅已写 xhigh 而底栏 default,
+  #   抓到 default 即判自证失败)⇒ 档位=default 视为过渡态,继续等;等满仍 default 才照实返回(让上层按不符处置)。
+  local w="$1" tries=0 pane line
+  while [ "$tries" -lt 6 ]; do
+    pane="$(tmux capture-pane -p -t "$SESSION:$w" -S -80 2>/dev/null || true)"
+    line="$(grep -oE 'model: +gpt-[0-9.]+-[a-z]+ +[a-z]+' <<< "$pane" | tail -1 | sed -E 's/^model: +//' || true)"
+    [ -n "$line" ] || line="$(grep -oE 'gpt-[0-9.]+-[a-z]+ +[a-z]+' <<< "$pane" | tail -1 || true)"
+    if [ -n "$line" ]; then
+      case "$line" in *" default") if [ "$tries" -lt 5 ]; then sleep 2; tries=$((tries+1)); continue; fi ;; esac
+      printf '%s' "$line" | awk '{print $1" "$2}'; return 0
+    fi
+    sleep 2; tries=$((tries+1))
+  done
+  return 1
+}
+codex_trust_root(){  # <目录> → stdout=codex 信任判定所用的项目根(物理绝对路径):git worktree ⇒ **主仓根**(2026-08-22 实测:lane-b
+  # 的 ~/来信平台-b97 不在 config.toml 而从不弹信任框,其 --git-common-dir=~/来信平台/.git ⇒ codex 按公共目录的父目录查信任);非 git ⇒ 目录本身
+  local d="$1" cd_
+  cd_="$(git -C "$d" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$cd_" ]; then
+    case "$cd_" in /*) ;; *) cd_="$d/$cd_" ;; esac
+    ( cd "$(dirname "$cd_")" 2>/dev/null && pwd -P ) || ( cd "$d" && pwd -P )
+  else
+    ( cd "$d" && pwd -P )
+  fi
+}
+codex_dir_trusted(){  # <目录> → 0=其 codex 项目根在 config.toml 为 trust_level="trusted";1=否;2=配置读不到(调用方自行降级)
+  local cfg="${LAIXIN_CODEX_CONFIG:-$HOME/.codex/config.toml}" root
+  [ -r "$cfg" ] || return 2
+  root="$(codex_trust_root "$1")"
+  awk -v key="[projects.\"$root\"]" '$0==key{f=1;next} f&&/^\[/{f=0} f&&/^trust_level *= *"trusted"/{found=1} END{exit found?0:1}' "$cfg"
+}
+cmd_mup() {
+  local item="${1:-}"; shift || true
+  [ -n "$item" ] || die "m-up 需要件名:laixin-lane m-up <件名> --task <任务单.md> --dir <worktree> [--with-mcp 服务名]... [--dry]"
+  local task="" dir="" mcp_keep="" dry=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --task) task="${2:?--task 需要任务单路径}"; shift 2 ;;
+      --dir)  dir="${2:?--dir 需要路径}"; shift 2 ;;
+      --with-mcp) mcp_keep="$mcp_keep ${2:?--with-mcp 需要服务名}"; shift 2 ;;
+      --dry)  dry=1; shift ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  # 校验全部在动窗口之前(#60① 一课:拒绝时 ⛔ 留半个死窗口)
+  [ -n "$task" ] || die "m-up 必须 --task <任务单.md>(起窗即派任务单路径——任务单是件的唯一依据,⛔ 把任务塞进命令行)"
+  [ -f "$task" ] || die "任务单不存在:$task"
+  [ -n "$dir" ] || die "m-up 必须 --dir <worktree>(各件独立 worktree 机器执法 ⛔ 靠自觉;取号:laixin-lane next-worktree,再 git worktree add <路径> main)"
+  [ -d "$dir" ] || die "目录不存在:$dir(窗口未动;先 git worktree add 再 m-up)"
+  if [ -d "$DEFAULT_DIR" ] && [ "$(cd "$dir" && pwd -P)" = "$(cd "$DEFAULT_DIR" && pwd -P)" ]; then
+    die "⛔ M 件不得落 A 轨主树 $DEFAULT_DIR(与在飞 A 片对写同一工作树=「两轨对写同一文件」同族);另开 worktree"
+  fi
+  local w; w="$(mwin "$item")"
+  local bu port; bu="m$(printf '%s' "$w" | cksum | awk '{print $1}')"; port="$(cdp_port_verify "$w")"
+  local gdef; gdef="$(codex_global_default)"
+  local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
+  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
+  local report="$KB/4-开发层/记录/M轨-${item}-报告.md"
+  local msg; msg="$(cat <<EOF
+你是 laixin 开发流水线的**机动窗**(M 轨一次性应召窗;引擎=codex,配置=与 A/B 开发轨同源吃 config.toml 全局默认——本窗起窗自证:${gdef};由派工窗口按件起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
+
+件名:${item}
+任务单(先通读,它是本件唯一依据;四要件——目标/射程/自证判据/交付物——不齐就停,在报告里写明缺什么 ⛔ 自行补脑):${task}
+工作目录=本 worktree ${dir}(⛔ 越出本目录改别处;⛔ 碰 A/B/C 轨在飞文件;两件 ⛔ 对写同一代码文件)
+
+起手式(按序,⛔ 跳步):1. 跑 date 实测当前时间;2. 用 Read 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md(流水线操作卡单点源,绝对路径直读);3. 读任务单全文;4. 读 ${KB}/4-开发层/来信平台-流水线看板.md 末 20 行。
+
+边界:M 轨只承载**非产品代码**的执行类活(工具修理实施 · 档面批处理 · 复现实验与采样 · 调研外证实施)。任务单若要你改产品代码(frontend/backend 业务逻辑)——停,在报告写明并退回(产品代码一律走 A/B/C 片级闸门,⛔ 借 M 轨绕)。
+红线(本引擎无工具层禁令,以本指令为准,越线即整件作废):⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ 动主树;⛔ laixin-lane send/fresh/up/down/claim/dispatch/halt/resurrect/release/watchdog/events/verify/vdown/relay/relay-once/rdown/m-up/m-down;⛔ laixin-lane dmsg 注入派工窗格;⛔ 起任何新窗口。
+
+交付契约(硬约束):报告写入
+   ${report}
+**最后一行行首固定为**:【交付完成】M轨-${item} <commit短hash 或 no-commit>
+——事件总线扫到末行后投给派工窗口;派工窗口按件**轻量复核**(对任务单自证判据逐条核)后 laixin-lane m-down ${item} 回收本窗(你 ⛔ 自收)。报告里自证判据逐条给实测证据(命令+输出),⛔ 自称。
+看板记录用 laixin-lane log "..."(本窗来源按窗口名自动标为「机动窗」,⛔ 手工拼前缀)。
+EOF
+)"
+  # 🔴 codex 信任前置核(2026-08-22 隔离会话首火实撞):新目录起 codex 被「Do you trust the contents of this directory?」
+  #   对话框挡住直到 90s 超时——对话框纪律 ⛔ 自动选默认项(那正是「Yes, continue」),唯一合规处置=起窗前确认已信任。
+  #   信任按 git 主仓根生效 ⇒ 从 ~/来信平台 开出的 worktree 天然已信任;别的仓(如 11B 工具仓)跑 M 件须先把仓根加信任
+  #  (方式同 laixin-11c-trust 预写;其白名单只到 ~/.laixin-11c/,白名单外需创始人裁 ⛔ 本命令代扩)。
+  local troot trc=0 tstat; troot="$(codex_trust_root "$dir")"
+  codex_dir_trusted "$dir" || trc=$?
+  case "$trc" in 0) tstat="已信任" ;; 1) tstat="未信任" ;; *) tstat="配置不可读" ;; esac
+  if [ -n "$dry" ]; then
+    echo "[dry] 窗口=$w cwd=$dir BU_NAME=$bu 端口=$port 全局默认=${gdef}"
+    echo "[dry] 起动串:$launch"
+    echo "[dry] codex 信任根=$troot(${tstat})"
+    echo "[dry] 交付契约:$report 末行【交付完成】M轨-${item} <commit|no-commit>"
+    echo "[dry] 点名指令首行:$(head -1 <<< "$msg" | cut -c1-120)"
+    return 0
+  fi
+  if [ "$trc" -eq 1 ]; then
+    die "⛔ codex 未信任该目录的项目根 ${troot}(~/.codex/config.toml 无 [projects.\"${troot}\"] trust_level=\"trusted\")——起窗必被信任对话框挡住(2026-08-22 试火实撞;⛔ 自动选默认项)。处置:M 件 worktree 从已信任仓开(git -C ~/来信平台 worktree add <路径> main,worktree 按主仓信任);别的仓须先把仓根加信任(同 laixin-11c-trust 预写,白名单外需创始人裁)。窗口与会话均未动"
+  elif [ "$trc" -eq 2 ]; then
+    echo "⚠️ 读不到 codex 配置,跳过信任前置核(若撞信任对话框会在就绪等待里快速失败)" >&2
+  fi
+  ensure_session
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
+    die "$w 已存在——同一件不重复起机动窗(要换新先 laixin-lane m-down $item)"
+  fi
+  local clash; clash="$(oneshot_port_clash "$port")"
+  [ -z "$clash" ] || die "⛔ CDP 端口 $port 与在跑一次性窗 $clash 撞车(自证② 互不串台的前置)——改件名再起"
+  tmux new-window -t "$SESSION" -n "$w" -c "$dir"
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$w" "$launch" C-m
+  vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-m $item 40"
+  # 自证①:窗内自报模型必须=全局默认(非 luna)——先于派单:模型不对就 ⛔ 把任务交给它
+  local seen; seen="$(m_self_attest_model "$w" || true)"
+  if [ -z "$seen" ]; then
+    echo "⚠️ 自证①未取到窗内模型行(底栏未渲染?),不判失败——laixin-lane peek-m $item 人工核一眼;任务照派" >&2
+    board "$(caller_src)" "⚠️ 机动窗 $w 自证①未取到模型行(任务照派;peek-m $item 人工核)"
+  elif [ "$seen" != "$gdef" ]; then
+    board "$(caller_src)" "⛔ 机动窗 $w 自证①失败:窗内自报「${seen}」≠ 全局默认「${gdef}」——未派任务;peek-m $item 查现场后 m-down"
+    die "⛔ 自证①失败:窗内自报「${seen}」≠ 全局默认「${gdef}」(M 件 ⛔ 钉模型 ⛔ luna)。窗口保留供 laixin-lane peek-m $item;处置后 laixin-lane m-down $item"
+  fi
+  sleep 1
+  printf '%s' "$msg" | tmux load-buffer -b laixin-mmsg -
+  tmux paste-buffer -p -b laixin-mmsg -t "$SESSION:$w"
+  tmux delete-buffer -b laixin-mmsg
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$w" C-m
+  ( confirm_briefed "$w" "m-up" codex ) >/dev/null 2>&1 &
+  local others; others="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -cE '^(verify|relay|m)-' || true)"
+  board "$(caller_src)" "起机动窗 $w ← 件「${item}」(任务单 $task;worktree $dir;自证①模型=${seen:-未取到}/全局默认=${gdef};自证② BU=$bu 端口=$port,与其余 $(( ${others:-1} - 1 )) 个一次性窗端口互异;件毕即收)"
+  echo "$w 已起并派任务单(引擎=codex 全局默认 ${gdef};自证①=${seen:-未取到};自证② BU_NAME=$bu 端口=$port)。复核:laixin-lane peek-m $item 30"
+  echo "交付契约:$report 末行行首【交付完成】M轨-${item} <commit|no-commit>——事件总线投给派工窗口;件毕:laixin-lane m-down $item"
+  return 0
+}
+cmd_mdown() {
+  local item="${1:-}"
+  [ -n "$item" ] || die "m-down 需要件名"
+  local w; w="$(mwin "$item")"
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" \
+    || { echo "$w 本就不存在"; return 0; }
+  tmux kill-window -t "$SESSION:$w"
+  cdp_sweep "$(cdp_port_verify "$w")"
+  board "$(caller_src)" "回收机动窗 $w(件「${item}」毕)"
+  echo "$w 已回收"
+  return 0
+}
+cmd_peekm() {
+  local item="${1:-}"; local n="${2:-30}"
+  [ -n "$item" ] || die "peek-m 需要件名"
+  tmux capture-pane -p -t "$SESSION:$(mwin "$item")" -S "-$n"
+}
+cmd_mlist() {  # 在跑机动窗清单(自证② 可核:各窗 BU/端口/worktree 一目了然)
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }
+  local w pc path n=0
+  while read -r w pc path; do
+    [ -n "$w" ] || continue
+    n=$((n+1))
+    printf '%s  [%s]  BU=m%s 端口=%s  @ %s\n' "$w" "$pc" "$(printf '%s' "$w" | cksum | awk '{print $1}')" "$(cdp_port_verify "$w")" "$path"
+  done < <(tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_current_command} #{pane_current_path}' 2>/dev/null | grep '^m-' || true)
+  [ "$n" -gt 0 ] || echo "当前没有在跑的机动窗(应召形态,不跑是常态)"
+  return 0
+}
+
 # ══ #67②:出站中转 relay-msg —— dispatch 换 codex 后唯一的真工程 ═══════════════════════════
 # 背景:codex **没有 SendMessage**。入站没问题(events 靠 tmux send-keys 投递,任何引擎都收得到,
 # 零改动);出站是问题——skills/laixin-pipeline/SKILL.md 有 5 处依赖 SendMessage。
@@ -4347,7 +4552,7 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
   n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }B:${n}"
   if win_exists "lane-c"; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }C:${n}"; fi
   if [ -s "$EV_PENDING" ] && grep -q '|P$' "$EV_PENDING" 2>/dev/null; then src="${src:+$src }待认领交付"; fi
-  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qE '^(verify|relay)-'; then src="${src:+$src }在跑验收/中继窗"; fi
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qE '^(verify|relay|m)-'; then src="${src:+$src }在跑验收/中继/机动窗"; fi
   if [ -s "$RELAY_OUTBOX" ]; then src="${src:+$src }转办待回执"; fi
   printf '%s' "$src"; return 0
 }
@@ -4460,7 +4665,7 @@ wd_loop() {
       2) continue ;;                                      # 挡住且不敢动键:告警已发,不做无效戳/重起
     esac
     local vw
-    for vw in $(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -E '^(verify|relay)-' || true); do   # relay-*=一次性中继窗,同为无人值守的一次性席位
+    for vw in $(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -E '^(verify|relay|m)-' || true); do   # relay-*=一次性中继窗 / m-*=机动窗,同为无人值守的一次性席位
       dialog_sweep_win "$vw" >/dev/null 2>&1 || true
     done
     # —— 2. 活着但静止:先判是不是"正常等待" ——
@@ -4631,6 +4836,12 @@ vwait_ready_codex() {  # <窗口名> —— codex 引擎的就绪判据(#60①):
     pane="$(tmux capture-pane -p -t "$SESSION:$w" -S -60 2>/dev/null || true)"
     if grep -q "OpenAI Codex" <<< "$pane"; then return 0; fi
     if grep -q "Update available" <<< "$pane"; then tmux send-keys -t "$SESSION:$w" Escape; fi
+    # 信任对话框(2026-08-22 m-up 隔离首火实撞,此前哑等 90s 超时):默认项=「Yes, continue」⇒ 按签名库硬规则 ⛔ Enter ⛔ 默认项;
+    #   快速失败并点名根因(目录未被信任),窗口保留供人看现场;m-up 已在起窗前核信任,其余起窗点的目录应是已信任仓的 worktree
+    if grep -q "Do you trust the contents of this directory" <<< "$pane"; then
+      board "$(caller_src)" "⛔ $w 被 codex 信任对话框挡住(目录按 git 主仓根未被信任)——⛔ 自动选默认项;窗口保留,处置后回收"
+      die "$w 被 codex 信任对话框挡住:该目录(按 git 主仓根)未在 ~/.codex/config.toml 信任——⛔ 自动按 Enter/默认项;把目录开成已信任仓的 worktree 再起(m-up 起窗前会核)"
+    fi
     if [ "$tries" -ge 5 ]; then
       pc="$(pane_cmd "$w")"
       if [ "$pc" = "$(basename "${SHELL:-/bin/zsh}")" ]; then
@@ -5244,6 +5455,10 @@ case "${1:-}" in
   relay-once) shift; cmd_relay_once "$@" ;;   # 一次性应召中继窗(claude 默认 / codex 第二;件毕即收)
   rdown)      shift; cmd_rdown "$@" ;;        # 回收一次性中继窗
   peek-ro)    shift; cmd_peekro "$@" ;;
+  m-up)       shift; cmd_mup "$@" ;;          # M 轨机动窗(codex 全局默认 ⛔ 钉模型;件毕即收;各件独立 worktree)
+  m-down)     shift; cmd_mdown "$@" ;;
+  peek-m)     shift; cmd_peekm "$@" ;;
+  mlist)      shift; cmd_mlist "$@" ;;
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)

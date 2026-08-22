@@ -2347,8 +2347,25 @@ ev_loop(){
       : > "$EV_PENDING.new"
       while IFS='|' read -r _pe _ps _pst; do
         [ -n "$_ps" ] || continue
-        if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "verify-$_ps"; then
+        # 🔴 窗口名必须经 vwin 转义后再比(2026-08-22):vwin 已把片名里的 tmux 目标字符(. : % $ @)
+        #   换成 `-`,而这里原先拼的是**未转义的原片名** ⇒ 凡片名含点(如 `V0.2包①…`)必然对不上,
+        #   M1 会 100% 误报「无人认领」。**这是 vwin 修复的连带影响,同批补上 ⛔ 留给下一个人撞。**
+        if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$(vwin "$_ps" 2>/dev/null || echo "verify-$_ps")"; then
           ev_log "M1 认领销账:$_ps(verify 窗口已见)"; continue
+        fi
+        # 🔴 第二条销账:**该交付报告的末行已不再是【交付完成】** ⇒ 验收方已在其后追加了结论。
+        #   这不是新约定,是**本仓既有设计**(`ev_scan_deliveries` 注释逐字:「验收方追加结论后
+        #   自然退出集合」)⇒ 复用它当销账证据,免语义、零新依赖。
+        #   实撞(2026-08-22 13:09):`V0.2包①钱的去向信息首片` **12:58 就已 ff-only 合入 main**、
+        #   12:54 验收回执落盘,而 M1 13:09 仍报「投递 45 分钟无认领」—— 因为它只认「verify 窗口
+        #   此刻在不在」,而**窗口是短命的**:验收跑完即回收,回收之后这条判据永远为假。
+        #   ⇒ 「窗口在不在」只能证明**正在被处理**,证明不了**已经处理完**。
+        #   ⚠️ 本条首版写成 `grep "合并 $_ps" 看板` —— **依赖措辞,当轮实测零命中**:codex dispatch
+        #   写的是「包①验收回执证据复查通过后已 ff-only 合入 main@3952ee52」,与 claude 时代的
+        #   固定格式不同。本仓判据方向早写过「事实优先于措辞,⛔ 靠子串匹配措辞下结论」,我照撞。
+        _rep="$(ls "$KB/4-开发层/记录"/*"$_ps"*交付报告*.md 2>/dev/null | head -1)"
+        if [ -n "$_rep" ] && [ -f "$_rep" ] && ! tail -1 "$_rep" | grep -q '^【交付完成】'; then
+          ev_log "M1 认领销账:$_ps(交付报告末行已被验收结论覆盖=已被接手)"; continue
         fi
         if [ "$_pst" = "P" ] && [ $(( _now - _pe )) -ge "$EV_ACK" ]; then
           # 🔴 ${_ps} 花括号不能省(2026-08-20 00:32 实撞,ev-loop 连崩两拍进 crashloop,看门狗每分钟重起):bash 3.2 在 zh_CN/en_US.UTF-8

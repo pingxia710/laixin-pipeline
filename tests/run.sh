@@ -4,6 +4,9 @@
 set -uo pipefail
 LANE="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-lane"
 PASS=0; FAIL=0
+# 🔴 套件零副作用的机器半边(2026-08-22 实撞):真实派工权锁在套件开跑时若在,跑完必须还在——
+#   当日 halt fixture 用真 HOME 的锁,把在班 dispatch 的派工权删了两遍而套件全绿;「绝不碰派工权锁」此前只是上面那行自述。
+REAL_LOCK_BEFORE="$(cat "$HOME/.laixin-dispatch.lock" 2>/dev/null || true)"
 t(){ # t <名字> <命令...> —— 退出码 0 即过
   local name="$1"; shift
   if "$@" >/dev/null 2>&1; then PASS=$((PASS+1)); echo "  ✅ $name";
@@ -562,7 +565,12 @@ t "relay-down 后标记确已不在(总闸门真的关了)" bash -c '[ ! -f "'"$
 #   halt 是暂停、relay-down 才是关托管。若谁在 halt 里顺手 rm 标记,halt→resurrect --full 会
 #   **静默少起一个中继**(拓扑缺一角且零告警),正是三约束②「失效必须降级 ⛔ 反向」要防的形态。
 printf 'seed\n' > "$R32/m"
-env LAIXIN_SESSION="$R32S" LAIXIN_RELAY_ENABLED="$R32/m" LAIXIN_BOARD="$R32/b.md" "$LANE" halt >/dev/null 2>&1 || true
+# 🔴 LAIXIN_DISPATCH_LOCK 必带(2026-08-22 实撞):本条此前用真 HOME 的锁 ⇒ cmd_halt 末尾「持有者==dispatch 则 rm」
+#   把**在班 dispatch 的派工权删了**(套件跑两遍、锁消失两遍、套件自报全绿)。套件头两行「绝不碰派工权锁」
+#   只是自述,机器半边见文末「套件零副作用」断言。
+printf 'dispatch %s\n' "$(date +%s)" > "$R32/lock"
+env LAIXIN_SESSION="$R32S" LAIXIN_RELAY_ENABLED="$R32/m" LAIXIN_BOARD="$R32/b.md" LAIXIN_DISPATCH_LOCK="$R32/lock" "$LANE" halt >/dev/null 2>&1 || true
+t "halt 清的是 fixture 锁(持有者==dispatch ⇒ rm 路径真被走到,⛔ 只是没碰到真锁)" bash -c '[ ! -f "'"$R32"'/lock" ]'
 t "halt 保留托管标记(halt=暂停 ⛔ 关托管)" bash -c '[ -f "'"$R32"'/m" ]'
 t "halt 确会收 relay 窗口" bash -c \
   'awk "/^cmd_halt\(\)/,/^}/" "'"$LANE"'" | grep -q "RELAY_WIN"'
@@ -2811,6 +2819,13 @@ t "11c-trust:幂等未产生重复表(重复表=TOML 致命)" bash -c '[ "$(grep
 t "11c-trust:既有条目(/Users/pingxia)原样未动" bash -c 'grep -qF "[projects.\"/Users/pingxia\"]" "'"$TCFG"'"'
 t "11c-trust:备份文件已生成" bash -c 'ls "'"$TTD"'"/config.toml.bak-11ctrust-* >/dev/null'
 rm -rf "$TTD"
+
+# ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
+if [ -n "$REAL_LOCK_BEFORE" ]; then
+  t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'
+else
+  echo "  ℹ️ 套件零副作用:开跑时无真实派工权锁,本断言无对象(不计)"
+fi
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

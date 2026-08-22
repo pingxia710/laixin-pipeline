@@ -3233,7 +3233,10 @@ DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kim
 # ---- 派工权认领:用"谁在动 lane"识别派工窗口,而不是数窗口个数 ----
 # 数量是身份的不可靠代理(开窗口问问题 vs 开窗口接管派工,在"数量"里长得一样);
 # 而 send 是派工窗口的定义性行为 ⇒ 直接测行为,不猜身份。
-DISPATCH_LOCK="$HOME/.laixin-dispatch.lock"
+# ⚠️ 可覆盖(2026-08-22 实撞):tests/run.sh 的 halt fixture 用假会话/假看板/假托管标记却用**真 HOME 的锁**
+#   ⇒ cmd_halt 末尾「持有者==dispatch 就 rm 锁」把**在班 dispatch 的派工权删了**,而套件自述「绝不碰派工权锁」、
+#   跑完全绿。锁路径必须与 LAIXIN_BOARD/LAIXIN_SESSION 同等可被 fixture 接管,否则「零副作用」只是自述。
+DISPATCH_LOCK="${LAIXIN_DISPATCH_LOCK:-$HOME/.laixin-dispatch.lock}"
 LOCK_FRESH="${LAIXIN_LOCK_FRESH:-1800}"   # 心跳新鲜期(秒),默认 30 分钟
 
 whoami_window() {   # 调用者所在的 tmux 窗口名;不在 tmux 里则记为 external:<pid>

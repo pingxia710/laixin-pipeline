@@ -127,6 +127,7 @@ SendMessage / ListAgents 之类的工具」)。⇒ 派工窗口一旦切到 kimi
 不靠纪律。推论:非 claude 席位每多一个,拓扑就多依赖一次中继;而中继一挂,kimi 顶班的派工窗口
 **出站全断**(入站还剩 events 与 dmsg)——`doctor` §4 对「派工席非 claude 且常驻中继不在班」报硬错。
 🔁 **中继两条路线(2026-08-22 创始人定案「两条路线都落到位」)**:①**常驻 `relay`**(claude;2026-08-22 17:49 第十八任收摊后**托管关闭**,需要时 `laixin-lane relay` 一条命令即恢复,看门狗随即保活)——承担**代发**与常设 11C 服务位;②**一次性应召中继窗 `laixin-lane relay-once <件名> --file <正文.md>`**(方案窗口同日形态变更:中继搬到执行层,dispatch 按件点名起、件毕即收 ⛔ 常驻 ⛔ 注册常任;承担核库快裁 / 点状快查 / 11C 三职)——**引擎 claude 默认 / codex 第二方案**(创始人:「codex 这个路线没有验证过…默认还是 claude code,因为后面 11C 可能会用到,把 codex 当作第 2 方案」;codex 形态=协作流程 :254 沿革注所定,起窗显式 luna/max),开关 `~/.laixin-lane-switch/relay-once-engine` 或 `--engine`,起窗时实时读;回复契约=落盘 `记录/<件名>-中转回复.md` 末行行首 `【中转回复】<件名> 来自 relay-once`(events 既有扫描,投路径指针给派工窗口),件毕 `laixin-lane rdown <件名>` 回收。**⛔ 拿一次性窗替代常驻的代发**——`relay-msg` 注入的是窗口名 `relay`。两条链路都已在隔离 tmux 会话实起验证(2026-08-22)。
+🔴 **创始人 2026-08-22 19:5x 令:「派工窗口如果换成 kimi 的时候,relay 就一定要是 claude」**——机器形态:①`laixin-lane dispatch` 起 kimi 派工席前**自动拉起常驻 claude 中继**(不在班就 `cmd_relay --fresh --resurrect`,拉不起则拒起派工席并大声报);②派工席非 claude 时**一次性中继强制 claude**(开关里的 codex 被压制,doctor §6 点名;显式 `--engine codex` 被拒)。⇒ 切 kimi 的三步前**不必手起中继**,但切完看一眼 `doctor` §4「中继」与 §6 两行。
 
 **分流原则**:只让「需要对方判断」的消息走中继。事实本来就不需要「人话」这一跳,而中继是唯一枢纽,
 每多走一条就多吃它一份上下文。

@@ -1982,7 +1982,9 @@ cmd_doctor() {
   fi
   # 中继两条路线(2026-08-22 创始人定案「两条路线都落到位」):常驻 relay=claude(结构:替无 SendMessage 的席位代发,⛔ 换引擎);
   # 一次性应召 relay-once=claude 默认 / codex 第二方案(codex 形态=方案窗口当日形态变更,创始人令先当第二方案直到实战验证)。
-  if [ "$RELAY_ONCE_ENGINE_REQ" != "$RELAY_ONCE_ENGINE" ]; then
+  if [ -n "$RELAY_ONCE_FORCED" ]; then   # 规则压制 ⛔ 读成「请求无效」——开关值本身合法,是派工席引擎让它不适用
+    ok "一次性中继引擎:claude 🔒 ${RELAY_ONCE_FORCED}(一次性按 claude 起;常驻由 kimi 派工席起窗时自动拉起)"
+  elif [ "$RELAY_ONCE_ENGINE_REQ" != "$RELAY_ONCE_ENGINE" ]; then
     wrn "一次性中继引擎请求「${RELAY_ONCE_ENGINE_REQ}」无效(只有 claude 默认/codex 第二)——已按 claude;清理:rm ~/.laixin-lane-switch/relay-once-engine / unset LAIXIN_RELAY_ONCE_ENGINE"
   else
     ok "一次性中继引擎:${RELAY_ONCE_ENGINE}(claude 默认 / codex 第二方案;开关 ~/.laixin-lane-switch/relay-once-engine 或 LAIXIN_RELAY_ONCE_ENGINE,起窗时实时读);常驻中继 relay=claude(结构,无开关)$( relay_enabled && echo ';常驻托管=开' || echo ';常驻托管=关(应召形态)' )"
@@ -3549,6 +3551,17 @@ cmd_dispatch() {
   # #68:kimi 对每个新工作目录弹 `Trust this folder?`,两个选项都是坑(不信任=直接退出)
   # ⇒ **起窗前预写信任记录**,⛔ 起完再想办法点按钮——托管窗口无人可点。
   _brief="$DISPATCH_BRIEF_KIMI"
+  # 🔴 创始人 2026-08-22 19:5x:「派工窗口如果换成 kimi 的时候,relay 就一定要是 claude」——机器形态:kimi 派工席起窗前
+  #   常驻 claude 中继必须在班,不在就在此**自动拉起**(cmd_relay --fresh --resurrect:系统按拓扑要求拉起/换掉死窗口,
+  #   ⛔ 人手开第二中继那种形态——双中继守卫在常态拓扑 outside=2 下恒拦,故走 --resurrect 豁免;起窗即开托管,看门狗随即保活)。
+  #   拉不起 ⇒ die(大声,含看门狗重生路径):宁可派工席空着被每拍报「重起失败」,也 ⛔ 起一个出站无代发方的 kimi 派工席
+  #   (那种失败只在它第一次 relay-msg 时才露出,而此前一切看着正常)。子 shell 隔离收码(#44:cmd_relay 树里有 die)。
+  if ! relay_alive; then
+    local _rr_rc=0 _rr_out=""
+    _rr_out="$(cmd_relay --fresh --resurrect 2>&1)" || _rr_rc=$?
+    [ "$_rr_rc" -eq 0 ] || die "kimi 派工席要求常驻 claude 中继在班(创始人 2026-08-22 令),自动拉起失败(rc=${_rr_rc}):$(tail -1 <<< "$_rr_out" | cut -c1-160)——先 laixin-lane relay 起中继再起派工窗口"
+    board "$(caller_src)" "kimi 派工席起窗前已自动拉起常驻 claude 中继 relay(创始人令:派工席=kimi 时中继一律 claude;托管已开)"
+  fi
   kimi_trust_prewrite "$dir" || die "$DISPATCH_WIN 起窗中止:kimi 信任记录预写失败(见上方告警)"
   tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
   sleep 0.5
@@ -3853,6 +3866,19 @@ relay_once_engine_resolve(){  # → stdout "<生效引擎> <请求值>";env > �
   printf '%s %s\n' "$eff" "$req"
 }
 read -r RELAY_ONCE_ENGINE RELAY_ONCE_ENGINE_REQ <<< "$(relay_once_engine_resolve)"
+# 🔴 创始人 2026-08-22 19:5x:「派工窗口如果换成 kimi 的时候,relay 就一定要是 claude」——机器形态两半:
+#   ①常驻:cmd_dispatch 起 kimi 派工席前自动拉起常驻 claude 中继(拉不起 ⇒ 拒起,见 cmd_dispatch);
+#   ②一次性:派工席非 claude 时,一次性中继引擎**强制 claude**,开关/--engine 里的 codex 被压制并点名(⛔ 静默)。
+#   判据取 DISPATCH_ENGINE(同进程已解析;cmd_relay_once 内再实时解析一次)。
+RELAY_ONCE_FORCED=""
+relay_once_apply_kimi_rule(){  # 用当前 DISPATCH_ENGINE 修正 RELAY_ONCE_ENGINE;置 RELAY_ONCE_FORCED 说明
+  RELAY_ONCE_FORCED=""
+  if [ "$DISPATCH_ENGINE" != "claude" ] && [ "$RELAY_ONCE_ENGINE" != "claude" ]; then
+    RELAY_ONCE_FORCED="派工席=${DISPATCH_ENGINE} ⇒ 中继一律 claude(创始人 2026-08-22 令),开关「${RELAY_ONCE_ENGINE_REQ}」被压制"
+    RELAY_ONCE_ENGINE="claude"
+  fi
+}
+relay_once_apply_kimi_rule
 # 一次性窗在常驻 deny 上再收两格:⛔ 起/收任何中继(含再起一次性窗——件毕即收,不得自我繁殖)。
 # "laixin-lane relay*" 通配在此合法:一次性窗不是 dispatch,relay-msg 对它本就被 whoami 机器闸拒;其余 relay/relay-down/relay-once 都不该由它发起。
 RELAY_ONCE_DENY=("${RELAY_DENY[@]}" "Bash(laixin-lane relay*)" "Bash(laixin-lane rdown*)")
@@ -3886,6 +3912,13 @@ cmd_relay_once() {
   if [ "$RELAY_ONCE_ENGINE_REQ" != "$RELAY_ONCE_ENGINE" ]; then
     echo "⚠️ 一次性中继引擎请求「${RELAY_ONCE_ENGINE_REQ}」无效(只有 claude 默认/codex 第二),按 claude 起窗;清理:rm ~/.laixin-lane-switch/relay-once-engine / unset LAIXIN_RELAY_ONCE_ENGINE"
   fi
+  # 🔴 派工席非 claude ⇒ 中继一律 claude(创始人 2026-08-22 令):显式 --engine codex 是人在要求被禁组合 ⇒ die;开关里的 codex 压制并点名
+  read -r DISPATCH_ENGINE DISPATCH_ENGINE_REQ <<< "$(dispatch_engine_resolve)"
+  if [ "$DISPATCH_ENGINE" != "claude" ] && [ -n "$eng_opt" ] && [ "$eng_opt" != "claude" ]; then
+    die "派工席引擎=${DISPATCH_ENGINE} 时中继一律 claude(创始人 2026-08-22 令)——⛔ --engine ${eng_opt};去掉 --engine 让它按规则走 claude"
+  fi
+  relay_once_apply_kimi_rule
+  [ -z "$RELAY_ONCE_FORCED" ] || echo "ℹ️ ${RELAY_ONCE_FORCED}——本件按 claude 起"
   local w; w="$(rowin "$item")"
   local bu port; bu="r$(printf '%s' "$w" | cksum | awk '{print $1}')"
   port="$(cdp_port_verify "$w")"

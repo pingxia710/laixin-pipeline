@@ -2594,7 +2594,10 @@ t "relay-once:引擎默认 claude(resolve 兜底 echo claude;⛔ 兜底 codex)" 
   'b="$(sed -n "/^relay_once_engine_resolve()/,/^}/p" "$1")"; grep -q "LAIXIN_RELAY_ONCE_ENGINE:-.*echo claude" <<< "$b" && ! grep -q "echo codex)" <<< "$b"' _ "$LANE"
 t "relay-once:合法集 claude|codex(kimi ⛔ 入列——创始人定案只有这两条路线)" bash -c \
   'b="$(sed -n "/^relay_once_engine_resolve()/,/^}/p" "$1")"; grep -q "claude|codex) eff=" <<< "$b" && ! grep -q "kimi" <<< "$b"' _ "$LANE"
-tout "relay-once --dry 默认走 claude" "引擎=claude(请求=claude)" env LAIXIN_RELAY_ONCE_ENGINE= "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+# ⚠️ 「默认」要用**空开关目录**测(2026-08-22 自撞:本机开关文件按创始人令写成 codex 后本条立刻红——测试 ⛔ 依赖本机可变状态)
+RO_SW="$(mktemp -d)"
+tout "relay-once --dry 默认走 claude(空开关目录+无 env)" "引擎=claude(请求=claude)" env LAIXIN_RELAY_ONCE_ENGINE= LAIXIN_SWITCH_DIR="$RO_SW" "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+rmdir "$RO_SW"
 tout "relay-once --dry 开关=codex 走 codex(第二方案)" "引擎=codex(请求=codex)" env LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
 tout "relay-once --engine 显式优先于开关" "引擎=codex(请求=codex)" env LAIXIN_RELAY_ONCE_ENGINE=claude "$LANE" relay-once 测试件 --file "$RO_ITEM" --engine codex --dry
 tout "relay-once 开关非法值按 claude 并当面点名(⛔ 静默回落)" "一次性中继引擎请求「bogus」无效" env LAIXIN_RELAY_ONCE_ENGINE=bogus "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
@@ -2631,6 +2634,19 @@ t "doctor §4:非 claude 派工席 + 常驻中继不在班 ⇒ 硬错(kimi 顶�
 t "路由表含 relay-once / rdown / peek-ro" bash -c \
   'grep -q "^  relay-once) shift; cmd_relay_once" "$1" && grep -q "^  rdown)      shift; cmd_rdown" "$1" && grep -q "^  peek-ro)    shift; cmd_peekro" "$1"' _ "$LANE"
 tout "rdown 对不存在的窗口幂等(本就不存在 ⇒ 0)" "本就不存在" env LAIXIN_SESSION=bogus-ro "$LANE" rdown 测试件
+# ⭐ 创始人 2026-08-22 19:5x:「派工窗口如果换成 kimi 的时候,relay 就一定要是 claude」——两半机器形态各一条绊线
+tout "kimi 规则①:派工席=kimi 时一次性中继开关 codex 被压制为 claude 并在 doctor 点名" "中继一律 claude" \
+  env LAIXIN_DISPATCH_ENGINE=kimi LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" doctor
+tout "kimi 规则①:压制后 doctor 报的一次性中继引擎是 claude" "一次性中继引擎:claude" \
+  env LAIXIN_DISPATCH_ENGINE=kimi LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" doctor
+tout "kimi 规则①:relay-once --dry 在 kimi 派工席下按 claude 起并说明" "按 claude 起" \
+  env LAIXIN_DISPATCH_ENGINE=kimi LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+tfail "kimi 规则①:派工席=kimi 时显式 --engine codex 是被禁组合 ⇒ 拒(人在要求违令)" "中继一律 claude" \
+  env LAIXIN_DISPATCH_ENGINE=kimi LAIXIN_SESSION=bogus-ro "$LANE" relay-once 测试件 --file "$RO_ITEM" --engine codex
+tout "kimi 规则①:派工席=claude 时开关 codex 照常生效(规则只对非 claude 派工席)" "引擎=codex(请求=codex)" \
+  env LAIXIN_DISPATCH_ENGINE=claude LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+t "kimi 规则②:cmd_dispatch kimi 分支起窗前自动拉起常驻 claude 中继(relay_alive 假 ⇒ cmd_relay --fresh --resurrect),拉不起 die" bash -c \
+  'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")"; k="$(grep -n "_brief=\"\$DISPATCH_BRIEF_KIMI\"" <<< "$b" | head -1 | cut -d: -f1)"; w="$(grep -n "kimi_launch_cmd \"dispatch\"" <<< "$b" | head -1 | cut -d: -f1)"; seg="$(sed -n "${k},${w}p" <<< "$b")"; grep -q "! relay_alive" <<< "$seg" && grep -q "cmd_relay --fresh --resurrect" <<< "$seg" && grep -q "自动拉起失败" <<< "$seg"' _ "$LANE"
 t "常驻 relay 仍只起 claude(结构:代发 SendMessage;⛔ 被一次性窗的引擎开关波及)" bash -c \
   'b="$(sed -n "/^cmd_relay()/,/^}/p" "$1")"; grep -q "\-\-model \$RELAY_MODEL" <<< "$b" && ! grep -q "RELAY_ONCE_ENGINE\|codex_launch_cmd" <<< "$b"' _ "$LANE"
 rm -f "$RO_ITEM"

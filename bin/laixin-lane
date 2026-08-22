@@ -23,6 +23,8 @@
 #   laixin-lane relay-down           收中继窗口并**关闭托管**(清除启用标记,看门狗从此不再管它)
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
+#   laixin-lane channel-of <会话名>  它在哪个 CC 通道(配置目录)与账号;查不到即说查不到 ⛔ 猜
+#   laixin-lane handover-mode <继任> <前任>  交班形态:同账号正常交班 or 跨账号(判不了会直说)
 #   laixin-lane whoholds             谁当前持有派工权
 #   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
 #   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)
@@ -3315,6 +3317,68 @@ cmd_dispatch() {
   return 0
 }
 
+# ── 交班形态判据(2026-08-22 实撞后立)──────────────────────────────────────────────
+# 失败样本:方案窗口第二十任交班当轮,把**同账号正常交班**办成了「2 个 CC 账号切换的交班」
+#   (创始人当面纠正「把正常交班搞成了 2 个 CC 账号切换的交班」);连锁:relay 据此报了一条
+#   「即将静默发生的断链」告警,前提为假,10 分钟后撤回。
+# 🔑 **根因不在人,在卡**:当日新落的《跨账号切换剧本》只写了「怎么切」,**没写「什么时候才算在切」**
+#   ⇒ 一张只讲 how 不讲 when 的卡,读者看见就会想用;而「这次是不是跨账号交班」当时**没有任何
+#   可执行判据**,只能靠推定。二十任的认账一针见血:**「规则在案」≠「规则适用于当下」**。
+# ⇒ 本命令把那个判断变成**一个能跑的动作**:比对两个会话的配置目录(=账号所在通道)。
+#   ⚠️ 继任**尚未起窗时判不了** —— 那种情况判据只能是「创始人明示」,本命令会如实说判不了,
+#      ⛔ 猜一个答案(猜错的代价就是上面那次:整套跨账号附则被误用 + 一条假告警)。
+channel_of(){  # <会话名> → stdout="<配置目录> <账号邮箱>";找不到退 1
+  local want="$1" pid dir line
+  while IFS=' ' read -r pid dir _; do
+    [ -n "$pid" ] || continue
+    for f in "$dir"/sessions/"$pid".json; do
+      [ -f "$f" ] || continue
+      if [ "$(python3 -c 'import json,sys
+try: print((json.load(open(sys.argv[1])).get("name") or ""))
+except Exception: print("")' "$f" 2>/dev/null)" = "$want" ]; then
+        printf '%s %s\n' "$dir" "$(python3 -c 'import json,sys
+try: print(((json.load(open(sys.argv[1])).get("oauthAccount") or {}).get("emailAddress")) or "账号未知")
+except Exception: print("账号未知")' "$dir/.claude.json" 2>/dev/null)"
+        return 0
+      fi
+    done
+  done <<< "$(session_seats)"
+  return 1
+}
+
+cmd_channel_of(){
+  local n="${1:-}"; [ -n "$n" ] || die "用法:laixin-lane channel-of <会话名>(如 pingxia-d8 / relay)"
+  local r; r="$(channel_of "$n")" || die "找不到活会话:$n —— ⛔ 据此判断交班形态(「查不到」⛔「不在别的通道」);它可能还没起窗,或不是 claude 会话(codex/kimi 席位无配置目录)"
+  printf '%s\n' "$r"
+}
+
+cmd_handover_mode(){  # <继任会话名> <前任会话名 | 前任通道目录>
+  local succ="${1:-}" pred="${2:-}"
+  [ -n "$succ" ] && [ -n "$pred" ] || die "用法:laixin-lane handover-mode <继任会话名> <前任会话名 | 前任通道目录>
+   ⚠️ 两个都要显式给 —— ⛔ 让本命令去猜「前任是谁」:猜错时它会给出一个**看起来确定**的答案,
+      而交班形态判错的代价是整套跨账号附则被误用(2026-08-22 实撞)。
+   📌 **前任常在继任起窗前就已关闭**(交班的常见顺序就是前任先关) ⇒ 那时第二参传**通道目录**:
+      交班方在自己还活着时跑 laixin-lane channel-of <自己> 把通道写进交接包,继任照抄即可
+      —— 两次调用都发生在各自活着的时候,⛔ 依赖两个窗口同时在线。"
+  local a b da db
+  a="$(channel_of "$succ")" || die "继任 $succ 查不到活会话 ⇒ **判不了**(它可能还没起窗)。
+   此时唯一判据=**创始人明示**本次是同账号还是跨账号;⛔ 由交班方自行推定(实撞:推错 ⇒ 跨账号附则被误用 + relay 一条假告警)。"
+  case "$pred" in
+    /*) b="$pred (交接包记录值)" ;;                      # 直接给通道目录:前任已关闭时的正路
+    *)  b="$(channel_of "$pred")" || die "前任 $pred 查不到活会话 ⇒ 判不了(⛔ 猜)。
+   📌 前任若已关闭,改传**通道目录**(交接包里应有;取法=交班方生前跑 laixin-lane channel-of <自己>):
+      laixin-lane handover-mode $succ /Users/pingxia/.claude-b" ;;
+  esac
+  da="${a%% *}"; db="${b%% *}"
+  printf '  继任 %s:%s\n  前任 %s:%s\n' "$succ" "$a" "$pred" "$b"
+  if [ "$da" = "$db" ]; then
+    printf '  ✅ **同账号正常交班** —— 交班卡原六步一字不改,**跨账号附则整卡 ⛔ 适用**\n'
+    return 0
+  fi
+  printf '  🔁 **跨账号交班** —— 交班卡第 4/5 步按附则替换(落盘 + 一句话路径),relay 归属另判\n'
+  return 0
+}
+
 cmd_handover_audit(){  # #108 全量清单:doctor 只逐条报近几天的,历史债在这里看全(⛔ 让它只存在于总数里)
   local rp; rp="$(ls "$HOME"/Obsidian/项目入口/laixin开发流水线/知识库/wiki/运行复盘与优化推动-*.md 2>/dev/null | sort | tail -1)"
   [ -n "$rp" ] || die "复盘页不可读"
@@ -4377,6 +4441,8 @@ case "${1:-}" in
   doctor)   shift; cmd_doctor ;;
   stats)    shift; cmd_stats ;;
   handover-audit) shift; cmd_handover_audit "$@" ;;   # #108 全量:所有未配对的交班条(第 6 步漏做清单)
+  channel-of)     shift; cmd_channel_of "$@" ;;      # 会话名 → 它所在的通道(配置目录)与账号
+  handover-mode)  shift; cmd_handover_mode "$@" ;;   # 交班形态判据:同账号 or 跨账号(⛔ 靠推定)
   dispatch) shift; cmd_dispatch "$@" ;;
   peek-d)   shift; cmd_peekd "$@" ;;
   relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记

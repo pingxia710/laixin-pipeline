@@ -4097,6 +4097,19 @@ commit:$commit
    - 打回 → 逐条可复现的问题清单 + 是否需升级创始人
 7. 你不合并、不 push、不碰 lane(工具层已禁);打回也由派工窗口转发给 Codex。
 
+🔴 **走查通道:注入给你的是「通道」不是「浏览器」**——\$BU_NAME 与 \$BU_CDP_URL 已成对注入(echo 可查),
+但**端口上没有浏览器监听是正常的:那是你还没起,不是环境坏了、⛔ 不是变量没注入、⛔ 不要停下来等派工方给实例**
+(2026-08-18 开发轨实撞:读成「需要外部提供浏览器」停车 15 分钟;2026-08-22 验收窗口实撞:同一现象读成「变量未注入」)。
+需要走查时**自己起** headless,照抄即用:
+   PORT="\${BU_CDP_URL##*:}"
+   nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\
+     --headless=new --remote-debugging-port="\$PORT" --user-data-dir="/tmp/cdp-\$PORT" >/dev/null 2>&1 & disown
+   curl -s "127.0.0.1:\$PORT/json/version"    # 见 JSON 才算通
+控制端一律用 browser-harness(白名单已放行,heredoc 调用是标准用法);⛔ 用内置/自带浏览器工具替代——
+那类工具不读 BU_* 变量,报「Browser is not available」不是环境坏,是控制端用错了。
+⛔ 自挑端口、⛔ 改动或清空这两个变量;走查前先断言当前标签页 URL 等于预期,证据附页面文本长度自证量。
+**用完必关**(创始人 2026-08-17):pkill -f -- "--remote-debugging-port=\$PORT",⛔ 留孤儿进程占通道。
+
 看板事件用 laixin-lane vlog "..." 记(带 env 前缀的命令不匹配工具白名单)。回执发出后你的活就结束了。
 EOF
 )"
@@ -4142,6 +4155,19 @@ commit:$commit
    本引擎没有 claude 的 disallowedTools 工具层禁令,以上红线以本指令为准,派工窗口在合并侧
    核验(evidence 复查+merge-guard)兜底;越线即整片验收作废。打回也由派工窗口转发,你不直接指挥开发轨。
 
+🔴 **走查通道:注入给你的是「通道」不是「浏览器」**——\$BU_NAME 与 \$BU_CDP_URL 已成对注入(echo 可查),
+但**端口上没有浏览器监听是正常的:那是你还没起,不是环境坏了、⛔ 不是变量没注入、⛔ 不要停下来等派工方给实例**
+(2026-08-18 开发轨实撞:读成「需要外部提供浏览器」停车 15 分钟;2026-08-22 验收窗口实撞:同一现象读成「变量未注入」)。
+需要走查时**自己起** headless,照抄即用:
+   PORT="\${BU_CDP_URL##*:}"
+   nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\
+     --headless=new --remote-debugging-port="\$PORT" --user-data-dir="/tmp/cdp-\$PORT" >/dev/null 2>&1 & disown
+   curl -s "127.0.0.1:\$PORT/json/version"    # 见 JSON 才算通
+控制端一律用 browser-harness(shell heredoc 调用是标准用法);⛔ 用内置/自带浏览器工具替代——
+那类工具不读 BU_* 变量,报「Browser is not available」不是环境坏,是控制端用错了。
+⛔ 自挑端口、⛔ 改动或清空这两个变量;走查前先断言当前标签页 URL 等于预期,证据附页面文本长度自证量。
+**用完必关**(创始人 2026-08-17):pkill -f -- "--remote-debugging-port=\$PORT",⛔ 留孤儿进程占通道。
+
 看板事件用 laixin-lane vlog "..." 记。回执落盘后你的活就结束了。
 EOF
 )"
@@ -4153,16 +4179,21 @@ EOF
   tmux send-keys -t "$SESSION:$w" C-m
   # #57(#45 族残余):起窗类条目的来源=真实调用上下文——verify 常由派工窗口调,但方案/创始人窗口
   # 应急代起真实存在;硬编码「最常见调用方」=为非常规调用制造伪证,而排查恰恰全是非常规调用
-  # 🔴 CDP 通道**可用性**必须当场可见(2026-08-22 实撞):本函数给每个验收窗口分配独立端口并注入
-  #   BU_CDP_URL,`cdp_sweep` 回收时又去清理该端口的 headless Chrome —— **两头都假定它存在,
-  #   而没有任何一步负责让它存在**。历史上是 dispatch 手工 `nohup` 起(看板 08-20 04:23 那次)。
-  #   后果:走查类片一路跑到**最后一步**才发现通道不通,而验收方看到的现象是「变量像是没注入」
-  #   (当日 13:25 验收窗口即如此报;实测变量注入正常,是端口上没人听)。
-  #   ⇒ 起窗当口探一次,不通就**大声报**并给出起浏览器的命令。⛔ 在这里自动起 Chrome:
-  #   那是有副作用的动作(profile/窗口/清理),要单独验证后再上,⛔ 混在本次「让失效可见」里。
-  if ! curl -s -m 2 "http://127.0.0.1:$port/json/version" >/dev/null 2>&1; then
-    board "$(caller_src)" "⚠️ 验收窗口 $w 的 CDP 通道 127.0.0.1:$port **无监听** —— 变量已注入,但端口上没有浏览器。**含浏览器走查的片到最后一步才会发现**;需要走查就先起:nohup <chrome> --headless=new --remote-debugging-port=$port --user-data-dir=/tmp/cdp-$port >/dev/null 2>&1 & disown,再 curl 127.0.0.1:$port/json/version 见 JSON 才算通"
-  fi
+  # 🔴 起窗时**⛔ 探 CDP 端口、⛔ 报「无监听」**(2026-08-22 反向裁定,撤回同日 902033d 的探活告警):
+  #   端口上没有浏览器监听,在**起窗那一刻是设计常态而非故障**——实测 lane-a/lane-b/dispatch 三个
+  #   正在正常干活的窗口,端口(9231/9232/9230)全部无监听。注入的是「通道」不是「浏览器」,浏览器由
+  #   **使用方在需要走查时自己起、用完自己关**(创始人 2026-08-17「每窗一通道」+「用完要关」),
+  #   开发轨 prompt 第 43 条已逐字立此口径:「端口无人监听是你还没起,不是环境坏了」。
+  #   ⇒ 在此探活报警有两重错:①**恒真噪音**(起窗那刻必然无监听,每起一窗刷一条 ⚠️,与真故障不可分辨);
+  #      ②**用机器复现了已记录在案的失败样本**——lane-b 正是把「预留端口无监听」读成「环境坏了/
+  #      要外部给浏览器」而停车 15 分钟(2026-08-18 实撞,同条 prompt 记载)。
+  #   真缺口不在探活而在**交接**:白名单放行 Bash(browser-harness*)=设计意图就是验收方自己走查,
+  #   而派单消息的硬要求里**一个字没提 CDP/浏览器**(开发轨 prompt 有 17 行详述)⇒ 验收方拿到变量
+  #   却不知道浏览器要自己起,看到端口不通就报「变量像是没注入」(当日 13:25 实撞的真因,
+  #   现象与真因指向两个方向正是因为它手里缺这段说明)。⇒ 修法=把开发轨那套口径写进派单消息本体
+  #   (见上文 msg「走查通道」段),⛔ 在这里探活。
+  #   ⛔ 自动起 Chrome:那不是「还没做的一半」,是**不该做**——自动起必然产生没人负责关的孤儿进程,
+  #   与「用完必关」正面冲突;起与关必须在同一方手里,而那一方是使用方。
   board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)引擎=$VERIFY_ENGINE"
   echo "$w 已起并派单(引擎=$VERIFY_ENGINE)。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
   if [ "$VERIFY_ENGINE" = "claude" ]; then

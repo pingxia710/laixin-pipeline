@@ -2430,12 +2430,16 @@ cmd_dmsg(){ echo "DMSG" >> "$OUTLOG"; }
 source "$(dirname "$0")/fn.sh"
 ctx_watch_tick
 EOS
-ctxw(){   # ctxw <一行机器读数> [CTX_RENOTIFY] —— 跑一拍巡检,回显它报了什么(空=静默)
+ctxw(){   # ctxw <一行读数> [RENOTIFY] [GAP_WARN] [GAP_HARD] —— 跑一拍,回显它报了什么(空=静默)
+  # 间隔闸默认置 0:本组单独测**档位判据**,⛔ 让间隔闸混进来把档位逻辑的红绿盖掉。
   printf '%s\n' "$1" > "$CTXW/feed"; : > "$CTXW/log"
-  CTX_RENOTIFY="${2:-900}" bash "$CTXW/t.sh" "$CTXW/state" "$CTXW/feed" "$CTXW/log" || true
+  CTX_RENOTIFY="${2:-900}" CTX_GAP_WARN="${3:-0}" CTX_GAP_HARD="${4:-0}" \
+    bash "$CTXW/t.sh" "$CTXW/state" "$CTXW/feed" "$CTXW/log" || true
   cat "$CTXW/log" 2>/dev/null || true
 }
-ctxw_silent(){ [ -z "$(ctxw "$@")" ]; }
+ctxw_silent(){  [ -z "$(ctxw "$@")" ]; }
+ctxw_nodmsg(){  ! ctxw "$@" | grep -q DMSG; }
+ctxw_hasdmsg(){   ctxw "$@" | grep -q DMSG; }
 rm -f "$CTXW/state"
 t    "ctx巡检:ok 档不报(⛔ 没到线就开始吵)"                    ctxw_silent 'dispatch|node|S1|20.0|ok|确定|1'
 tout "ctx巡检:同会话 ok→warn 要报(⛔ 只在 hard 才吭声——那会吞掉最常见的一条路径)" "换班窗口" \
@@ -2449,6 +2453,26 @@ t    "ctx巡检:同会话降档静默(hard→warn 只可能是读数抖动;真�
      ctxw_silent 'dispatch|node|S1|70.0|warn|确定|1'
 tout "ctx巡检:换班后新会话按当前档位重报(会话 id 变=状态清零)" "换班窗口" \
      ctxw 'dispatch|node|S2-NEW|66.0|warn|确定|1'
+# ── 最短间隔闸:上线 20 分钟后实撞的**催命循环**(2026-08-22)────────────────────────
+# 🔴 换班本身会让 sid 变,而「sid 变=新会话=报一次」遇上频繁换班就成了催命循环。
+#   实撞链条:报 89.5% → 它换班 → 新任读完交接包**起步就 68%** → 巡检报「进入换班窗口」
+#   → 它又换 → 又 72% → 又报;15 分钟内 dispatch 换了四任(四个会话 id 有据可查)。
+#   根因不在巡检而在**线本身**:codex 派工席读交接包+知识库就吃掉 65-70%,而 65 这条线
+#   是按 claude 席位的经验定的 ⇒ 它一上任就撞线。线定在哪归创始人判,但工具⛔ 在他判之前继续催。
+# ⇒ 两道闸,都要能证伪:①间隔闸**对 sid 变化也生效**(不然等于没有闸,正是循环的驱动力);
+#   ②warn 只上看板 ⛔ 注入当事人——打断它正是循环的一环;hard 仍必须注入(它要求立刻动作)。
+rm -f "$CTXW/state"
+tout "ctx巡检:新会话首次 warn 要报" "换班窗口" ctxw 'dispatch|node|N1|68.0|warn|确定|1' 900 1800 600
+t "ctx巡检:换了会话也受最短间隔约束(⛔ sid 一变就重报=催命循环)" \
+  ctxw_silent 'dispatch|node|N2|68.0|warn|确定|1' 900 1800 600
+t "ctx巡检:再换一任仍被挡(实撞是连换四任)" \
+  ctxw_silent 'dispatch|node|N3|69.0|warn|确定|1' 900 1800 600
+rm -f "$CTXW/state"
+t "ctx巡检:warn 档只上看板 ⛔ 注入当事人(打断它正是催命循环的一环)" \
+  ctxw_nodmsg 'dispatch|node|W9|68.0|warn|确定|1'
+rm -f "$CTXW/state"
+t "ctx巡检:hard 档必须注入当事人(它要求立刻动作,只记看板等于没报)" \
+  ctxw_hasdmsg 'dispatch|node|H9|80.0|hard|确定|1'
 # 🔑 判据要绑在**档位升高**上,⛔ 绑在「等于 hard」上 —— 后者正是首版写法,六个场景恰好都没
 #    覆盖 ok→warn 这条路,补第七个场景才现形。回退成 `[ "$lvl" = "hard" ]` 即红。
 t "ctx巡检:升档判据用 rank 比较(⛔ 写死「只有 hard 才报」)" \
@@ -2478,6 +2502,30 @@ t "ev_loop:反向重起要节流(⛔ 起不来时每拍重试——刷满的日�
   bash -c 'sed -n "/^ev_loop()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "EV_WD_RETRY:-300"'
 t "ev_loop:反向重起的死因落 EV_LOG(⛔ 进 /dev/null,同 ctx 巡检那一课)" \
   bash -c 'sed -n "/^ev_loop()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "cmd_watchdog start ) >/dev/null 2>>"'
+# ── 闸门线一致性(2026-08-22 上调 65/75 当轮立)────────────────────────────────────
+# SKILL.md 早把它写成「**已知的双真相源**,不是疏忽——一个 bash 一个 python,跨语言共用常量
+# 的代价大于收益」,并要求「改一处必须同步另一处」。⇒ 代价既然选了,防线就不能只是「记得改」:
+# 08-22 这次上调要动 laixin-lane 两个引擎分支 + statusline.py 两个常量 + SKILL.md 六处引用,
+# **漏任一处的症状都是「闸门静默失效」**(SKILL.md 自己写的那句)。⇒ 机器比,⛔ 靠人记。
+# ⚠️ statusline.py 不在本仓(~/.claude-official/),不存在即跳过 —— ⛔ 让别的机器上忽红忽绿
+#    (「会因环境忽红忽绿的测试比没有测试更糟」,本仓写过)。
+t "闸门线:两个引擎分支与 statusline.py 三处一致(⛔ 双真相源漂移=闸门静默失效)" python3 -c '
+import re,sys,os
+lane=open(sys.argv[1],encoding="utf-8").read()
+hard=set(re.findall(r"pct>=(\d+): print\(\"\N{LARGE RED CIRCLE}", lane))
+warn=set(re.findall(r"pct>=(\d+): print\(\"\N{LARGE YELLOW CIRCLE}", lane))
+assert len(hard)==1, "laixin-lane 两个引擎分支的硬闸门值不一致(或没找到):%s" % hard
+assert len(warn)==1, "laixin-lane 两个引擎分支的预备线值不一致(或没找到):%s" % warn
+h,w=hard.pop(),warn.pop()
+assert int(h)>int(w), "硬闸门必须高于预备线:%s/%s" % (h,w)
+sl=os.path.expanduser("~/.claude-official/statusline.py")
+if os.path.exists(sl):
+    s=open(sl,encoding="utf-8").read()
+    gh=re.search(r"GATE_HARD\s*=\s*(\d+)",s); gw=re.search(r"GATE_WARN\s*=\s*(\d+)",s)
+    assert gh and gw, "statusline.py 找不到 GATE_HARD/GATE_WARN"
+    assert gh.group(1)==h and gw.group(1)==w, \
+        "闸门线漂移:laixin-lane=%s/%s 而 statusline.py=%s/%s" % (h,w,gh.group(1),gw.group(1))
+' "$LANE"
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
 # 12:54 验收回执落盘。两处叠加:

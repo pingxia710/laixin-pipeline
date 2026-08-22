@@ -33,11 +33,21 @@
 set -Eeuo pipefail
 
 SESSION="laixin-11c"
-ALLOW_ROOT="$HOME/.laixin-11c"
+# ⚠️ 可覆盖是为了**能被测试**:三处目录若写死,绊线就只能拿真实封存档当靶子(在真目录里造
+#   泄漏形态再删)——那是拿生产数据做实验,一次中断就留下脏文件。⇒ env 可覆盖,默认值不变。
+ALLOW_ROOT="${LAIXIN_11C_ALLOW_ROOT:-$HOME/.laixin-11c}"
 KIMI_BIN="${LAIXIN_KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
 KIMI_TRUST_DIR="${LAIXIN_KIMI_TRUST_DIR:-$HOME/.kimi-code/workspace-trust}"
 SEAT_SETTINGS="${LAIXIN_11C_SEAT_SETTINGS:-$ALLOW_ROOT/seat-settings.json}"
+# ── 双盲的三类文件与它们必须分居的三处目录(2026-08-22 机器化;通则出自 relay 16 的两次实撞自捕)──
+#   ① 代号映射全表  → SEAL_DIR   ② 各席取号文件 → PICK_DIR   ③ 席位写入的暂存区 → ALLOW_ROOT
+#   **两类同居即双盲当场漏**,且漏法是「某席 ls 一下就看见了」——**不需要它做任何越界动作**:
+#   实撞一(局-V02,relay 16 建档当轮自捕):取号文件写进了各席要落卷的暂存目录 ⇒ 任一席 ls 见全部三份;
+#   实撞二(局七,事后发现只记形态 ⛔ 追改):取号文件放在映射表所在目录 ⇒ 拿到该目录路径的席位 ls 见映射表文件名。
+#   ⇒ 判据**免语义**(纯文件位置)故可机器化;⇒ 起席前硬闸,⛔ 只写进纪律卡。
+SEAL_DIR="${LAIXIN_11C_SEAL_DIR:-$HOME/.laixin-11c-seal}"
+PICK_DIR="${LAIXIN_11C_PICK_DIR:-$HOME/.laixin-11c-pick}"
 READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
 
 die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
@@ -46,6 +56,7 @@ note(){ printf '   %s\n' "$*" >&2; }
 usage(){
   cat >&2 <<'USAGE'
 用法:
+  laixin-11c-seat audit                                  双盲三类文件分居自检(起席前自动跑;不过即拒起)
   laixin-11c-seat start <席位名> <引擎> <议题暂存目录>   起席(自动过启动序列，就绪才返回)
   laixin-11c-seat stop  <席位名>                        收席
   laixin-11c-seat status <席位名>                       单席位状态
@@ -67,6 +78,40 @@ USAGE
 
 # ── 参数校验 ──────────────────────────────────────────────────────────────
 valid_seat(){ [[ "$1" =~ ^seat-[a-z0-9][a-z0-9-]{0,30}$ ]]; }
+
+blind_audit(){  # → 0=三类文件分居无误;1=有同居(双盲物理漏)。stdout=逐条结论
+  # 🔴 **失效必须降级 ⛔ 反向**:目录不存在 ⇒ 报「不适用」而非「通过」——「没有局在跑」与
+  #   「查过了没问题」在屏幕上必须长得不一样,否则这条闸会在最该管用的时候被读成绿灯。
+  local bad=0 d n
+  printf '  -- 双盲三类文件分居(代号映射 / 取号 / 席位暂存区)--\n'
+  # (a) 三处目录两两不得互为前缀(同居的极端形态=一个就在另一个里面)
+  local A="$SEAL_DIR/" B="$PICK_DIR/" C="$ALLOW_ROOT/"
+  local x y xn yn
+  for pair in "A:B" "A:C" "B:C"; do
+    x="${pair%%:*}"; y="${pair##*:}"; eval "xn=\$$x"; eval "yn=\$$y"
+    case "$xn" in "$yn"*) printf '  ❌ 目录互为前缀:%s 在 %s 之下 ⇒ 拿到外层路径即见内层全部\n' "$xn" "$yn"; bad=1 ;; esac
+    case "$yn" in "$xn"*) printf '  ❌ 目录互为前缀:%s 在 %s 之下 ⇒ 拿到外层路径即见内层全部\n' "$yn" "$xn"; bad=1 ;; esac
+  done
+  # (b) 席位暂存区各局目录里 ⛔ 出现取号文件或代号映射(实撞一的形态)
+  if [ -d "$ALLOW_ROOT" ]; then
+    n="$(find "$ALLOW_ROOT" -maxdepth 2 \( -name '取号-*' -o -name '*代号映射*' \) 2>/dev/null | head -20)"
+    if [ -n "$n" ]; then printf '  ❌ 席位暂存区内出现取号/映射文件(任一席 ls 即见):\n'; printf '     %s\n' $n; bad=1
+    else printf '  ✅ 席位暂存区内无取号/映射文件\n'; fi
+  else printf '  ℹ️ 席位暂存区不存在(%s)⇒ 本项不适用(⛔ 读成通过)\n' "$ALLOW_ROOT"; fi
+  # (c) 映射表目录里 ⛔ 出现取号文件(实撞二的形态)
+  if [ -d "$SEAL_DIR" ]; then
+    n="$(find "$SEAL_DIR" -maxdepth 2 -name '取号-*' 2>/dev/null | head -20)"
+    if [ -n "$n" ]; then printf '  ❌ 映射表目录内出现取号文件(拿到该目录路径的席位 ls 即见映射表文件名):\n'; printf '     %s\n' $n; bad=1
+    else printf '  ✅ 映射表目录内无取号文件\n'; fi
+  else printf '  ℹ️ 映射表目录不存在(%s)⇒ 本项不适用(⛔ 读成通过)\n' "$SEAL_DIR"; fi
+  # (d) 取号目录里 ⛔ 出现代号映射全表
+  if [ -d "$PICK_DIR" ]; then
+    n="$(find "$PICK_DIR" -maxdepth 2 -name '*代号映射*' 2>/dev/null | head -20)"
+    if [ -n "$n" ]; then printf '  ❌ 取号目录内出现代号映射全表:\n'; printf '     %s\n' $n; bad=1
+    else printf '  ✅ 取号目录内无代号映射全表\n'; fi
+  else printf '  ℹ️ 取号目录不存在(%s)⇒ 本项不适用(⛔ 读成通过)\n' "$PICK_DIR"; fi
+  return $bad
+}
 
 resolve_workdir(){  # <路径> → stdout=realpath；越界即 die
   # ⚠️ 先解析+校验，**通过了才 mkdir**：否则未校验的入参能让本脚本在任意位置建目录
@@ -204,6 +249,16 @@ cmd_start(){
 
   local wd; wd="$(resolve_workdir "$wd_in")"
 
+  # 🔴 双盲硬闸:**起席之前**核三类文件分居 —— 双盲一旦漏就是整局作废,而漏的代价远高于
+  #   「起席被拦一次」。⛔ 起完席再查(那时席位已经能 ls 了);⛔ 只警告不拦(fail-closed)。
+  if [ "${LAIXIN_11C_SKIP_BLIND_AUDIT:-}" = "1" ]; then
+    note "⚠️ 双盲分居检查被 LAIXIN_11C_SKIP_BLIND_AUDIT=1 显式跳过(未核,风险自担)"
+  elif ! blind_audit; then
+    die "双盲三类文件分居检查未过(见上)——**⛔ 起席**:某席 ls 一下即可看见不该看见的东西,双盲当场漏。
+   修法=三类文件三处放:代号映射→$SEAL_DIR · 取号→$PICK_DIR · 席位暂存区→$ALLOW_ROOT;把越位的文件挪回各自的处,再重跑。
+   (仅在确认本局不走双盲时可用 LAIXIN_11C_SKIP_BLIND_AUDIT=1 显式跳过,⛔ 当常规手段)"
+  fi
+
   tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n hub
   if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$seat"; then
     die "席位窗口已存在：$seat(先 stop，⛔ 覆盖起窗)"
@@ -308,5 +363,6 @@ case "${1:-}" in
   stop)   shift; cmd_stop "$@" ;;
   status) shift; cmd_status "$@" ;;
   list)   shift; cmd_list "$@" ;;
+  audit)  shift; blind_audit ;;   # 双盲三类文件分居自检(起席前自动跑,也可单独跑)
   *) usage ;;
 esac

@@ -2341,6 +2341,28 @@ t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bas
 t "#105 接线:生产调用带 quotePath=false" bash -c 'grep -qF -- "quotePath=false log --name-only" "'"$LANE"'"'
 rm -rf "$V105"
 rm -rf "$V16" "$V16F2"
+# ── 11C 双盲三类文件分居(2026-08-22 机器化;通则出自 relay 16 的两次实撞自捕)────────────
+# 代号映射全表 / 各席取号文件 / 席位写入的暂存区,**两类同居即双盲当场漏**,漏法是「某席 ls
+# 一下就看见了」——不需要它做任何越界动作。实撞一:取号写进各席落卷的暂存目录;实撞二:取号
+# 放在映射表所在目录 ⇒ 拿到该目录路径的席位 ls 见映射表文件名。判据免语义故可机器化。
+# 🔴 绊线全部在**临时目录**里造靶子,⛔ 拿真实封存档做实验(一次中断就在生产目录留脏文件)。
+# 🔴 被测对象必须是**仓库版**(照 T11C 与 LANE 同款取法),⛔ `command -v` 找 PATH ——
+#   PATH 上是**发布版**(上一次 release 的快照),新加的子命令在它那里根本不存在。
+#   ⚠️ 首版写成 command -v 时的真实后果:两条「应该过」的断言红了(发布版没有 audit 子命令),
+#   而四条「应该失败」的断言**全部假绿** —— 因为「功能不存在」与「功能拦下了」都表现为
+#   非零退出码,**两者在断言眼里同形**。⇒ 断言"应该失败"时,必须确认失败的**原因**是被测的那个。
+SEATB="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-11c-seat"
+B11="$(mktemp -d)"; mkdir -p "$B11/allow/局X" "$B11/seal" "$B11/pick"
+b11env(){ env LAIXIN_11C_ALLOW_ROOT="$B11/allow" LAIXIN_11C_SEAL_DIR="$B11/seal" LAIXIN_11C_PICK_DIR="$B11/pick" "$@"; }
+t "11C 双盲:三类分居时 audit 过" bash -c 'env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit >/dev/null'
+t "11C 双盲实撞一:取号文件落进席位暂存区即报(任一席 ls 即见)" bash -c 'touch "'"$B11"'/allow/局X/取号-t.txt"; ! env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit >/dev/null; rc=$?; rm -f "'"$B11"'/allow/局X/取号-t.txt"; [ "$rc" = 0 ]'
+t "11C 双盲实撞二:取号文件落进映射表目录即报(ls 见映射表文件名)" bash -c 'touch "'"$B11"'/seal/取号-t.txt"; ! env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit >/dev/null; rc=$?; rm -f "'"$B11"'/seal/取号-t.txt"; [ "$rc" = 0 ]'
+t "11C 双盲:取号目录混入代号映射全表即报" bash -c 'touch "'"$B11"'/pick/x-代号映射.md"; ! env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit >/dev/null; rc=$?; rm -f "'"$B11"'/pick/x-代号映射.md"; [ "$rc" = 0 ]'
+# 🔴 起席必须 **fail-closed**:双盲一旦漏就是整局作废,代价远高于「起席被拦一次」。
+#   ⚠️ 退出码 ⛔ 经管道读(`… | head` 会用 head 的码覆盖真码,本仓记过这一族)。
+t "11C 双盲:分居不过时 start 拒起(fail-closed,退出码 1)" bash -c 'touch "'"$B11"'/allow/局X/取号-t.txt"; env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" start seat-zz terra "'"$B11"'/allow/局X" >/dev/null 2>&1; rc=$?; rm -f "'"$B11"'/allow/局X/取号-t.txt"; [ "$rc" = 1 ]'
+t "11C 双盲:目录不存在时报「不适用」⛔ 报通过(失效降级 ⛔ 反向)" bash -c 'out="$(env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/nope" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit)"; grep -q "不适用" <<< "$out"'
+rm -rf "$B11"
 t "loop_stale:取 pid 走 loop_pids ⛔ 宽 pgrep(量错对象与量对同形)" bash -c '! sed -n "/^loop_stale()/,/^}/p" "'"$LANE"'" | grep -vE "^[[:space:]]*#" | grep -q "pgrep -f"'
 t "loop_stale:逐字 loop_pids" bash -c 'sed -n "/^loop_stale()/,/^}/p" "'"$LANE"'" | grep -q "loop_pids \"\$1\""'
 

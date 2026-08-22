@@ -1724,7 +1724,22 @@ cmd_doctor() {
     # ⚠️ 工具层锁失效必须**在体检里说出来** ⛔ 只写在提交信息里:DISPATCH_DENY 实测只有一条
     # `Bash(git push*)`,而 codex 没有 disallowedTools 等价物 ⇒ 该锁静默失效,而「锁在」与
     # 「锁没了」在体检输出里原本长得一模一样。
-    wrn "派工引擎=codex ⇒ DISPATCH_DENY 的 git push 工具层锁**不生效**(codex 无 disallowedTools 等价物),红线以派单指令明写为准;待 git pre-push hook 把锁挪到 git 层"
+    # #67④ 后续(2026-08-22 修自述):工具层锁失效后,兜底早已在 2026-08-19 挪到 git 层
+    #   (两仓 .git/hooks/pre-push 按 BU_NAME 拦托管窗口,逃生口 LAIXIN_ALLOW_PUSH=1),
+    #   而本行仍写「待挪到 git 层」⇒ **把已经在位的防线说成还没有**(#27 自述同步族)。
+    # ⚠️ 顺带补一个此前无人看的真风险:**git hooks 不随 clone 传播** —— 换机/重克隆后
+    #   两仓的 pre-push 会静默消失,而「锁在」与「锁没了」在任何输出里原本长得一模一样。
+    #   ⇒ 改成**每次 doctor 实测**:文件在且可执行且判据含 BU_NAME 才算在位。
+    local _hookmiss="" _hr
+    for _hr in "$DEFAULT_DIR" "$HOME/Developer/laixin-pipeline"; do
+      if [ -x "$_hr/.git/hooks/pre-push" ] && grep -q 'BU_NAME' "$_hr/.git/hooks/pre-push" 2>/dev/null; then :
+      else _hookmiss="$_hookmiss $(basename "$_hr")"; fi
+    done
+    if [ -n "$_hookmiss" ]; then
+      wrn "派工引擎=codex ⇒ 工具层 push 锁不生效(codex 无 disallowedTools 等价物),而 git 层兜底**也缺**:${_hookmiss} 的 .git/hooks/pre-push 不在位/判据不符(hooks ⛔ 随 clone 传播)⇒ 该仓此刻可被托管窗口误推,红线只剩派单指令"
+    else
+      ok "派工引擎=codex:工具层 push 锁不生效(codex 无 disallowedTools 等价物),但 git 层兜底**实测在位**(两仓 pre-push 按 BU_NAME 拦托管窗口;逃生口 LAIXIN_ALLOW_PUSH=1)"
+    fi
     ok "codex 派工出站:需对方判断的走 laixin-lane relay-msg(中继代发);回程走对方落盘【中转回复】+ events 投路径指针(中继无反向注入能力)"
   fi
   local gmodel

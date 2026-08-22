@@ -1079,8 +1079,11 @@ tout "#67 codex 就绪判据复用 vwait_ready_codex(⛔ 拿 claude 输入框判
 #   codex 无 disallowedTools 等价物 ⇒ 锁静默失效,而「锁在」与「锁没了」在体检输出里原本同形。
 tout "#67 codex 派单指令明写 git push 禁令(工具层锁失效的补位)" "⛔ git push" \
   sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
-tfail "#67 doctor 在 codex 引擎下点名 push 锁失效(⛔ 只写在提交信息里)" "工具层锁\*\*不生效\*\*" \
-  bash -c 'env LAIXIN_DISPATCH_ENGINE=codex "'"$LANE"'" doctor | grep "工具层锁"; exit 1'
+# 措辞随 #67④(2026-08-22 自述改实测)变过一次:原为「工具层锁**不生效**」,现为
+# 「工具层 push 锁不生效」+ git 层兜底实测结论。**断言意图不变**——doctor 必须当面点名
+# 工具层锁失效这件事,⛔ 只写在提交信息里;字面串跟着措辞走,⛔ 因为串对不上就删掉这条。
+tfail "#67 doctor 在 codex 引擎下点名 push 锁失效(⛔ 只写在提交信息里)" "push 锁不生效" \
+  bash -c 'env LAIXIN_DISPATCH_ENGINE=codex "'"$LANE"'" doctor | grep "push 锁"; exit 1'
 tout "#67 doctor 在 claude 引擎下旧文案逐字保留" "派工窗口钉:" \
   env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
 # * 绊线⑦(2026-08-22 实撞,创始人窗口修):`else` 写在 die 那一行的**行尾** ⇒ bash 把它当成 die 的
@@ -1104,6 +1107,14 @@ tfail "通道额度:响应不是 JSON 时降级 ⛔ 当成额度充裕" "不是 
   bash -c 'env LAIXIN_USAGE_API=https://example.com "'"$LANE"'" doctor | grep "通道额度"; exit 1'
 tout "通道额度:通道→账号取 .claude.json 的 oauthAccount(⛔ Keychain——要授权,无人值守会挂)" "oauthAccount" \
   sed -n "/^channel_quota_verdict()/,/^}/p" "$LANE"
+# ⭐ #67④ 自述同步(2026-08-22):doctor 原写「待 git pre-push hook 把锁挪到 git 层」,而钩子
+#   2026-08-19 就已在两仓落地 ⇒ 把**已经在位的防线说成还没有**(#27 自述同步族)。改成每次实测,
+#   并借此补上一个此前无人看的真风险:**git hooks 不随 clone 传播**,换机/重克隆后会静默消失,
+#   而「锁在」与「锁没了」在任何输出里原本长得一模一样。
+tout "#67④ push 锁自述改实测:⛔ 再写「待挪到 git 层」(钩子早已在位=把已有防线说成没有)" "ZERO" \
+  bash -c 'grep -n "待 git pre-push hook" "'"$LANE"'" || echo ZERO'
+tout "#67④ push 锁判据=文件可执行且含 BU_NAME(⛔ 只看文件在:空壳钩子拦不住任何东西)" "BU_NAME" \
+  bash -c 'sed -n "/工具层 push 锁不生效/,+2p" "'"$LANE"'"; sed -n "/_hookmiss=\"\" _hr/,+5p" "'"$LANE"'"'
 # ⭐ 绊线⑥:派单指令必须告诉 codex「回程不会弹进你的输入框」——否则它会干等一个永远不来的消息
 tout "#67 codex 派单指令写明回程走落盘+路径指针(⛔ 等它直接注入)" "那条路不存在" \
   sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"

@@ -2114,6 +2114,23 @@ KM="$(bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")
 tout "#60②:kimi 模型默认钉 kimi-code/k3" "kimi-code/k3" echo "$KM"
 KM2="$(env LAIXIN_KIMI_MODEL=kimi-code/k4 bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
 tout "#60②:kimi 模型可覆盖(LAIXIN_KIMI_MODEL)" "kimi-code/k4" echo "$KM2"
+# ⭐ codex 验收窗模型档显式钉死(2026-08-22 创始人发起、方案窗口第二十二任裁,dispatch 54 落):
+#    与 kimi 位同哲学——起窗命令行显式带,⛔ 吃 config.toml 全局默认(配置漂移在看板上与从前同形)。
+t "#配档:codex_launch_cmd 显式带模型与推理档(⛔ 吃 config.toml)" bash -c '
+  body="$(sed -n "/^codex_launch_cmd()/,/^}/p" "$0")"
+  grep -qF -- "-m \$CODEX_MODEL" <<< "$body" || exit 1
+  grep -q -- "model_reasoning_effort" <<< "$body"' "$LANE"
+CXM="$(bash -c "eval \"\$(grep '^CODEX_MODEL=' '$LANE')\"; echo \"\$CODEX_MODEL\"")"
+tout "#配档:codex 模型默认钉 gpt-5.6-luna" "gpt-5.6-luna" echo "$CXM"
+CXE="$(bash -c "eval \"\$(grep '^CODEX_EFFORT=' '$LANE')\"; echo \"\$CODEX_EFFORT\"")"
+tout "#配档:codex 推理档默认钉 max(创始人既有直令 ⛔ 降档)" "max" echo "$CXE"
+CXM2="$(env LAIXIN_CODEX_MODEL=gpt-5.6-terra bash -c "eval \"\$(grep '^CODEX_MODEL=' '$LANE')\"; echo \"\$CODEX_MODEL\"")"
+tout "#配档:可回切 terra(luna 跑不动 CDP 时的逃生口,⛔ 改 config.toml)" "gpt-5.6-terra" echo "$CXM2"
+# 🔴 病灶级反向断言:射程只到验收窗——开发轨 lane-a/b 走 cmd_up 的独立 _launch,⛔ 被本改动带走。
+#    (若有人把模型参数误加进 cmd_up,在飞开发轨会静默换模型,而看板上与从前逐字相同。)
+t "#配档:开发轨 cmd_up ⛔ 沾模型参数(射程不越界)" bash -c '
+  body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
+  ! grep -q "CODEX_MODEL" <<< "$body" && ! grep -q "model_reasoning_effort" <<< "$body"' "$LANE"
 # ⭐ kimi 画面判据(2026-08-19 临时会话实测):在飞=月相转轮/Running;codex 词表(Explored)⛔ 量 kimi
 C60B="$C60/busy.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^lane_busy()/,/^}/p" "$LANE"; } > "$C60B"
 t "#60②:lane_busy 分引擎——kimi 月相=在飞,codex 词表不误判 kimi" bash -c '
@@ -2725,13 +2742,16 @@ t "未知子命令:告警走 stderr ⛔ stdout(混进 stdout 会被当成输出�
 # 「没有任何 SendMessage / ListAgents 之类的工具」)⇒ 与 codex 同档,出站 relay-msg、
 # 入站 dmsg/events,通信面已闭合,kimi 不需要额外机制。
 VKM="$(mktemp -d)"; VKMF="$VKM/fn.sh"
-{ echo 'KIMI_BIN=/k/kimi; KIMI_MODEL=k3';
+{ echo 'KIMI_BIN=/k/kimi; KIMI_MODEL=k3; CODEX_MODEL=luna-probe; CODEX_EFFORT=max-probe';
   sed -n "/^agent_launch_cmd()/,/^}$/p" "$LANE";
   sed -n "/^codex_launch_cmd()/,/^}$/p" "$LANE";
   sed -n "/^kimi_launch_cmd()/,/^}$/p" "$LANE"; } > "$VKMF"
 tout "kimi:构造串走同一注入形态(⛔ 各写一套)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" "/k/kimi" --auto -m k3' bash -c '
   source "'"$VKMF"'"; kimi_launch_cmd d 9'
-tout "codex:构造串与引入 kimi 前**逐字一致**(回归保护)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" codex --x' bash -c '
+# ⚠️ 原判据是「与引入 kimi 前逐字一致」——该前提已被 2026-08-22 创始人配档裁定推翻(验收窗须显式带
+#    模型与推理档)⇒ 判据改守**语义**:注入形态仍与 kimi 同源 + 模型档显式取自变量(⛔ 硬编码、⛔ 吃 config.toml)。
+#    测试值用可辨识的 luna-probe/max-probe:若实现改成硬编码,此断言会因取不到探针值而变红。
+tout "codex:构造串显式带模型档且取自变量(配档裁定后的新判据)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" codex -m luna-probe -c model_reasoning_effort="max-probe" --x' bash -c '
   source "'"$VKMF"'"; codex_launch_cmd d 9 "--x"'
 # ⛔ 在这里再写一条"未知引擎被拒":既有 #67 那条已覆盖,且它带 LAIXIN_SESSION 隔离;
 # 照抄时漏掉隔离 ⇒ 会在**真实** tmux 会话里跑起窗命令(2026-08-19 自撞,当轮发现并撤回)。

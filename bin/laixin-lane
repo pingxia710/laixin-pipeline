@@ -98,6 +98,13 @@ VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin
 # ⛔ 在 fresh c 派工语里内联协议要点(内联=第二份事实,会与 AGENTS.md 漂移)。
 KIMI_BIN="${LAIXIN_KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
+# 🔴 codex 验收窗模型档(2026-08-22 创始人发起、方案窗口第二十二任裁,dispatch 54 落):
+#   起窗**显式带**模型与推理档,⛔ 吃 ~/.codex/config.toml 全局默认(实测为 terra/xhigh)——
+#   同一文件里 kimi 位与 claude 位都显式带,codex 位此前是三者中唯一没带的,配置漂移在看板上与从前同形。
+#   ⚠️ luna 跑 CDP 走查未实证:跑不动按环境阻断回切 terra 并回报,⛔ 计工程打回(裁定原文)。
+#   回切=改本变量或起窗前 export LAIXIN_CODEX_MODEL,⛔ 改 config.toml(那会连带影响在飞开发轨)。
+CODEX_MODEL="${LAIXIN_CODEX_MODEL:-gpt-5.6-luna}"
+CODEX_EFFORT="${LAIXIN_CODEX_EFFORT:-max}"
 # 起 claude 类窗口(dispatch/relay/verify)用的入口名。默认 `claude`=01A 包装器 → 配置目录 ~/.claude-official。
 # 换账号走「换配置目录」⛔ 走 /login(创始人 2026-08-19 实试:/login 换不了账号,只会重登当前目录已有的那个);
 # 路径=复制一份包装器、只改其中 CLAUDE_OFFICIAL_CONFIG_DIR 一行(如 ~/.local/bin/claude-b → ~/.claude-b),
@@ -308,7 +315,9 @@ agent_launch_cmd(){  # <BU_NAME> <cdp端口> <引擎启动串> → stdout=完整
   printf 'BU_NAME="%s" BU_CDP_URL="http://127.0.0.1:%s" %s' "$1" "$2" "$3"
 }
 codex_launch_cmd(){  # <BU_NAME> <cdp端口> <mcp关闭串>
-  agent_launch_cmd "$1" "$2" "codex $3"
+  # ⚠️ 唯一调用点=cmd_verify(验收窗);开发轨 lane-a/b 走 cmd_up 里的 _launch,**不经过这里** ⇒
+  #   改本函数只影响验收窗,这正是裁定射程(验收窗+一次性中继窗),⛔ 误伤在飞开发轨。
+  agent_launch_cmd "$1" "$2" "codex -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_EFFORT\" $3"
 }
 # kimi 起窗形态与 lane 的 C 轨(cmd_up)**同一份**:`--auto` 全自主 ⛔ 交互提问(派工窗口无人应答)。
 # ⚠️ kimi 的 --prompt 与 --auto/--yolo **互斥**(实测 0.37.2 直接报错)⇒ 托管窗口只能走交互式常驻。

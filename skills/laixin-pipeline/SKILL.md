@@ -265,6 +265,8 @@ echo claude-b > ~/.laixin-lane-switch/claude-launcher   # 之后**新起的**席
 ⭐ **改开关只影响之后新起的窗口,已经在跑的一个都不动** —— 软切换天然是逐步的:改开关 → 旧线席位
 跑完手上的活自然收工 → 每换一个席位就落到新线 → `laixin-lane doctor` 看通道拓扑确认进度。
 
+🪑 **11C 圆桌的 claude 席(`laixin-11c-seat … fable`)2026-08-23 起也吃这个开关**(此前硬编码 `claude-b`,流水线切账号时圆桌没通道可换——创始人当日点出)。解析顺序:`LAIXIN_11C_CLAUDE_LAUNCHER`(env)> `~/.laixin-lane-switch/claude-launcher-11c`(**11C 专用**,想让圆桌与流水线分账号时写它,例如流水线走 official、圆桌走 claude-b 以分摊额度)> `~/.laixin-lane-switch/claude-launcher`(与流水线共用,**切账号时圆桌跟着切**)> `claude`。起席时实时读并当面 note「claude 通道=… 配置目录=…」,入口不在 PATH 起席前拒。⇒ 切账号剧本里**不必单独处理 11C**:改共用开关即可;要分账号就多写一个 11C 专用开关。kimi/codex 席(k3/terra/luna)无此概念。
+
 **`doctor` 的通道拓扑怎么读**:**多通道并存判 ✅ 正常**(那是切换中间态,⛔ 当故障)。只有两种计错:
 ①**两条通道同时有 dispatch**(违反派工唯一,而两条线各自看都正常);②**孤儿席位**(某通道只剩一个
 dispatch/relay,跨通道消息发不到,它没有任何可通信对象却照样在跑)。

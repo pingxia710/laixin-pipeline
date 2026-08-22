@@ -49,6 +49,25 @@ SEAT_SETTINGS="${LAIXIN_11C_SEAT_SETTINGS:-$ALLOW_ROOT/seat-settings.json}"
 SEAL_DIR="${LAIXIN_11C_SEAL_DIR:-$HOME/.laixin-11c-seal}"
 PICK_DIR="${LAIXIN_11C_PICK_DIR:-$HOME/.laixin-11c-pick}"
 READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
+# ── claude 双账号通道(2026-08-23;创始人「11C 有 2 个 claude 账号的通道了吗…现在要换账号了」——此前 fable 席硬编码 claude-b,
+#   流水线切账号时圆桌没通道可换)。解析顺序(起席时实时读 ⛔ 进程启动读一次):
+#   LAIXIN_11C_CLAUDE_LAUNCHER(env)> <开关目录>/claude-launcher-11c(11C 专用;想让圆桌与流水线分账号时写它)
+#   > <开关目录>/claude-launcher(与 laixin-lane **同一个**开关:创始人切账号时 11C 跟着切)> claude(与 laixin-lane 同默认)。
+#   值=PATH 上的包装器名(claude→~/.claude-official,claude-b→~/.claude-b;两包装器逐字只差配置目录一行),不在 PATH 即拒起。
+SWITCH_DIR="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}"
+claude_launcher_11c(){  # → stdout="<入口名> <来源说明>"
+  local v src
+  if [ -n "${LAIXIN_11C_CLAUDE_LAUNCHER:-}" ]; then v="$LAIXIN_11C_CLAUDE_LAUNCHER"; src="env LAIXIN_11C_CLAUDE_LAUNCHER"
+  elif [ -s "$SWITCH_DIR/claude-launcher-11c" ]; then v="$(head -1 "$SWITCH_DIR/claude-launcher-11c" | tr -d '[:space:]')"; src="开关 claude-launcher-11c(11C 专用)"
+  elif [ -s "$SWITCH_DIR/claude-launcher" ]; then v="$(head -1 "$SWITCH_DIR/claude-launcher" | tr -d '[:space:]')"; src="开关 claude-launcher(与流水线共用)"
+  else v="claude"; src="默认"; fi
+  printf '%s %s' "$v" "$src"
+}
+launcher_cfg_dir(){  # <入口名> → stdout=该包装器里的 CLAUDE_OFFICIAL_CONFIG_DIR(只为起席时当面说清走哪个账号;读不到显 未知 ⛔ 猜)
+  local p d=""; p="$(command -v "$1" 2>/dev/null || true)"
+  [ -n "$p" ] && d="$(grep -m1 -oE 'CLAUDE_OFFICIAL_CONFIG_DIR="?[^" \\]+' "$p" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+  printf '%s' "${d:-未知}"
+}
 
 die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
 note(){ printf '   %s\n' "$*" >&2; }
@@ -63,7 +82,9 @@ usage(){
   laixin-11c-seat list                                  列出全部席位
 
 引擎(枚举，⛔ 任意命令):
-  fable   claude-b + Fable 5     cwd=$HOME(已信任) + --add-dir 暂存区
+  fable   claude(按通道开关)+ Fable 5   cwd=$HOME(已信任) + --add-dir 暂存区
+          通道=LAIXIN_11C_CLAUDE_LAUNCHER > ~/.laixin-lane-switch/claude-launcher-11c(11C 专用)
+               > ~/.laixin-lane-switch/claude-launcher(与流水线共用,切账号时一起切)> claude
           ⚠️ trust 框**仍会弹,由本脚本自动应答** ⛔ 读成「零框」——
              据「零框」判断本脚本不需要 trust 应答能力,改脚本时会把应答段删掉
   k3      kimi + K3              cwd=暂存区 + kimi 信任预写(含 project MCP 拒绝判据)
@@ -246,6 +267,14 @@ cmd_start(){
   [ -n "$seat" ] && [ -n "$engine" ] && [ -n "$wd_in" ] || usage
   valid_seat "$seat" || die "席位名不合法：$seat(须匹配 ^seat-[a-z0-9][a-z0-9-]{0,30}\$)"
   case "$engine" in fable|k3|terra|luna) : ;; *) die "未知引擎：$engine(只接受 fable|k3|terra|luna)" ;; esac
+  # claude 通道在一切副作用之前解析+校验(⛔ 起到一半才发现入口不存在)
+  local _cl="" _clsrc=""
+  if [ "$engine" = "fable" ]; then
+    read -r _cl _clsrc <<< "$(claude_launcher_11c)"
+    # ⚠️ 变量后紧跟全角字符一律 ${var}(bash 3.2 中文 locale 把「」()卷进变量名 ⇒ set -u 炸;本仓 AGENTS 第四发,本行首版实撞)
+    command -v "${_cl}" >/dev/null 2>&1 || die "claude 入口「${_cl}」不在 PATH(来源=${_clsrc})——通道值只认 PATH 上的包装器(claude / claude-b);核:ls ~/.local/bin/claude*;改开关:echo claude > ~/.laixin-lane-switch/claude-launcher-11c(11C 专用)或 …/claude-launcher(与流水线共用)"
+    note "claude 通道=${_cl}(来源=${_clsrc};配置目录=$(launcher_cfg_dir "${_cl}"))"
+  fi
 
   local wd; wd="$(resolve_workdir "$wd_in")"
 
@@ -278,7 +307,7 @@ cmd_start(){
         note "已生成席位 settings：$SEAT_SETTINGS(仅关 RC，⛔ 含 permissions)"
       }
       cwd="$HOME"
-      launch="claude-b -n $seat --model claude-fable-5 --permission-mode auto"
+      launch="${_cl} -n $seat --model claude-fable-5 --permission-mode auto"   # 入口=通道开关解析结果(2026-08-23 起 ⛔ 硬编码 claude-b)
       launch="$launch --settings $SEAT_SETTINGS --add-dir $wd"
       ;;
     k3)

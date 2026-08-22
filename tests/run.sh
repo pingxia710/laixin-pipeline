@@ -2759,6 +2759,20 @@ t "11C 双盲:取号目录混入代号映射全表即报" bash -c 'touch "'"$B11
 t "11C 双盲:分居不过时 start 拒起(fail-closed,退出码 1)" bash -c 'touch "'"$B11"'/allow/局X/取号-t.txt"; env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" start seat-zz terra "'"$B11"'/allow/局X" >/dev/null 2>&1; rc=$?; rm -f "'"$B11"'/allow/局X/取号-t.txt"; [ "$rc" = 1 ]'
 t "11C 双盲:目录不存在时报「不适用」⛔ 报通过(失效降级 ⛔ 反向)" bash -c 'out="$(env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/nope" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit)"; grep -q "不适用" <<< "$out"'
 rm -rf "$B11"
+# ── 11C claude 双账号通道(2026-08-23;fable 席此前硬编码 claude-b,流水线切账号时圆桌没通道可换)──
+SW11="$(mktemp -d)"; sed -n "/^claude_launcher_11c()/,/^}/p" "$SEATB" > "$SW11/f.sh"
+t "11C 通道解析:无任何开关 ⇒ claude(与 laixin-lane 同默认)" bash -c 'SWITCH_DIR="$1"; source "$1/f.sh"; unset LAIXIN_11C_CLAUDE_LAUNCHER; [ "$(claude_launcher_11c)" = "claude 默认" ]' _ "$SW11"
+t "11C 通道解析:跟随与流水线共用的开关 claude-launcher(创始人切账号时圆桌跟着切)" bash -c 'SWITCH_DIR="$1"; source "$1/f.sh"; unset LAIXIN_11C_CLAUDE_LAUNCHER; echo claude-b > "$1/claude-launcher"; read -r v s <<< "$(claude_launcher_11c)"; [ "$v" = claude-b ] && grep -q "共用" <<< "$s"' _ "$SW11"
+t "11C 通道解析:11C 专用开关 claude-launcher-11c 压过共用开关(圆桌与流水线可分账号)" bash -c 'SWITCH_DIR="$1"; source "$1/f.sh"; unset LAIXIN_11C_CLAUDE_LAUNCHER; echo claude-b > "$1/claude-launcher"; echo claude > "$1/claude-launcher-11c"; read -r v s <<< "$(claude_launcher_11c)"; [ "$v" = claude ] && grep -q "11C 专用" <<< "$s"' _ "$SW11"
+t "11C 通道解析:env LAIXIN_11C_CLAUDE_LAUNCHER 最优先" bash -c 'SWITCH_DIR="$1"; source "$1/f.sh"; echo claude > "$1/claude-launcher-11c"; read -r v s <<< "$(LAIXIN_11C_CLAUDE_LAUNCHER=claude-b claude_launcher_11c)"; [ "$v" = claude-b ] && grep -q "env" <<< "$s"' _ "$SW11"
+t "11C fable 起席串走通道变量 ⛔ 硬编码 claude-b(改开关即切账号)" bash -c 'b="$(sed -n "/^cmd_start()/,/^}/p" "$1")"; grep -qF "launch=\"\${_cl} -n \$seat --model claude-fable-5" <<< "$b" && ! grep -q "launch=\"claude-b -n" <<< "$b"' _ "$SEATB"
+t "11C fable:通道入口不在 PATH ⇒ 起席前拒(在双盲核/tmux 之前,零副作用)" bash -c 'out="$(env LAIXIN_11C_CLAUDE_LAUNCHER=claude-不存在的入口 LAIXIN_11C_ALLOW_ROOT="$1/allow" "$2" start seat-t fable "$1/allow/局X" 2>&1)"; rc=$?; [ $rc -ne 0 ] && grep -q "不在 PATH" <<< "$out"' _ "$SW11" "$SEATB"
+t "11C launcher_cfg_dir:从包装器文件读配置目录(claude→.claude-official);读不到显 未知 ⛔ 猜" bash -c '
+  sed -n "/^launcher_cfg_dir()/,/^}/p" "$1" > "$2/cfg.sh"; source "$2/cfg.sh"
+  mkdir -p "$2/bin"; printf "#!/bin/bash\n  CLAUDE_OFFICIAL_CONFIG_DIR=\"/Users/x/.claude-official\" \\\n  exec true\n" > "$2/bin/claude-x"; chmod +x "$2/bin/claude-x"
+  PATH="$2/bin:$PATH"; [ "$(launcher_cfg_dir claude-x)" = "/Users/x/.claude-official" ] || { echo "得 $(launcher_cfg_dir claude-x)"; exit 1; }
+  [ "$(launcher_cfg_dir 不存在的入口)" = "未知" ]' _ "$SEATB" "$SW11"
+rm -rf "$SW11"
 t "loop_stale:取 pid 走 loop_pids ⛔ 宽 pgrep(量错对象与量对同形)" bash -c '! sed -n "/^loop_stale()/,/^}/p" "'"$LANE"'" | grep -vE "^[[:space:]]*#" | grep -q "pgrep -f"'
 t "loop_stale:逐字 loop_pids" bash -c 'sed -n "/^loop_stale()/,/^}/p" "'"$LANE"'" | grep -q "loop_pids \"\$1\""'
 

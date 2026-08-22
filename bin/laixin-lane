@@ -1692,6 +1692,7 @@ cmd_doctor() {
   _chv="$(session_seats | channel_verdict)"; _chr=$?
   printf '%s\n' "$_chv"
   [ "$_chr" = 1 ] && fail=$((fail+1))
+  channel_quota_verdict
 
   echo "== 5. 发车位硬闸门(A 轨主树必须干净) =="
   if [ -d "$DEFAULT_DIR/.git" ]; then
@@ -3004,6 +3005,82 @@ channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行�
       }
       exit bad
     }'
+}
+
+# ── 通道额度到线提醒(2026-08-22 创始人裁「先问机器化」立):CC 双账号按额度轮换,
+#   而「该切了」此前**只存在于人去开仪表盘看一眼**——没有任何机器面,漏看的代价是
+#   账号跑干后流水线停摆。判据源=cc-usage-monitor(127.0.0.1:8763,01A 项目包)拉的
+#   官方额度;通道↔账号映射取 `<配置目录>/.claude.json` 的 oauthAccount.emailAddress
+#   (2026-08-22 实测两通道均有此字段),⛔ 靠 Keychain 后缀反推(要授权,无人值守下会挂)。
+# 🔴 失效必须降级 ⛔ 反向(三约束②):仪表盘没起/取不到/字段缺 ⇒ 一律显示「读不到」,
+#   ⛔ 显示 0% 也 ⛔ 静默跳过 —— 「额度充裕」与「没测到」在屏幕上必须长得不一样。
+CHANNEL_QUOTA_WARN="${LAIXIN_CHANNEL_QUOTA_WARN:-80}"
+channel_quota_verdict(){
+  local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}"
+  local raw; raw="$(curl -s -m 3 "$url" 2>/dev/null || true)"
+  if [ -z "$raw" ]; then
+    echo "  ℹ️ 通道额度:读不到用量仪表盘($url)⇒ 不适用(⛔ 读成额度充裕;起它:01A 项目包 cc-usage-monitor/monitor.py)"
+    return 0
+  fi
+  local out; out="$(printf '%s' "$raw" | CQ_WARN="$CHANNEL_QUOTA_WARN" CQ_LAUNCHER="$CLAUDE_LAUNCHER" python3 -c '
+import json,sys,os,glob
+warn=int(os.environ.get("CQ_WARN","80")); launcher=os.environ.get("CQ_LAUNCHER","")
+def out(x): print(x)
+try: d=json.load(sys.stdin)
+except Exception:
+    out("  INFO 通道额度:仪表盘响应不是 JSON => 不适用(不得读成额度充裕)"); sys.exit(0)
+bymail={}
+for a in d.get("official_accounts") or []:
+    m=a.get("account")
+    lim={l.get("kind"):l for l in ((a.get("data") or {}).get("limits") or [])}
+    w=lim.get("weekly_all") or {}
+    if m and w.get("percent") is not None:
+        bymail[m]=(w.get("percent"), (w.get("resets_at") or "")[:16])
+if not bymail:
+    out("  INFO 通道额度:仪表盘未返回任何账号额度 => 不适用(不得读成额度充裕)"); sys.exit(0)
+# 通道->账号取 <配置目录>/.claude.json 的 oauthAccount.emailAddress(不用 Keychain:要授权,无人值守会挂)
+# 同一账号可能绑多个配置目录(遗留空壳目录实测存在)=> 按账号去重,显示 launcher 指向的那个
+seen={}
+for cfg in sorted(glob.glob(os.path.expanduser("~/.claude*"))):
+    if not os.path.isdir(cfg): continue
+    base=os.path.basename(cfg)
+    try: mail=(json.load(open(os.path.join(cfg,".claude.json"))).get("oauthAccount") or {}).get("emailAddress")
+    except Exception: mail=None
+    if not mail or mail not in bymail: continue
+    cur=(launcher=="claude" and base==".claude-official") or (launcher=="claude-b" and base==".claude-b") or (launcher=="claude" and base==".claude")
+    if mail in seen:
+        old=seen[mail]
+        seen[mail]=(base if cur else old[0], old[1]+1, old[2] or cur)
+    else:
+        seen[mail]=(base,1,cur)
+if not seen:
+    out("  INFO 通道额度:配置目录与仪表盘账号对不上 => 不适用(不得读成额度充裕)"); sys.exit(0)
+cur_row=None
+for mail,(base,ndir,is_cur) in sorted(seen.items(), key=lambda kv: (not kv[1][2], kv[1][0])):
+    pct,reset=bymail[mail]
+    extra=("(+%d 个同账号目录)" % (ndir-1)) if ndir>1 else ""
+    tag="  <= 当前 CLAUDE_LAUNCHER 指向" if is_cur else ""
+    if is_cur: cur_row=(base,pct)
+    out("  通道 %s%s(%s):周额度 %s%%  重置 %s%s" % (base, extra, mail, pct, reset or "?", tag))
+if cur_row is None:
+    out("  INFO 通道额度:CLAUDE_LAUNCHER=%s 未匹配到任何通道 => 到线判据不适用(不得读成额度充裕)" % (launcher or "?")); sys.exit(0)
+if cur_row[1] >= warn:
+    others=[(b,bymail[m][0]) for m,(b,n,c) in seen.items() if not c]
+    tip=(";另一通道 %s 仅 %s%%" % (others[0][0], others[0][1])) if others else ""
+    out("WARN 当前通道 %s 周额度已 %s%%(>=%s%%)——该按「CC 双账号切换剧本」轮换了%s" % (cur_row[0], cur_row[1], warn, tip))
+else:
+    out("  OK 当前通道额度未到轮换线(<%s%%)" % warn)
+')"
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      "WARN "*) wrn "${line#WARN }" ;;
+      "  OK "*) ok "${line#  OK }" ;;
+      "  INFO "*) printf '  ℹ️ %s\n' "${line#  INFO }" ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done <<< "$out"
+  return 0
 }
 
 # 防撞:两个派工窗口同时动 lane 会把 Codex 上下文搞乱(2026-08-13 实际险些发生,靠人工提醒才没撞)

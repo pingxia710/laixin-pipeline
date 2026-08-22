@@ -1094,6 +1094,16 @@ tout "#67-fix codex 分支 die 行尾 ⛔ 挂 else(挂上=codex 起完再起 kim
   bash -c 'n=$(grep -n "vwait_ready_codex .* || die" "'"$LANE"'" | head -1 | cut -d: -f1); [ "$(sed -n "$((n+1))p" "'"$LANE"'" | tr -d "[:space:]")" = "else" ] && echo OK'
 tout "#67-fix 全文件禁「引号行尾挂 else/fi/then/do」(同族一律被当参数吞掉)" "ZERO" \
   bash -c 'grep -nE "\"[[:space:]]+(else|fi|then|do|done)[[:space:]]*\$" "'"$LANE"'" || echo ZERO'
+# ⭐ 通道额度到线提醒(2026-08-22 立,创始人「先问机器化」):CC 双账号按额度轮换,而「该切了」
+#   此前只存在于人去开仪表盘看一眼 —— 没有机器面,漏看的代价是账号跑干后流水线停摆。
+#   三条绊线全压在**失效方向**上(三约束②:失效必须降级 ⛔ 反向)——一个读不到额度却显示
+#   「未到轮换线」的检查器,比没有这个检查器更糟:它会让人以为已经核过了。
+tfail "通道额度:仪表盘不可达时显示「读不到」⛔ 显示 0%/⛔ 静默" "读不到用量仪表盘" \
+  bash -c 'env LAIXIN_USAGE_API=http://127.0.0.1:1/nope "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+tfail "通道额度:响应不是 JSON 时降级 ⛔ 当成额度充裕" "不是 JSON" \
+  bash -c 'env LAIXIN_USAGE_API=https://example.com "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+tout "通道额度:通道→账号取 .claude.json 的 oauthAccount(⛔ Keychain——要授权,无人值守会挂)" "oauthAccount" \
+  sed -n "/^channel_quota_verdict()/,/^}/p" "$LANE"
 # ⭐ 绊线⑥:派单指令必须告诉 codex「回程不会弹进你的输入框」——否则它会干等一个永远不来的消息
 tout "#67 codex 派单指令写明回程走落盘+路径指针(⛔ 等它直接注入)" "那条路不存在" \
   sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"

@@ -2413,83 +2413,30 @@ t "vmsg:片名经 vwin 转义(#130:未转义会静默作用到别的窗口)" \
   bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -qF "vwin \"\$slice\""'
 t "vmsg:上看板留痕(⛔ 无痕注入验收窗口)" \
   bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -qF "board \"\$from\""'
-# ── ctx 水位巡检的报警判据(2026-08-22 创始人令「写一个 ctx 监控的程序,让它提醒他们更换」)──
-# 实证起因:dispatch 从 69.7% 一轮冲到 89.5%,**全程无人知晓**,而它手边一直有 ctx 命令可跑
-# ⇒ **能查 ≠ 会被查**,席位越忙越不会想起来查,而越忙正是水位涨最快的时候。
-# 本节测的是**决策逻辑**(什么时候该报),⛔ 测真注入:mock 掉 cmd_ctx_all/board/cmd_dmsg,
-# 喂构造读数看它报不报。⛔ 让测试真的去戳 dispatch 窗口。
-CTXW="$(mktemp -d)"
-sed -n '/^ctx_watch_tick()/,/^}/p' "$LANE" > "$CTXW/fn.sh"
-cat > "$CTXW/t.sh" <<'EOS'
-#!/bin/bash
-set -euo pipefail
-CTX_STATE="$1"; FEED="$2"; OUTLOG="$3"; CTX_RENOTIFY="${CTX_RENOTIFY:-900}"
-cmd_ctx_all(){ cat "$FEED"; }
-board(){ echo "BOARD|$2" >> "$OUTLOG"; }
-cmd_dmsg(){ echo "DMSG" >> "$OUTLOG"; }
-source "$(dirname "$0")/fn.sh"
-ctx_watch_tick
-EOS
-ctxw(){   # ctxw <一行读数> [RENOTIFY] [GAP_WARN] [GAP_HARD] —— 跑一拍,回显它报了什么(空=静默)
-  # 间隔闸默认置 0:本组单独测**档位判据**,⛔ 让间隔闸混进来把档位逻辑的红绿盖掉。
-  printf '%s\n' "$1" > "$CTXW/feed"; : > "$CTXW/log"
-  CTX_RENOTIFY="${2:-900}" CTX_GAP_WARN="${3:-0}" CTX_GAP_HARD="${4:-0}" \
-    bash "$CTXW/t.sh" "$CTXW/state" "$CTXW/feed" "$CTXW/log" || true
-  cat "$CTXW/log" 2>/dev/null || true
-}
-ctxw_silent(){  [ -z "$(ctxw "$@")" ]; }
-ctxw_nodmsg(){  ! ctxw "$@" | grep -q DMSG; }
-ctxw_hasdmsg(){   ctxw "$@" | grep -q DMSG; }
-rm -f "$CTXW/state"
-t    "ctx巡检:ok 档不报(⛔ 没到线就开始吵)"                    ctxw_silent 'dispatch|node|S1|20.0|ok|确定|1'
-tout "ctx巡检:同会话 ok→warn 要报(⛔ 只在 hard 才吭声——那会吞掉最常见的一条路径)" "换班窗口" \
-     ctxw 'dispatch|node|S1|66.0|warn|确定|1'
-t    "ctx巡检:同会话同档位复跑静默(⛔ 每拍刷一条,告警会被当噪音关掉)" ctxw_silent 'dispatch|node|S1|67.0|warn|确定|1'
-tout "ctx巡检:warn→hard 升档要报"                              "硬闸门" ctxw 'dispatch|node|S1|80.0|hard|确定|1'
-t    "ctx巡检:hard 未到复读间隔时静默"                          ctxw_silent 'dispatch|node|S1|81.0|hard|确定|1'
-tout "ctx巡检:hard 过了复读间隔要复读(⛔ 报一次就沉底——它恰是必须动作的那一档)" "硬闸门" \
-     ctxw 'dispatch|node|S1|82.0|hard|确定|1' 0
-t    "ctx巡检:同会话降档静默(hard→warn 只可能是读数抖动;真换班时会话 id 会变)" \
-     ctxw_silent 'dispatch|node|S1|70.0|warn|确定|1'
-tout "ctx巡检:换班后新会话按当前档位重报(会话 id 变=状态清零)" "换班窗口" \
-     ctxw 'dispatch|node|S2-NEW|66.0|warn|确定|1'
-# ── 最短间隔闸:上线 20 分钟后实撞的**催命循环**(2026-08-22)────────────────────────
-# 🔴 换班本身会让 sid 变,而「sid 变=新会话=报一次」遇上频繁换班就成了催命循环。
-#   实撞链条:报 89.5% → 它换班 → 新任读完交接包**起步就 68%** → 巡检报「进入换班窗口」
-#   → 它又换 → 又 72% → 又报;15 分钟内 dispatch 换了四任(四个会话 id 有据可查)。
-#   根因不在巡检而在**线本身**:codex 派工席读交接包+知识库就吃掉 65-70%,而 65 这条线
-#   是按 claude 席位的经验定的 ⇒ 它一上任就撞线。线定在哪归创始人判,但工具⛔ 在他判之前继续催。
-# ⇒ 两道闸,都要能证伪:①间隔闸**对 sid 变化也生效**(不然等于没有闸,正是循环的驱动力);
-#   ②warn 只上看板 ⛔ 注入当事人——打断它正是循环的一环;hard 仍必须注入(它要求立刻动作)。
-rm -f "$CTXW/state"
-tout "ctx巡检:新会话首次 warn 要报" "换班窗口" ctxw 'dispatch|node|N1|68.0|warn|确定|1' 900 1800 600
-t "ctx巡检:换了会话也受最短间隔约束(⛔ sid 一变就重报=催命循环)" \
-  ctxw_silent 'dispatch|node|N2|68.0|warn|确定|1' 900 1800 600
-t "ctx巡检:再换一任仍被挡(实撞是连换四任)" \
-  ctxw_silent 'dispatch|node|N3|69.0|warn|确定|1' 900 1800 600
-rm -f "$CTXW/state"
-t "ctx巡检:warn 档只上看板 ⛔ 注入当事人(打断它正是催命循环的一环)" \
-  ctxw_nodmsg 'dispatch|node|W9|68.0|warn|确定|1'
-rm -f "$CTXW/state"
-t "ctx巡检:hard 档必须注入当事人(它要求立刻动作,只记看板等于没报)" \
-  ctxw_hasdmsg 'dispatch|node|H9|80.0|hard|确定|1'
-# 🔑 判据要绑在**档位升高**上,⛔ 绑在「等于 hard」上 —— 后者正是首版写法,六个场景恰好都没
-#    覆盖 ok→warn 这条路,补第七个场景才现形。回退成 `[ "$lvl" = "hard" ]` 即红。
-t "ctx巡检:升档判据用 rank 比较(⛔ 写死「只有 hard 才报」)" \
-  bash -c 'sed -n "/^ctx_watch_tick()/,/^}/p" "'"$LANE"'" | grep -qF "rank\" -gt \"\$prank"'
-t "ctx巡检:告警同时注入 dispatch(⛔ 只上看板——看板是给人事后翻的,当事人正埋在活里)" \
-  bash -c 'sed -n "/^ctx_watch_tick()/,/^}/p" "'"$LANE"'" | grep -qF "cmd_dmsg --from"'
-t "ctx巡检:接进看门狗循环且在派工分支之前(挂后面=派工一出事就没人盯水位)" \
-  bash -c 'sed -n "/^wd_loop()/,/1. 派工窗口死了/p" "'"$LANE"'" | grep -qF "ctx_watch_tick"'
-# 🔑 「巡检死了」与「巡检活着但没到档位」在看板上长得一模一样(都是零告警)——本仓栽过这一族
-#    (statusline.py「兜底不许静默」、事件总线「stderr 也落此,死因不再无声」)。两道判据:
-#    ①死因不许进 /dev/null;②活性另有其物=状态文件 mtime,doctor 据此判,⛔ 拿「看门狗活着」当它。
-#    ⚠️ 判据 grep 要避开注释行:本节与源码注释都逐字写了被禁的写法(⛔ 自匹配)。
-t "ctx巡检:死因落 WD_LOG(⛔ stderr 进 /dev/null——死了和没到档位在看板上一模一样)" \
-  bash -c 'sed -n "/^wd_loop()/,/1. 派工窗口死了/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "ctx_watch_tick ) >/dev/null 2>>"'
-t "doctor:据状态文件 mtime 判 ctx 巡检活性(⛔ 看门狗活着就当水位在被盯)" \
-  bash -c 'grep -qF "ctx 水位巡检" "'"$LANE"'" && grep -qF "CTX_STATE" "'"$LANE"'"'
-rm -rf "$CTXW"
+# ── ctx 监控:**已停用**,并钉住不许重造(2026-08-22 当天上线当天撤)──────────────
+# 🔴 整套机制建立在一个错误前提上:「上下文满了必须换人」是 **claude 席位**的模型,
+#   而 dispatch / lane-a / lane-b 全是 **codex**,codex 自带翻页。二进制内原文:
+#   "Your context window is nearly exhausted ... will be **automatically reset** for you soon.
+#    Once reset, message items in current context window will be cleared in the new window,
+#    but **notes and history items will be persistent across windows**."
+#   auto_compact_token_limit 与 context_window 并列在 model catalog 里 = 内置默认行为,非可选。
+# 实证(同一会话 id 全程未变):dispatch 15-19-18 第 49 次请求 222,994(86.3%),第 50 次归零
+#   自行翻页,之后继续干活未换人;lane-b 15-25-31 同样 82.3% → 17.1%。
+# 代价:dispatch 本可一任连干三个半小时(11:25→14:55),被这套机制催后 15 分钟连换四任
+#   (14:55:41 / 14:58:33 / 15:13:56 / 15:19:18),把正常运转的流水线打断。
+# ⇒ 巡检已从 wd_loop 摘除;ctx_watch_tick 函数保留但不再被调用(留说明给后人);
+#   ctx-all 保留,但只描述填充度。下面三条钉住这个结论——「给 codex 加个 ctx 监控」
+#   听起来天经地义,下一个人极可能重造它。要恢复,先回答:codex 自动翻页之后,
+#   人工换班还解决什么问题?
+t "ctx:巡检 ⛔ 挂回看门狗循环(codex 自带翻页,填充度高不是需要人处置的状态)" \
+  bash -c '! sed -n "/^wd_loop()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -q "ctx_watch_tick"'
+t "ctx:ctx-all ⛔ 出现催人换班的祈使句(它只描述离自动翻页多远)" \
+  bash -c '! sed -n "/^cmd_ctx_all()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qE "立刻写状态|就交班|别开新调查"'
+t "ctx:ctx-all 必须留下「codex 自行翻页」的结论(⛔ 只删措辞不留因由——后人会重造)" \
+  bash -c 'sed -n "/^cmd_ctx_all()/,/^}/p" "'"$LANE"'" | grep -qF "自行 reset"'
+t "ctx:ctx_watch_tick 函数保留但 ⛔ 被任何地方调用(留作说明,⛔ 留作可随手接回的开关)" \
+  bash -c 'grep -qF "ctx_watch_tick()" "'"$LANE"'" && [ "$(grep -v "^[[:space:]]*#" "'"$LANE"'" | grep -c "ctx_watch_tick")" = 1 ]'
+
 # ── 看门狗反向守护:自愈链的根不许是单点(2026-08-22 生产级)──────────────────────
 # 盘点时发现:wd 管 ev/relay/dispatch,而 wd 自己死了**没有任何东西管它**;两个 launchd 项
 # 都只有 RunAtLoad(开机跑一次,⛔ KeepAlive),boot-full 的兜底文案还写着「五次未成交给看门狗」

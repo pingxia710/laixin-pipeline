@@ -803,10 +803,14 @@ if machine:
     sys.exit(0)
 
 MARK={"hard":"🔴","warn":"🟡","ok":"🟢","unknown":"⬜"}
-TXT={"hard":f"≥{HARD}% 硬闸门:立刻写状态→交接包→起新窗口",
-     "warn":f"{WARN}-{HARD}% 换班窗口:别开新调查,手上这片收尾就交班",
-     "ok":f"<{WARN}% 正常工作区间","unknown":"无 codex 会话(kimi/claude 席位或尚无 token 记录)"}
-print(f"席位上下文水位(闸门 {WARN}/{HARD};引擎=codex)")
+# 🔴 「换班/闸门」措辞已撤(2026-08-22):codex 自带翻页,填充度高**不是需要人处置的状态**。
+# 二进制原文:context window 将满时 "will be automatically reset ... notes and history items
+# will be persistent across windows";auto_compact_token_limit 在 model catalog 里=内置默认。
+# ⇒ 这里只描述**离自动翻页还有多远**,⛔ 出现任何建议谁做什么的字样。
+TXT={"hard":"接近上限,codex 将自行开新 context window(notes/history 跨窗口保留)",
+     "warn":"填充中,离自动翻页尚有余量",
+     "ok":"当前 context window 宽裕","unknown":"无 codex 会话(kimi/claude 席位或尚无 token 记录)"}
+print(f"席位 context window 填充度(引擎=codex)  ⛔ 换班判据——满了它自己翻页")
 print(f"认身份 = tmux 实时 cwd × 席位进程启动时刻(±{TOL}s);两条合取才算「确定」,只对上一条记「推定」")
 print("─"*84)
 for name,cmd,sid,pct,cw,lvl,how,n in rows:
@@ -819,7 +823,10 @@ for name,cmd,sid,pct,cw,lvl,how,n in rows:
     print(f"      {sid[:36]}…  [{how}]{tag}")
     print(f"      {TXT[lvl]}")
 print("─"*84)
-print("注:codex 的 TUI 底栏不显示上下文占比,本命令是它唯一的水位来源(claude 席位看自己底栏)。")
+print("注:codex 的 TUI 底栏不显示这个数,本命令是它唯一的读数来源(claude 席位看自己底栏)。")
+print("   🔴 这个数**不是换班判据**:codex 接近上限会自行 reset 并保留 notes/history。")
+print("      实证 2026-08-22:dispatch 同一会话 #49 到 86.3%,#50 归零自行翻页,继续干活未换人;")
+print("      而据此催换班的后果是 15 分钟连换四任,把本可连干三个半小时的一任打断。")
 print("   核对某席位是不是这个会话:codex 里 /status 看当前会话 id,与上面第二行比对。")
 PY
 }
@@ -1874,20 +1881,9 @@ cmd_doctor() {
       else ok "看门狗循环代龄一致(循环不老于脚本,修复已生效)"; fi
     elif win_exists "$WATCHDOG_WIN"; then wrn "看门狗窗口在但循环已死(假绿形态,复盘页#20⑤)——laixin-lane watchdog stop && start"
     else wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"; fi
-    # ctx 水位巡检活性(2026-08-22):**看门狗活着 ≠ 水位在被盯**——巡检挂在它循环里,
-    # 而巡检死了与「活着但没到档位」在看板上长得一模一样(两者都是零告警)。⇒ 用状态文件的
-    # mtime 判活:ctx_watch_tick 每拍都重写它,所以它的新鲜度就是「上次巡检时刻」。
-    # 阈值取巡检周期的 3 倍(5 分钟一拍 ⇒ 15 分钟没动=真出事了,⛔ 卡到 6 分钟制造抖动误报)。
-    if wd_alive; then
-      if [ -f "$CTX_STATE" ]; then
-        _cage=$(( $(date +%s) - $(stat -f %m "$CTX_STATE" 2>/dev/null || echo 0) ))
-        if [ "$_cage" -gt 900 ]; then
-          wrn "ctx 水位巡检 $((_cage/60)) 分钟没动过(应每 5 分钟一拍)——看门狗活着但这一项可能已死;死因看 $WD_LOG,复跑 laixin-lane ctx-all 自测"
-        else ok "ctx 水位巡检在跑($((_cage/60)) 分钟前刚巡过;闸门 65 准备/75 硬)"; fi
-      else
-        wrn "ctx 水位巡检尚未产出状态文件——看门狗换代后需 5 分钟才出首拍;超过 10 分钟仍无即为异常"
-      fi
-    fi
+    # ctx 水位巡检**已停用**(2026-08-22 撤,见 wd_loop 0.7 段):codex 自带上下文翻页,
+    # 「水位高」不是需要人处置的状态 ⇒ 不再判其活性,⛔ 留一条永远为假的检查制造噪音。
+
     if ev_alive; then ok "事件总线运行中(进程判活)"
       if loop_stale ev-loop; then wrn "事件总线循环代龄落后(脚本比循环新,修复未生效)——events stop && start 换代(#20⑥)"
       else ok "事件总线循环代龄一致(循环不老于脚本,修复已生效)"; fi
@@ -4010,16 +4006,14 @@ ctx_watch_tick() {
         msg="🟡 ${seat} 上下文 ${pct}% —— 进入 65-75% 换班窗口(仅记录,⛔ 催你现在换):手上这片收尾时再择机(会话 ${sid:0:24}…)"
       fi
       board "ctx巡检" "$msg"
-      # 只有 hard 档注入当事人:warn 是准备区,打断它反而制造上面那个催命循环。
-      # #44 纪律:保命循环里的子调用一律子 shell 隔离(cmd_dmsg 的调用树里有 die)。
-      if [ "$lvl" = "hard" ]; then
-        ( cmd_dmsg --from ctx巡检 "$msg
-
-全席位水位:laixin-lane ctx-all(codex 席位唯一的读数来源——你的 TUI 底栏不显示这个数)。
-闸门 65 准备 / 75 硬标准(创始人 2026-08-22 定,前值 55/70)。lane 的 fresh 换代同样归你判。
-⚠️ 若你**刚接手不久**就收到本条,⛔ 立刻换班——那是起步水位本身就高(读交接包吃掉的),
-   连续换班只会让每一任都在热身阶段被换掉;先干活,到真的写不动了再交。" ) >/dev/null 2>>"${WD_LOG:-/dev/null}" || true
-      fi
+      # 🔴 ⛔ 自动注入当事人(2026-08-22 撤,本机制曾把正常运转的流水线弄断):
+      #   实际后果=派工席 11:25 起一任连干三个半小时、状态良好,而本巡检一催,
+      #   15 分钟内连换四任(14:55:41/14:58:33/15:13:56/15:19:18)。
+      #   🔑 根因不是阈值也不是刷屏,是**性质错位**:上下文占比是给当事人自己择机用的**参考量**,
+      #      而把它主动推到它面前、还带「该换班了」的措辞,就变成了一道**指令**——
+      #      工具没有资格对在班席位下有正式语义的令,换班时机归它自己按四轨判据判、归创始人定节奏。
+      #   ⇒ 本巡检降为**纯观察**:只落看板供人翻,⛔ 推送、⛔ 措辞含催促。
+      #      要恢复推送必须由创始人明令,并且先想清楚「被催的一方会不会照做」——它会。
       prev_at="$now"
     fi
     new_state="${new_state}${seat}|${sid}|${lvl}|${prev_at}"$'\n'
@@ -4066,21 +4060,23 @@ wd_loop() {
         dialog_sweep_win "$RELAY_WIN" >/dev/null 2>&1 || true
       fi
     fi
-    # —— 0.7 上下文水位巡检(2026-08-22)——
-    # 位置在派工分支**之前**,理由同 0.5:下面每个 dispatch 分支都 continue,挂在后面等于
-    # 「派工窗口一出事就再没人盯水位」——而水位过线本身就是它出事的常见前因。
-    # 每 ${CTX_EVERY:-5} 轮(默认 5 分钟)一次:读数变化以分钟计,每 60s 跑一次纯属白烧。
-    ctx_tick=$((ctx_tick+1))
-    if [ $((ctx_tick % ${CTX_EVERY:-5})) -eq 0 ]; then
-      # #44:保命循环里的子调用一律子 shell 隔离。
-      # ⛔ 连 stderr 一起吞进 /dev/null(首版写法):巡检**死了**和巡检**活着但没到档位**,
-      #   在看板上长得一模一样——那正是本仓反复栽的那族错(statusline.py「兜底不许静默」、
-      #   事件总线「stderr 也落此,死因不再无声」)。⇒ 死因落 WD_LOG,失败再显式记一行。
-      #   活性判据另有其物:ctx_watch_tick 每拍都重写状态文件,其 mtime 即「上次巡检时刻」,
-      #   doctor 据此判活(见 doctor 那节)。
-      ( ctx_watch_tick ) >/dev/null 2>>"$WD_LOG" \
-        || echo "[$(date '+%F %T')] ⛔ ctx 水位巡检失败(循环存活,下一拍重试)" >> "$WD_LOG"
-    fi
+    # —— 0.7 上下文水位巡检:**已停用**(2026-08-22 当天上线当天撤)——————————————
+    # 🔴 撤因:整套机制建立在一个**错误前提**上——「上下文满了必须换人」。那是 claude 席位的
+    #   模型,而本流水线的 dispatch / lane-a / lane-b 全是 **codex**,codex 自带翻页:
+    #   二进制内原文 "Your context window is nearly exhausted (only {n_remaining} tokens
+    #   remaining) and will be **automatically reset** for you soon. Once reset, message items
+    #   in current context window will be cleared in the new window, but **notes and history
+    #   items will be persistent across windows.**";配套项 auto_compact_token_limit /
+    #   full_context_window_limit_reached / new_context("Start a new context window")
+    #   都在 model catalog 里,是**内置默认行为**不是可选功能。
+    # ⇒ 我看到的「12%→82%」不是「快撑不住」,是一个 context window 正常填充;80% 对 codex
+    #   不是危机。而我拿这个数去催换班,等于让它做一件**它本来不用做的事**,且人工换班
+    #   比自动翻页更差:自动翻页保留 notes/history,人工换班要重写交接包、新人从头热身。
+    # 📉 实际代价:dispatch 本来 11:25 起一任连干三个半小时、状态良好;被催后 15 分钟内
+    #   连换四任(14:55:41 / 14:58:33 / 15:13:56 / 15:19:18),把正常运转的流水线打断。
+    # ⚠️ 留下这段而不删,是因为**下一个人极可能重造它**——「给 codex 加个 ctx 监控」听起来
+    #   天经地义。要恢复必须先回答:codex 自动翻页之后,人工换班还解决什么问题?
+    #   ctx-all 命令保留(数字本身客观,可用来看它何时翻页),但⛔ 由机器据此催任何人。
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then
       if [ "$restarts" -ge "$max_restart" ]; then

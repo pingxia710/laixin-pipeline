@@ -1101,10 +1101,22 @@ tout "#67-fix 全文件禁「引号行尾挂 else/fi/then/do」(同族一律被�
 #   此前只存在于人去开仪表盘看一眼 —— 没有机器面,漏看的代价是账号跑干后流水线停摆。
 #   三条绊线全压在**失效方向**上(三约束②:失效必须降级 ⛔ 反向)——一个读不到额度却显示
 #   「未到轮换线」的检查器,比没有这个检查器更糟:它会让人以为已经核过了。
-tfail "通道额度:仪表盘不可达时显示「读不到」⛔ 显示 0%/⛔ 静默" "读不到用量仪表盘" \
-  bash -c 'env LAIXIN_USAGE_API=http://127.0.0.1:1/nope "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+# 🔴 **两种失效必须可分辨**(2026-08-22 实撞):首版超时 3s,而该 API 同步拉两个账号的官方额度、
+#   走代理,实测 7.16s ⇒ 稳定超时、输出恒为「读不到」——与「仪表盘根本没起」同一句话,
+#   于是「服务好好的只是慢」被读成「服务没了」。⇒ 探活与拉数分开判,措辞必须不同。
+tfail "通道额度:仪表盘未监听时说「未在监听」(⛔ 与「拉取超时」同一句话)" "未在监听" \
+  bash -c 'env LAIXIN_USAGE_PROBE=http://127.0.0.1:1/ LAIXIN_USAGE_API=http://127.0.0.1:1/nope "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+tfail "通道额度:在跑但拉取超时说「在跑但额度拉取超时」(⛔ 读成服务没了)" "在跑但额度拉取超时" \
+  bash -c 'env LAIXIN_USAGE_PROBE=https://example.com/ LAIXIN_USAGE_API=http://10.255.255.1:9/ LAIXIN_USAGE_TIMEOUT=1 "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+# ⚠️ 靶子必须**真的超时**:首版用 example.com/slow,它 1s 内就返 404 ⇒ 落进「不是 JSON」分支,
+#   断言红。改用**不可路由地址**(10.255.255.1:9)——它只会挂到超时,不会提前给出任何响应。
 tfail "通道额度:响应不是 JSON 时降级 ⛔ 当成额度充裕" "不是 JSON" \
-  bash -c 'env LAIXIN_USAGE_API=https://example.com "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+  bash -c 'env LAIXIN_USAGE_PROBE=https://example.com/ LAIXIN_USAGE_API=https://example.com "'"$LANE"'" doctor | grep "通道额度"; exit 1'
+# 5h 窗口(session)与周额度**处置完全不同**:前者几小时自愈=等重置或临时换,后者=按剧本轮换 ⇒ ⛔ 混成一条
+tout "通道额度:5h 窗口纳入判据(⛔ 只看周额度——5h 打满同样当场停摆且更容易撞)" "5h窗口" \
+  bash -c 'sed -n "/^channel_quota_verdict()/,/^}/p" "'"$LANE"'"'
+tout "通道额度:5h 到线的措辞点明「几小时后自愈」(⛔ 与周额度同一句处置)" "自愈" \
+  bash -c 'sed -n "/^channel_quota_verdict()/,/^}/p" "'"$LANE"'"'
 tout "通道额度:通道→账号取 .claude.json 的 oauthAccount(⛔ Keychain——要授权,无人值守会挂)" "oauthAccount" \
   sed -n "/^channel_quota_verdict()/,/^}/p" "$LANE"
 # ⭐ #67④ 自述同步(2026-08-22):doctor 原写「待 git pre-push hook 把锁挪到 git 层」,而钩子

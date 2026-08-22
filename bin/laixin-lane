@@ -3121,12 +3121,22 @@ channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行�
 CHANNEL_QUOTA_WARN="${LAIXIN_CHANNEL_QUOTA_WARN:-80}"
 channel_quota_verdict(){
   local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}"
-  local raw; raw="$(curl -s -m 3 "$url" 2>/dev/null || true)"
-  if [ -z "$raw" ]; then
-    echo "  ℹ️ 通道额度:读不到用量仪表盘($url)⇒ 不适用(⛔ 读成额度充裕;起它:01A 项目包 cc-usage-monitor/monitor.py)"
+  # 🔴 **两种失效必须可分辨**(2026-08-22 实撞):首版超时 3s,而该 API **同步去拉两个账号的官方
+  #   额度、走代理,实测 7.16s** ⇒ 稳定超时,输出恒为「读不到」—— 与「仪表盘根本没起」**同一句话**,
+  #   于是「服务好好的只是慢」被读成「服务没了」,查错方向当场跑偏。
+  #   ⇒ 先用 2s 探静态页判**服务在不在**(它不触发上游拉取,快),再用长超时拉 API 判**数据取不取得到**。
+  local probe_url="${LAIXIN_USAGE_PROBE:-${url%/api/usage}/}" alive="" raw=""
+  alive="$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$probe_url" 2>/dev/null || true)"
+  if [ "$alive" != "200" ]; then
+    echo "  ℹ️ 通道额度:用量仪表盘**未在监听**($probe_url,探活 2s 返回 ${alive:-无响应})⇒ 不适用(⛔ 读成额度充裕;起它:01A 项目包 cc-usage-monitor/monitor.py)"
     return 0
   fi
-  local out; out="$(printf '%s' "$raw" | CQ_WARN="$CHANNEL_QUOTA_WARN" CQ_LAUNCHER="$CLAUDE_LAUNCHER" python3 -c '
+  raw="$(curl -s -m "${LAIXIN_USAGE_TIMEOUT:-15}" "$url" 2>/dev/null || true)"
+  if [ -z "$raw" ]; then
+    echo "  ℹ️ 通道额度:仪表盘**在跑但额度拉取超时**(>${LAIXIN_USAGE_TIMEOUT:-15}s;它同步拉上游官方接口,慢属常见)⇒ 本次不适用(⛔ 读成额度充裕;稍后重跑或直接看 $probe_url)"
+    return 0
+  fi
+  local out; out="$(printf '%s' "$raw" | CQ_WARN="$CHANNEL_QUOTA_WARN" CQ_SWARN="${LAIXIN_CHANNEL_SESSION_WARN:-90}" CQ_LAUNCHER="$CLAUDE_LAUNCHER" python3 -c '
 import json,sys,os,glob
 warn=int(os.environ.get("CQ_WARN","80")); launcher=os.environ.get("CQ_LAUNCHER","")
 def out(x): print(x)
@@ -3138,8 +3148,11 @@ for a in d.get("official_accounts") or []:
     m=a.get("account")
     lim={l.get("kind"):l for l in ((a.get("data") or {}).get("limits") or [])}
     w=lim.get("weekly_all") or {}
+    # ⚠️ 只看周额度会漏掉**5 小时窗口(session)耗尽**这一族:它同样让席位当场停摆,而且比周额度
+    #   更容易撞(一轮密集派工就能打满),重置也快。⇒ 两个都取,分别给阈值。
+    sess=lim.get("session") or {}
     if m and w.get("percent") is not None:
-        bymail[m]=(w.get("percent"), (w.get("resets_at") or "")[:16])
+        bymail[m]=(w.get("percent"), (w.get("resets_at") or "")[:16], sess.get("percent"), (sess.get("resets_at") or "")[:16])
 if not bymail:
     out("  INFO 通道额度:仪表盘未返回任何账号额度 => 不适用(不得读成额度充裕)"); sys.exit(0)
 # 通道->账号取 <配置目录>/.claude.json 的 oauthAccount.emailAddress(不用 Keychain:要授权,无人值守会挂)
@@ -3161,19 +3174,26 @@ if not seen:
     out("  INFO 通道额度:配置目录与仪表盘账号对不上 => 不适用(不得读成额度充裕)"); sys.exit(0)
 cur_row=None
 for mail,(base,ndir,is_cur) in sorted(seen.items(), key=lambda kv: (not kv[1][2], kv[1][0])):
-    pct,reset=bymail[mail]
+    pct,reset,spct,sreset=bymail[mail]
     extra=("(+%d 个同账号目录)" % (ndir-1)) if ndir>1 else ""
     tag="  <= 当前 CLAUDE_LAUNCHER 指向" if is_cur else ""
-    if is_cur: cur_row=(base,pct)
-    out("  通道 %s%s(%s):周额度 %s%%  重置 %s%s" % (base, extra, mail, pct, reset or "?", tag))
+    if is_cur: cur_row=(base,pct,spct)
+    sess_txt=("  5h窗口 %s%%(重置 %s)" % (spct, sreset[-5:] or "?")) if spct is not None else "  5h窗口 读不到"
+    out("  通道 %s%s(%s):周额度 %s%%  重置 %s%s%s" % (base, extra, mail, pct, reset or "?", sess_txt, tag))
 if cur_row is None:
     out("  INFO 通道额度:CLAUDE_LAUNCHER=%s 未匹配到任何通道 => 到线判据不适用(不得读成额度充裕)" % (launcher or "?")); sys.exit(0)
+swarn=int(os.environ.get("CQ_SWARN","90"))
+others=[(b,bymail[m][0]) for m,(b,n,c) in seen.items() if not c]
+tip=(";另一通道 %s 周额度仅 %s%%" % (others[0][0], others[0][1])) if others else ""
+hit=False
 if cur_row[1] >= warn:
-    others=[(b,bymail[m][0]) for m,(b,n,c) in seen.items() if not c]
-    tip=(";另一通道 %s 仅 %s%%" % (others[0][0], others[0][1])) if others else ""
-    out("WARN 当前通道 %s 周额度已 %s%%(>=%s%%)——该按「CC 双账号切换剧本」轮换了%s" % (cur_row[0], cur_row[1], warn, tip))
-else:
-    out("  OK 当前通道额度未到轮换线(<%s%%)" % warn)
+    out("WARN 当前通道 %s 周额度已 %s%%(>=%s%%)——该按「CC 双账号切换剧本」轮换了%s" % (cur_row[0], cur_row[1], warn, tip)); hit=True
+# 5h 窗口单独判:它打满时**席位当场停摆**,但几小时后自愈 ⇒ 措辞要说清「等重置 or 换通道」,
+# ⛔ 与周额度混成一条(两者的处置完全不同:一个换通道,一个等一会儿)。
+if cur_row[2] is not None and cur_row[2] >= swarn:
+    out("WARN 当前通道 %s 的 5 小时窗口已 %s%%(>=%s%%)——**这一族几小时后自愈**,处置=等重置或临时换通道,⛔ 与周额度混判" % (cur_row[0], cur_row[2], swarn)); hit=True
+if not hit:
+    out("  OK 当前通道额度未到线(周<%s%% 且 5h窗口<%s%%)" % (warn, swarn))
 ')"
   local line
   while IFS= read -r line; do

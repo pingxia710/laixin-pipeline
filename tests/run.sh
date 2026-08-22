@@ -2413,6 +2413,51 @@ t "vmsg:片名经 vwin 转义(#130:未转义会静默作用到别的窗口)" \
   bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -qF "vwin \"\$slice\""'
 t "vmsg:上看板留痕(⛔ 无痕注入验收窗口)" \
   bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -qF "board \"\$from\""'
+# ── ctx 水位巡检的报警判据(2026-08-22 创始人令「写一个 ctx 监控的程序,让它提醒他们更换」)──
+# 实证起因:dispatch 从 69.7% 一轮冲到 89.5%,**全程无人知晓**,而它手边一直有 ctx 命令可跑
+# ⇒ **能查 ≠ 会被查**,席位越忙越不会想起来查,而越忙正是水位涨最快的时候。
+# 本节测的是**决策逻辑**(什么时候该报),⛔ 测真注入:mock 掉 cmd_ctx_all/board/cmd_dmsg,
+# 喂构造读数看它报不报。⛔ 让测试真的去戳 dispatch 窗口。
+CTXW="$(mktemp -d)"
+sed -n '/^ctx_watch_tick()/,/^}/p' "$LANE" > "$CTXW/fn.sh"
+cat > "$CTXW/t.sh" <<'EOS'
+#!/bin/bash
+set -euo pipefail
+CTX_STATE="$1"; FEED="$2"; OUTLOG="$3"; CTX_RENOTIFY="${CTX_RENOTIFY:-900}"
+cmd_ctx_all(){ cat "$FEED"; }
+board(){ echo "BOARD|$2" >> "$OUTLOG"; }
+cmd_dmsg(){ echo "DMSG" >> "$OUTLOG"; }
+source "$(dirname "$0")/fn.sh"
+ctx_watch_tick
+EOS
+ctxw(){   # ctxw <一行机器读数> [CTX_RENOTIFY] —— 跑一拍巡检,回显它报了什么(空=静默)
+  printf '%s\n' "$1" > "$CTXW/feed"; : > "$CTXW/log"
+  CTX_RENOTIFY="${2:-900}" bash "$CTXW/t.sh" "$CTXW/state" "$CTXW/feed" "$CTXW/log" || true
+  cat "$CTXW/log" 2>/dev/null || true
+}
+ctxw_silent(){ [ -z "$(ctxw "$@")" ]; }
+rm -f "$CTXW/state"
+t    "ctx巡检:ok 档不报(⛔ 没到线就开始吵)"                    ctxw_silent 'dispatch|node|S1|20.0|ok|确定|1'
+tout "ctx巡检:同会话 ok→warn 要报(⛔ 只在 hard 才吭声——那会吞掉最常见的一条路径)" "换班窗口" \
+     ctxw 'dispatch|node|S1|66.0|warn|确定|1'
+t    "ctx巡检:同会话同档位复跑静默(⛔ 每拍刷一条,告警会被当噪音关掉)" ctxw_silent 'dispatch|node|S1|67.0|warn|确定|1'
+tout "ctx巡检:warn→hard 升档要报"                              "硬闸门" ctxw 'dispatch|node|S1|80.0|hard|确定|1'
+t    "ctx巡检:hard 未到复读间隔时静默"                          ctxw_silent 'dispatch|node|S1|81.0|hard|确定|1'
+tout "ctx巡检:hard 过了复读间隔要复读(⛔ 报一次就沉底——它恰是必须动作的那一档)" "硬闸门" \
+     ctxw 'dispatch|node|S1|82.0|hard|确定|1' 0
+t    "ctx巡检:同会话降档静默(hard→warn 只可能是读数抖动;真换班时会话 id 会变)" \
+     ctxw_silent 'dispatch|node|S1|70.0|warn|确定|1'
+tout "ctx巡检:换班后新会话按当前档位重报(会话 id 变=状态清零)" "换班窗口" \
+     ctxw 'dispatch|node|S2-NEW|66.0|warn|确定|1'
+# 🔑 判据要绑在**档位升高**上,⛔ 绑在「等于 hard」上 —— 后者正是首版写法,六个场景恰好都没
+#    覆盖 ok→warn 这条路,补第七个场景才现形。回退成 `[ "$lvl" = "hard" ]` 即红。
+t "ctx巡检:升档判据用 rank 比较(⛔ 写死「只有 hard 才报」)" \
+  bash -c 'sed -n "/^ctx_watch_tick()/,/^}/p" "'"$LANE"'" | grep -qF "rank\" -gt \"\$prank"'
+t "ctx巡检:告警同时注入 dispatch(⛔ 只上看板——看板是给人事后翻的,当事人正埋在活里)" \
+  bash -c 'sed -n "/^ctx_watch_tick()/,/^}/p" "'"$LANE"'" | grep -qF "cmd_dmsg --from"'
+t "ctx巡检:接进看门狗循环且在派工分支之前(挂后面=派工一出事就没人盯水位)" \
+  bash -c 'sed -n "/^wd_loop()/,/1. 派工窗口死了/p" "'"$LANE"'" | grep -qF "ctx_watch_tick"'
+rm -rf "$CTXW"
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
 # 12:54 验收回执落盘。两处叠加:

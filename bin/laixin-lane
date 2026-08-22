@@ -31,7 +31,7 @@
 #   laixin-lane handover-mode <继任> <前任>  交班形态:同账号正常交班 or 跨账号(判不了会直说)
 #   laixin-lane whoholds             谁当前持有派工权
 #   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
-#   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比(≥70% 是交班硬闸门;自我感知会低估 15-25 个点)
+#   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比(≥75% 是交班硬闸门;自我感知会低估 15-25 个点)
 #                                    #67③:codex 引擎必须显式 --engine codex,否则读到的是 claude 会话的数(别人的)
 #   laixin-lane evidence [片名]      看验收留下的证据文件(回执里的数字须能在此 grep 到)
 #   laixin-lane evid-gc [天数]       清理超期证据目录(默认 7 天)
@@ -531,7 +531,7 @@ EVID_ROOT="${LAIXIN_EVID_ROOT:-$HOME/.laixin-evidence}"   # 可覆盖:测试用 
 # 落在 ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl,格式也不同(event_msg/token_count 事件里带
 # last_token_usage 与 **model_context_window**——分母由文件自带,⛔ 再靠 LAIXIN_CTX_WINDOW 猜)。
 # ⚠️ 不分引擎的后果不是报错而是**报出别人的数字**:dispatch 换 codex 后照旧跑 `ctx`,读到的是本机
-#    某个 claude 窗口的占比,而交班硬闸门(≥70%)就架在这个数上 ⇒ 闸门静默失效。
+#    某个 claude 窗口的占比,而交班硬闸门(≥75%)就架在这个数上 ⇒ 闸门静默失效。
 # ⚠️ 取不到读数一律**报不可用并退非零 ⛔ 返 0 / ⛔ 返最近一次的旧值**——0 和旧值都会让闸门看起来
 #    「还早着呢」,失效方向正对着它要防的风险。claude 路径逐字未动(默认引擎仍是 claude)。
 cmd_ctx() {
@@ -546,7 +546,7 @@ cmd_ctx() {
   [ "$eng" = "codex" ] && { cmd_ctx_codex "$want"; return $?; }
   # 2026-08-19 夜(11B pingxia-37 实撞):原写死 $HOME/.claude-official/projects/-Users-pingxia。双账号软切换(#75 族)后
   # transcript 按配置目录分家(~/.claude-official 与 ~/.claude-b 各一份)⇒ 新通道全部窗口 ctx 一律「没有匹配」,
-  # ≥70% 交班硬闸门整条通道失明;不带参的列表分支更糟——把**旧通道别人的会话**列给你认领(失效反向)。
+  # ≥75% 交班硬闸门整条通道失明;不带参的列表分支更糟——把**旧通道别人的会话**列给你认领(失效反向)。
   # ⇒ 枚举全部 ~/.claude*/projects/-Users-pingxia(软切换期两线并存,⛔ 只认当前 claude-launcher 开关那条——开关只管
   # 新起席位,老线窗口还在跑);LAIXIN_CTX_PROJ 仍可显式覆盖(冒号分隔多目录);一个目录都没有 ⇒ 报不可用退非零
   # (⛔ 返 0/返空让闸门看着「还早」,#67③ 同规)。输出带所属配置目录名,多通道并存时认领靠它。
@@ -602,11 +602,11 @@ cur=last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("c
 pct=cur/win*100
 bar="█"*int(pct//5)+"░"*(20-int(pct//5))
 print(f"会话 {os.path.basename(f)[:8]}… [{chan(f)}]  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
-# ⚠️ 闸门线双真相源:此处 70/55 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
+# ⚠️ 闸门线双真相源:此处 75/65 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
 # 必须同步(一个 bash 一个 python,跨语言共用常量的代价大于收益)。改一处就改另一处。
-if   pct>=70: print("🔴 ≥70% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
-elif pct>=55: print("🟡 55-70%:进入交班准备区,别再开新调查;手上这片收尾就交班")
-else:         print("🟢 <55%:正常工作区间")
+if   pct>=75: print("🔴 ≥75% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
+elif pct>=65: print("🟡 65-75%:进入交班准备区,别再开新调查;手上这片收尾就交班")
+else:         print("🟢 <65%:正常工作区间")
 print("注:判据是**占比**不是 token 绝对数——同样 500k,1M 模型是半程、200k 模型早已溢出。分母用 LAIXIN_CTX_WINDOW 覆盖。")
 PY
   return 0
@@ -615,7 +615,7 @@ PY
 cmd_ctx_codex(){  # <会话id前缀,可空> —— codex 引擎的 ctx 读数(#67③)
   # 分母**取自会话文件自带的 model_context_window**(实测 0.147.0 写在 event_msg/token_count 的
   # info 里)⇒ 换模型自动跟随,⛔ 再维护一份 LAIXIN_CTX_WINDOW 那样的手改分母(那正是「双真相源」)。
-  # 闸门线 70/55 与 claude 分支共用同一组数字(改一处就改另一处,同上面那条双真相源注)。
+  # 闸门线 75/65 与 claude 分支共用同一组数字(改一处就改另一处,同上面那条双真相源注)。
   local root="${LAIXIN_CODEX_SESSIONS:-$HOME/.codex/sessions}"
   python3 - "$root" "${1:-}" <<'PY'
 import json,os,sys,glob,time
@@ -669,11 +669,158 @@ cur,win=r
 pct=cur/win*100
 bar="█"*int(pct//5)+"░"*(20-int(pct//5))
 print(f"会话 {os.path.basename(f)[8:41]}…  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
-if   pct>=70: print("🔴 ≥70% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
-elif pct>=55: print("🟡 55-70%:进入交班准备区,别再开新调查;手上这片收尾就交班")
-else:         print("🟢 <55%:正常工作区间")
+if   pct>=75: print("🔴 ≥75% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
+elif pct>=65: print("🟡 65-75%:进入交班准备区,别再开新调查;手上这片收尾就交班")
+else:         print("🟢 <65%:正常工作区间")
 print("注:引擎=codex;已用取 last_token_usage.total_tokens,分母取会话自带的 model_context_window")
 print("   (⛔ 用 LAIXIN_CTX_WINDOW——那是 claude 分支的手改分母,两边共用一个会变成双真相源)。")
+PY
+}
+
+# ── ctx-all:全席位上下文水位(2026-08-22 创始人令「写一个 ctx 监控的程序,让这个程序提醒他们更换」)──
+# 缘起(当日实测,不是设想):dispatch 69.7%、lane-a 68.1% —— 两个都逼近闸门而**没有任何人知道**。
+#   claude 席位底栏有 statusline.py 那条 ▓▓░░ 水位条,**codex 的 TUI 没有**;而 `ctx --engine codex`
+#   在多会话并存时按纪律拒绝猜是哪个(退非零)⇒ 对 codex 席位而言等于**根本没有读数**。
+#   ⇒ 缺的不是命令而是**认身份**:得先知道哪个 rollout 是哪个席位的。
+# 🔑 认身份 = **tmux 实时 cwd × rollout 首行 cwd**:
+#   ⛔ 硬编码 worktree 路径——lane 的 worktree 带递增号(实测当下 a96/b96/c9),写死明天就失效;
+#   ⛔ 只按 mtime 最新取——那正是 cmd_ctx_codex 拒绝做的事(拿错一个数比拿不到更糟)。
+#   席位白名单是必须的:hub/events/watchdog/relay 的 cwd 同为 $HOME,不限定就会把 dispatch 的
+#   数字安到它们头上(⚠️ 这正是本函数最容易悄悄出错的地方)。
+#   同 cwd 仍有多个 codex 会话时取 mtime 最新,但**输出标注为「推定」并给出会话 id 供人核**——
+#   监控不能因为「不敢猜」而整体失效,但也不许把推定说成实测。
+CTX_SEATS="${LAIXIN_CTX_SEATS:-dispatch lane-a lane-b lane-c}"
+cmd_ctx_all() {
+  local machine=""
+  [ "${1:-}" = "--machine" ] && machine=1   # 机器可读:seat|engine|sid|pct|level(wd_loop 用)
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }
+  # 🔑 第二判据=**席位进程的启动时刻**(rollout 文件名带本地时间戳,实测与进程启动差 1 秒):
+  #   光靠 cwd 不够——$HOME 下累积了 700+ 历史会话,在里面按 mtime 挑等于猜;
+  #   光靠时刻也不够——lane-a/lane-b 是同一拍起的,时刻几乎相同。
+  #   **两者合取才唯一**:(cwd 相同) ∧ (|文件名时刻 − 进程启动时刻| ≤ 180s)。
+  #   ⚠️ ps 的 lstart 受 locale 影响(中文 locale 输出「六 8月/22 …」无法 strptime)⇒ 一律 LC_ALL=C。
+  local seats_raw seats="" _name _cwd _cmd _ppid _st _child
+  seats_raw="$(tmux list-windows -t "$SESSION" -F '#{window_name}|#{pane_current_path}|#{pane_current_command}|#{pane_pid}' 2>/dev/null)"
+  while IFS='|' read -r _name _cwd _cmd _ppid; do
+    [ -n "$_name" ] || continue
+    case " $CTX_SEATS " in *" $_name "*) : ;; *) continue ;; esac
+    _st=""
+    for _child in $(pgrep -P "$_ppid" 2>/dev/null); do
+      _st="$(LC_ALL=C ps -o lstart= -p "$_child" 2>/dev/null | sed 's/  *$//')"
+      [ -n "$_st" ] && break
+    done
+    seats="${seats}${_name}|${_cwd}|${_cmd}|${_st}"$'\n'
+  done <<< "$seats_raw"
+  CTX_HARD=75 CTX_WARN=65 python3 - "$seats" "${LAIXIN_CODEX_SESSIONS:-$HOME/.codex/sessions}" "$machine" "$CTX_SEATS" <<'PY'
+import json,os,sys,glob,time
+seats_raw,root,machine,whitelist=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4].split()
+HARD=int(os.environ.get("CTX_HARD","75")); WARN=int(os.environ.get("CTX_WARN","65"))
+
+def read_usage(path):
+    """→ (已用, 窗口) 或 None。与 cmd_ctx_codex 同一取法,⛔ 另立一套。"""
+    last=None
+    try: fh=open(path,encoding="utf-8",errors="ignore")
+    except OSError: return None
+    with fh:
+        for line in fh:
+            try: d=json.loads(line)
+            except Exception: continue
+            pl=d.get("payload") or {}
+            if d.get("type")=="event_msg" and pl.get("type")=="token_count":
+                info=pl.get("info")
+                if isinstance(info,dict): last=info
+    if not last: return None
+    win=last.get("model_context_window")
+    lu=last.get("last_token_usage") or {}
+    cur=lu.get("total_tokens")
+    if cur is None: cur=(lu.get("input_tokens") or 0)+(lu.get("output_tokens") or 0)
+    return (cur,win) if win and cur else None
+
+TOL=180  # 秒:进程起来到 rollout 落盘的容差(实测差 1 秒;180 给足余量而不至于跨到别的会话)
+
+def fname_epoch(path):
+    """rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl 的时间戳 → 本地 epoch。⛔ 当 UTC 解析:
+       实测文件名写的是**本地时间**(首行 payload.timestamp 才是 UTC,两者差 8 小时)。"""
+    b=os.path.basename(path)[len("rollout-"):]
+    try: return time.mktime(time.strptime(b[:19],"%Y-%m-%dT%H-%M-%S"))
+    except Exception: return None
+
+# 先按**文件名时刻**粗筛(纯字符串,⛔ 开文件),再读首行确认 cwd —— $HOME 下有 700+ 历史会话,
+# 无差别读首行既慢又把"认身份"退化成 mtime 猜。
+all_files=glob.glob(os.path.join(root,"**","rollout-*.jsonl"),recursive=True)
+
+def match(cwd,start_epoch):
+    """→ (匹配文件列表, 判据说明)。两条判据合取;缺进程启动时刻时退回 cwd+mtime 并标推定。"""
+    if start_epoch is None:
+        c=[f for f in all_files if first_cwd(f)==cwd]
+        c.sort(key=os.path.getmtime,reverse=True)
+        return c,"推定"
+    near=[f for f in all_files
+          if (e:=fname_epoch(f)) is not None and abs(e-start_epoch)<=TOL]
+    exact=[f for f in near if first_cwd(f)==cwd]
+    if exact: return exact,"确定"
+    c=[f for f in all_files if first_cwd(f)==cwd]
+    c.sort(key=os.path.getmtime,reverse=True)
+    return c,"推定"
+
+_cwd_cache={}
+def first_cwd(path):
+    if path in _cwd_cache: return _cwd_cache[path]
+    try:
+        d=json.loads(open(path,encoding="utf-8",errors="ignore").readline())
+        v=(d.get("payload") or {}).get("cwd")
+    except Exception: v=None
+    _cwd_cache[path]=v
+    return v
+
+rows=[]
+for line in seats_raw.split("\n"):
+    if not line.strip(): continue
+    parts=line.split("|")
+    if len(parts)<3: continue
+    name,cwd,cmd=parts[0],parts[1],parts[2]
+    st=parts[3].strip() if len(parts)>3 else ""
+    if name not in whitelist: continue
+    start_epoch=None
+    if st:
+        try: start_epoch=time.mktime(time.strptime(st,"%a %b %d %H:%M:%S %Y"))
+        except Exception: start_epoch=None
+    cand,how=match(cwd,start_epoch)
+    if not cand:
+        rows.append((name,cmd,"—",None,None,"unknown",how,0)); continue
+    f=cand[0]
+    sid=os.path.basename(f)[len("rollout-"):-len(".jsonl")]
+    u=read_usage(f)
+    if not u:
+        rows.append((name,cmd,sid,None,None,"unknown",how,len(cand))); continue
+    cur,win=u; pct=cur/win*100
+    lvl="hard" if pct>=HARD else ("warn" if pct>=WARN else "ok")
+    rows.append((name,cmd,sid,pct,(cur,win),lvl,how,len(cand)))
+
+if machine:
+    for name,cmd,sid,pct,cw,lvl,how,n in rows:
+        print(f"{name}|{cmd}|{sid}|{'' if pct is None else f'{pct:.1f}'}|{lvl}|{how}|{n}")
+    sys.exit(0)
+
+MARK={"hard":"🔴","warn":"🟡","ok":"🟢","unknown":"⬜"}
+TXT={"hard":f"≥{HARD}% 硬闸门:立刻写状态→交接包→起新窗口",
+     "warn":f"{WARN}-{HARD}% 换班窗口:别开新调查,手上这片收尾就交班",
+     "ok":f"<{WARN}% 正常工作区间","unknown":"无 codex 会话(kimi/claude 席位或尚无 token 记录)"}
+print(f"席位上下文水位(闸门 {WARN}/{HARD};引擎=codex)")
+print(f"认身份 = tmux 实时 cwd × 席位进程启动时刻(±{TOL}s);两条合取才算「确定」,只对上一条记「推定」")
+print("─"*84)
+for name,cmd,sid,pct,cw,lvl,how,n in rows:
+    if pct is None:
+        print(f"  {MARK[lvl]} {name:<10} {'—':>7}  {TXT[lvl]}")
+        continue
+    bar="█"*int(pct//5)+"░"*(20-int(pct//5))
+    tag="" if how=="确定" else f"  ⚠️ **推定**(未能用启动时刻对上,退回 cwd+mtime;同 cwd 共 {n} 个会话)"
+    print(f"  {MARK[lvl]} {name:<10} {pct:5.1f}%  {bar}  {cw[0]:,}/{cw[1]:,}")
+    print(f"      {sid[:36]}…  [{how}]{tag}")
+    print(f"      {TXT[lvl]}")
+print("─"*84)
+print("注:codex 的 TUI 底栏不显示上下文占比,本命令是它唯一的水位来源(claude 席位看自己底栏)。")
+print("   核对某席位是不是这个会话:codex 里 /status 看当前会话 id,与上面第二行比对。")
 PY
 }
 
@@ -2974,7 +3121,7 @@ DISPATCH_BRIEF_CODEX='你是 laixin 开发流水线的**派工窗口**(引擎=Co
   对方的答复会以**【中转回复】落盘 + 事件投路径指针**回到你这里,**⛔ 等它直接注入你的窗口**(那条路不存在)。
 - **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
 
-⚠️ **上下文占比必须带引擎**:laixin-lane ctx --engine codex(不带 --engine 读的是 claude 会话,那不是你——数字会是别人的)。≥70% 是交班硬闸门。
+⚠️ **上下文占比必须带引擎**:laixin-lane ctx --engine codex(不带 --engine 读的是 claude 会话,那不是你——数字会是别人的)。≥75% 是交班硬闸门。
 
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
 
@@ -3011,7 +3158,7 @@ DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kim
 - **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
 - 📌 别人主动找你的消息走 laixin-lane dmsg,会以「【消息】来自 <来源>」的形态直接落进你的输入框——**那条路不需要你做任何事**。
 
-⚠️ **上下文占比看你自己界面底部的 `context: N%`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。≥70% 是交班硬闸门。
+⚠️ **上下文占比看你自己界面底部的 `context: N%`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。≥75% 是交班硬闸门。
 
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**。
 
@@ -3765,13 +3912,73 @@ cmd_relay_msg_status(){  # 未销账的转办(只读;⛔ 顺手清账——清�
   done < "$RELAY_OUTBOX"
 }
 
+# ── 上下文水位巡检(2026-08-22 创始人令「写一个 ctx 监控的程序,让这个程序提醒他们更换」)────
+# ⛔ 只提供 ctx-all 让人自己去跑就算做完了 —— 当日实证:dispatch 从 69.7% 一轮冲到 89.5%,
+#   全程没有任何人知道,而它手边一直有 `ctx --engine codex` 可跑。**能查 ≠ 会被查**,
+#   席位越忙越不会想起来查,而越忙正是水位涨得最快的时候 ⇒ 提醒必须由不会累的那一方发起。
+# 提醒送谁:一律送 **dispatch** —— 它管自己的换班,也管 lane 的 fresh 换代(生命周期在它手里)。
+# 防刷屏三条:①同席位同档位只报一次;②档位升高再报;③hard 档每 ${CTX_RENOTIFY}s 复读一次
+#   (硬闸门不复读=报一次就沉底,而它恰恰是必须动作的那一档);④会话 id 变了=换过班了,状态清零。
+CTX_STATE="${LAIXIN_CTX_STATE:-$HOME/.laixin-ctx-watch.state}"
+CTX_RENOTIFY="${LAIXIN_CTX_RENOTIFY:-900}"
+ctx_watch_tick() {
+  local out; out="$(cmd_ctx_all --machine 2>/dev/null)" || return 0
+  if [ -z "$out" ]; then return 0; fi
+  local now; now="$(date +%s)"
+  local new_state="" seat cmd sid pct lvl how n line prev prev_sid prev_lvl prev_at fire msg
+  while IFS='|' read -r seat cmd sid pct lvl how n; do
+    if [ -z "$seat" ]; then continue; fi
+    prev=""
+    if [ -f "$CTX_STATE" ]; then prev="$(grep "^${seat}|" "$CTX_STATE" 2>/dev/null || true)"; fi
+    prev_sid=""; prev_lvl=""; prev_at=0
+    if [ -n "$prev" ]; then
+      prev_sid="$(printf '%s' "$prev" | cut -d'|' -f2)"
+      prev_lvl="$(printf '%s' "$prev" | cut -d'|' -f3)"
+      prev_at="$(printf '%s' "$prev" | cut -d'|' -f4)"
+    fi
+    if [ -z "$prev_at" ]; then prev_at=0; fi
+    # 判据=**档位升高**,⛔ 写成「只有 hard 才报」:那样同一会话 ok→warn 这条**最常见的路径**
+    # 会被整条吞掉(2026-08-22 手工六场景验证时实撞——六个场景恰好都没覆盖它,补了第七个才现形)。
+    # 降档不报:同 sid 内降档=读数抖动;真换班时 sid 会变,走上面那条。
+    fire=""
+    case "$lvl" in
+      warn|hard)
+        local rank prank
+        case "$lvl"      in hard) rank=2 ;;  warn) rank=1 ;;  *) rank=0 ;;  esac
+        case "$prev_lvl" in hard) prank=2 ;; warn) prank=1 ;; *) prank=0 ;; esac
+        if [ "$sid" != "$prev_sid" ]; then fire=1                      # 新会话:按当前档位报一次
+        elif [ "$rank" -gt "$prank" ]; then fire=1                     # 档位升高
+        elif [ "$lvl" = "hard" ] && [ $((now - prev_at)) -ge "$CTX_RENOTIFY" ]; then fire=1
+        fi ;;
+      *) : ;;   # ok/unknown 不报;状态照记,好让下次升档能比出来
+    esac
+    if [ -n "$fire" ]; then
+      if [ "$lvl" = "hard" ]; then
+        msg="🔴 ${seat} 上下文 ${pct}% —— 已过 75% 硬闸门:立刻写状态 → 交接包 → 起新窗口(会话 ${sid:0:24}…)"
+      else
+        msg="🟡 ${seat} 上下文 ${pct}% —— 进入 65-75% 换班窗口:别开新调查,手上这片收尾就交班(会话 ${sid:0:24}…)"
+      fi
+      board "ctx巡检" "$msg"
+      # ⛔ 只上看板:看板是给人事后翻的,而当事人正埋在活里。⇒ 同时注入 dispatch。
+      # #44 纪律:保命循环里的子调用一律子 shell 隔离(cmd_dmsg 的调用树里有 die)。
+      ( cmd_dmsg --from ctx巡检 "$msg
+
+全席位水位:laixin-lane ctx-all(codex 席位唯一的读数来源——你的 TUI 底栏不显示这个数)。
+闸门 65 准备 / 75 硬标准(创始人 2026-08-22 定,前值 55/70)。lane 的 fresh 换代同样归你判。" ) >/dev/null 2>&1 || true
+      prev_at="$now"
+    fi
+    new_state="${new_state}${seat}|${sid}|${lvl}|${prev_at}"$'\n'
+  done <<< "$out"
+  printf '%s' "$new_state" > "$CTX_STATE" 2>/dev/null || true
+}
+
 # 看门狗主循环:纯 bash,不累不崩没有上下文,是整条流水线里唯一不会"忘"的东西
 wd_loop() {
   local interval="${WD_INTERVAL:-60}"      # 秒
   local nudge_after="${WD_NUDGE:-900}"     # 静默多久先戳一下(15 分钟)
   local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
   local max_restart="${WD_MAX_RESTART:-3}"
-  local last_hash="" silent=0 nudged=0 restarts=0
+  local last_hash="" silent=0 nudged=0 restarts=0 ctx_tick=0
   echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
   board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
   while true; do
@@ -3803,6 +4010,14 @@ wd_loop() {
       else
         dialog_sweep_win "$RELAY_WIN" >/dev/null 2>&1 || true
       fi
+    fi
+    # —— 0.7 上下文水位巡检(2026-08-22)——
+    # 位置在派工分支**之前**,理由同 0.5:下面每个 dispatch 分支都 continue,挂在后面等于
+    # 「派工窗口一出事就再没人盯水位」——而水位过线本身就是它出事的常见前因。
+    # 每 ${CTX_EVERY:-5} 轮(默认 5 分钟)一次:读数变化以分钟计,每 60s 跑一次纯属白烧。
+    ctx_tick=$((ctx_tick+1))
+    if [ $((ctx_tick % ${CTX_EVERY:-5})) -eq 0 ]; then
+      ( ctx_watch_tick ) >/dev/null 2>&1 || true   # #44:保命循环里的子调用一律子 shell 隔离
     fi
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then
@@ -4590,6 +4805,7 @@ case "${1:-}" in
   whoholds) shift; cmd_whoholds ;;
   wip-save) shift; cmd_wip_save "$@" ;;      # 丢弃前先固化:diff 落持久补丁+反向校验(#34)
   ctx)      shift; cmd_ctx "$@" ;;
+  ctx-all)  shift; cmd_ctx_all "$@" ;;
   evidence) shift; cmd_evidence "$@" ;;
   evid-gc)  shift; cmd_evidence_gc "$@" ;;
   doctor)   shift; cmd_doctor ;;

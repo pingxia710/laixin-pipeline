@@ -1765,13 +1765,51 @@ cmd_doctor() {
   fi
 
   echo "== 8. 交班配对(#108:交班条已见而复盘页无盘点节=交班卡第 6 步疑漏) =="
-  local _rp _hp
+  # ⚖️ **覆盖窗口沿革(2026-08-22)**:原为 `tail -400 "$BOARD"` —— 看板**写得越详实,400 行覆盖的
+  #   时间越短**,早年的缺漏直接滚出视野而永远不报(检查器三约束③反例:噪声/盲区随被鼓励的行为增长)。
+  #   实测当日:400 行只报出 1 条,而全量扫描出 20+ 条未配对(方案窗口 8/9/13/16-19 任、dispatch
+  #   三十三任起十余任)⇒ 第 6 步能系统性失效而无人知,根因就在这个窗口。
+  #   改法=**全量扫描 + 按时间分级**:近 ${_HB_DAYS} 天逐条 wrn(当下缺漏,可当轮补);
+  #   更早的只报总数 ℹ️(历史债 ⛔ 逐条淹没当下,否则告警一多就没人看了——那是本检查器自杀的方式)。
+  # 🔴 **逐条上限恒定 ⛔ 随积压增长**(2026-08-22 当轮实撞):扩射程后近 4 天就有 21 条缺漏,
+  #   doctor 一屏 26 个警告 —— 而**告警一多就没人看**,那正是本检查器自杀的方式(三约束③)。
+  #   ⇒ 逐条只报「最近一天且至多 N 条」,其余一律并入历史债计数;要看全量走 handover-audit。
+  local _rp _hp _hp_all _n_all _n_recent _n_old _shown _HB_DAYS="${LAIXIN_HANDOVER_DAYS:-1}" _HB_MAX="${LAIXIN_HANDOVER_MAX:-3}" _datepat
   _rp="$(ls "$HOME"/Obsidian/项目入口/laixin开发流水线/知识库/wiki/运行复盘与优化推动-*.md 2>/dev/null | sort | tail -1)"
   if [ -n "$_rp" ] && [ -f "$BOARD" ]; then
-    _hp="$(tail -400 "$BOARD" 2>/dev/null | handover_unpaired /dev/stdin "$_rp")"
+    _hp_all="$(handover_unpaired "$BOARD" "$_rp")"
+    _n_all="$(printf '%s' "$_hp_all" | grep -c '任' || true)"
+    # 近 N 天的日期串由 date 逐日生成 ⇒ **跨年/跨月自动正确**,⛔ 拿 MM-DD 字符串比大小
+    #   (12-30 与 01-02 一比,1 月的行会被判成"更早"而漏报——失效方向朝着漏报,不可接受)。
+    _datepat="$(for _i in $(seq 0 $((_HB_DAYS-1))); do date -v-${_i}d '+| %m-%d ' 2>/dev/null; done)"
+    if [ -n "$_datepat" ]; then
+      local _dp _br; _dp="$(mktemp)"; _br="$(mktemp)"
+      printf '%s\n' "$_datepat" | grep -vE '^$' > "$_dp" || true
+      grep -F -f "$_dp" "$BOARD" > "$_br" 2>/dev/null || true
+      _hp="$(handover_unpaired "$_br" "$_rp")"
+      rm -f "$_dp" "$_br"
+    else
+      # date -v 不可用(非 BSD date)⇒ 降级成**全部逐条报**(多报),⛔ 降级成不报(漏报是反向失效)
+      _hp="$_hp_all"
+    fi
+    _n_recent="$(printf '%s' "$_hp" | grep -c '任' || true)"
+    : # _n_old 在逐条显示后算(见下),⛔ 用 _n_recent —— 它含被上限截掉的那些
+    _shown=0
     if [ -n "$_hp" ]; then
-      while IFS= read -r _l; do wrn "$_l 交班条已见,复盘页无「收班盘点」节(刚交班未补写属正常,由人核;⛔ 静默)"; done <<< "$_hp"
-    else ok "近 400 条看板交班条与复盘页盘点节全配对"; fi
+      while IFS= read -r _l; do
+        [ -n "$_l" ] || continue
+        if [ "$_shown" -lt "$_HB_MAX" ]; then
+          wrn "$_l 交班条已见,复盘页无「收班盘点」节 —— 交班卡第 6 步疑漏(刚交班未补写属正常;补写位置=11B 复盘页 $(basename "$_rp") 追加「<角色><任次>收班盘点」节,⛔ 散落快照)"
+          _shown=$((_shown+1))
+        fi
+      done <<< "$_hp"
+    else ok "近 ${_HB_DAYS} 天的交班条与复盘页盘点节全配对"; fi
+    # ⚠️ ⛔ 写成 `[ ] && printf` 这种独立语句:条件为假时整句返回 1,`set -e` 会**把 doctor 杀在这里**
+    #   (本仓 cmd_dispatch 末尾早记过同款坑,本次扩射程当轮又踩一次 ⇒ 第 8 节整节空输出且第 9 节不出现)。
+    _n_old=$(( ${_n_all:-0} - ${_shown:-0} ))
+    if [ "${_n_old:-0}" -gt 0 ]; then
+      printf '  ℹ️ 另有 %s 条交班条未见盘点节(含历史积压;⛔ 逐条列以免淹没当下——全量清单与补法:laixin-lane handover-audit)\n' "$_n_old"
+    fi
   else wrn "复盘页或看板不可读,本项跳过(跳过 ⛔ 当通过)"; fi
 
   echo "== 9. 席位活性(#130:注册表在班的 tmux 外席位须有活会话;tmux 内归看门狗) =="
@@ -2066,8 +2104,20 @@ ev_material_filter(){  # stdin=vault 变更文件路径列表 → stdout=订阅�
 }
 handover_unpaired(){  # <看板尾部文件> <复盘页文件> → stdout=有交班条而复盘页无「…收班盘点」节的 窗口+任次;全配对时零输出(#108)
   # 失败样本=方案窗口第十四任 03:27 交班六步漏第 6 步,看板上「漏做」与「做完」同形,靠创始人人工抓出。
-  # 只核 方案窗口/中继窗口(dispatch 的交接包在执行总表,不在复盘页射程);命中≠定罪——刚交班尚未补写属正常,由人核。
+  # 射程=方案窗口/中继窗口/**派工窗口 dispatch**;命中≠定罪——刚交班尚未补写属正常,由人核。
+  # ⚖️ **射程沿革(2026-08-22,创始人直令「每班遇到的问题都要对 11B、11C 做生产级优化」)**:
+  #   原射程**有意排除 dispatch**,注释理由=「dispatch 的交接包在执行总表,不在复盘页射程」,
+  #   且有绊线锁定(「dispatch 交班不在射程」)。⇒ 这是个**判据错误 ⛔ 遗漏**:
+  #   **交接包 ≠ 收班盘点** —— 前者是交给继任的状态(受众=继任,载体=执行总表),
+  #   后者是本任摩擦转成的优化输入(受众=11B/11C,载体=复盘页)。两者受众、用途、载体都不同,
+  #   「交接包写在别处」推不出「不需要盘点」。**实践早已越过该边界**:复盘页 §十九 就是
+  #   dispatch 第四十二任的收班盘点节。⇒ 本次把 dispatch 纳入射程,同批反转那条绊线。
   local b="$1" p="$2" line win ren
+  # ⚠️ 本函数对输入**读两遍**(方案/中继一遍、dispatch 一遍)⇒ 直接传 /dev/stdin 时第二遍必读空,
+  #   而症状是「dispatch 一条都不报」——**与射程里根本没有 dispatch 的旧行为一模一样**,
+  #   查不出来(2026-08-22 扩射程当轮实撞:传文件 27 条,经管道只剩 7 条)。⇒ 统一 slurp 到临时文件。
+  local _bf; _bf="$(mktemp)"; cat "$b" > "$_bf" 2>/dev/null || true
+  b="$_bf"
   # #108-fix(2026-08-20 十五任优化轮):只认**正文开头形态**的真交班条(「第N任…交班/封班/收班」出现在
   # 正文头 24 字内)——首跑 3 警 2 误报,误报全是窗口条目里【提及】他窗口交班的句子(F-bis 元文本污染):
   # 提及型的「第N任」在长句中部,真交班条的任次紧跟正文开头。
@@ -2079,6 +2129,16 @@ handover_unpaired(){  # <看板尾部文件> <复盘页文件> → stdout=有交
         [ -n "$win" ] && [ -n "$ren" ] || continue
         grep '^## ' "$p" 2>/dev/null | grep "$win" | grep "$ren" | grep -q '收班盘点' || printf '%s%s\n' "$win" "$ren"
       done
+  # 派工窗口 dispatch:来源列是「派工窗口」而正文里的角色名是「dispatch」,复盘页标题同样写
+  # 「派工窗口 dispatch 第N任收班盘点」⇒ 用 dispatch 作配对键。⚠️ 交班条常含两个任次
+  # (「交班 dispatch 第三十九任 → 第四十任」)—— 取**第一个**(交出的那任),⛔ 取到继任号。
+  grep -E '^\|[^|]+\| 派工窗口 \| ?[^|]{0,10}(收班|交班|换班) dispatch 第[一二三四五六七八九十]+任' "$b" 2>/dev/null \
+    | grep -oE 'dispatch 第[一二三四五六七八九十]+任' | head -n 100000 | sort -u \
+    | while IFS=' ' read -r win ren; do
+        [ -n "$ren" ] || continue
+        grep '^## ' "$p" 2>/dev/null | grep 'dispatch' | grep "$ren" | grep -q '收班盘点' || printf 'dispatch %s\n' "$ren"
+      done
+  rm -f "$_bf"
 }
 
 seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死席一行;全活零输出(#130,2026-08-20 十五任优化轮)
@@ -3206,6 +3266,19 @@ cmd_dispatch() {
   return 0
 }
 
+cmd_handover_audit(){  # #108 全量清单:doctor 只逐条报近几天的,历史债在这里看全(⛔ 让它只存在于总数里)
+  local rp; rp="$(ls "$HOME"/Obsidian/项目入口/laixin开发流水线/知识库/wiki/运行复盘与优化推动-*.md 2>/dev/null | sort | tail -1)"
+  [ -n "$rp" ] || die "复盘页不可读"
+  echo "== 交班条已见而复盘页无「收班盘点」节的全量清单(交班卡第 6 步漏做) =="
+  echo "   复盘页:$rp"
+  local out; out="$(handover_unpaired "$BOARD" "$rp")"
+  if [ -z "$out" ]; then echo "   ✅ 全部配对,零缺漏"; return 0; fi
+  printf '%s\n' "$out" | sed 's/^/   /'
+  printf '   —— 合计 %s 条 ——\n' "$(printf '%s' "$out" | grep -c '任' || true)"
+  echo "   补法:复盘页追加「<角色><任次>收班盘点」节(单一入口 ⛔ 散落快照);盘点内容照收班卡形态——"
+  echo "   只挑真实发生过的摩擦(失败样本→候选优化),分流三去向:可机器化→11B 队列 / 规则类→当轮落卡 / 要创始人拍的→专场攒。"
+}
+
 cmd_peekd() { tmux capture-pane -p -t "$SESSION:$DISPATCH_WIN" -S "-${1:-30}"; }
 
 # ================= 中继窗口托管(#32,2026-08-19 创始人直裁) =================
@@ -4254,6 +4327,7 @@ case "${1:-}" in
   evid-gc)  shift; cmd_evidence_gc "$@" ;;
   doctor)   shift; cmd_doctor ;;
   stats)    shift; cmd_stats ;;
+  handover-audit) shift; cmd_handover_audit "$@" ;;   # #108 全量:所有未配对的交班条(第 6 步漏做清单)
   dispatch) shift; cmd_dispatch "$@" ;;
   peek-d)   shift; cmd_peekd "$@" ;;
   relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记

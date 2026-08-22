@@ -2306,14 +2306,28 @@ BEOF
 cat > "$V16/page" <<'PEOF'
 ## 十四、中继窗口 relay 第五任收班盘点(2026-08-19)
 ## 十六、方案窗口第十四任 pingxia-fb 收班盘点(2026-08-20)
+## 十七、派工窗口 dispatch 第三十九任收班盘点(2026-08-20)
 PEOF
 t "#108 配对:两窗口盘点齐全零输出" bash -c 'source "'"$V16F"'"; [ -z "$(handover_unpaired "'"$V16"'/board" "'"$V16"'/page")" ]'
 t "#108 配对:删掉方案窗口盘点节即报其名" bash -c 'source "'"$V16F"'"; grep -v 方案窗口 "'"$V16"'/page" > "'"$V16"'/page2"; handover_unpaired "'"$V16"'/board" "'"$V16"'/page2" | grep -q "方案窗口第十四任"'
-t "#108 配对:dispatch 交班不在射程(复盘页无其节也不报)" bash -c 'source "'"$V16F"'"; ! handover_unpaired "'"$V16"'/board" "'"$V16"'/page" | grep -q 派工'
+# ⚖️ 射程反转(2026-08-22,创始人直令「每班遇到的问题都要对 11B、11C 做生产级优化」;三个常驻窗口
+#   =dispatch/relay/方案窗口,都要做第 6 步)。原断言是「dispatch 不在射程」,理由=其交接包在执行总表;
+#   那是**判据错误**:交接包(受众=继任,载体=执行总表)≠ 收班盘点(受众=11B/11C,载体=复盘页),
+#   「写在别处」推不出「不需要」。且实践早已越界——复盘页 §十九 就是 dispatch 第四十二任的盘点节。
+t "#108 配对:dispatch 在射程(删掉其盘点节即报其任次)" bash -c 'source "'"$V16F"'"; grep -v dispatch "'"$V16"'/page" > "'"$V16"'/page3"; handover_unpaired "'"$V16"'/board" "'"$V16"'/page3" | grep -q "dispatch 第三十九任"'
+# 🔴 本函数对输入**读两遍**(方案/中继一遍、dispatch 一遍)⇒ 传 /dev/stdin 时第二遍读空,
+#   而症状=「dispatch 一条都不报」,**与射程里根本没有 dispatch 的旧行为一模一样**,肉眼查不出。
+#   2026-08-22 实撞:同一份看板,传文件 27 条、经管道只剩 7 条。
+t "#108-fix2 经管道传 /dev/stdin 结果必须与传文件一致(⛔ 第二遍读空)" bash -c 'source "'"$V16F"'"; a="$(handover_unpaired "'"$V16"'/board" "'"$V16"'/page3" | wc -l)"; b="$(cat "'"$V16"'/board" | handover_unpaired /dev/stdin "'"$V16"'/page3" | wc -l)"; [ "$a" = "$b" ] && [ "$a" != "0" ]'
 t "#106 接线:ev_loop 含直令搬运游标" bash -c 'grep -q "EV_BOARD_POS" "'"$LANE"'" && grep -q "ev_directive_filter | while" "'"$LANE"'"'
 t "#105 接线:ev_loop 含 vault HEAD 基线" bash -c 'grep -q "EV_VAULT_HEAD" "'"$LANE"'" && grep -q "ev_material_filter | sort -u" "'"$LANE"'"'
 t "#107 接线:cmd_log 与 kb-commit 各挂一处 ph_time_hits" bash -c '[ "$(grep -c "ph_time_hits 2>/dev/null" "'"$LANE"'")" -ge 2 ]'
 t "#108 接线:doctor 第 8 节存在" bash -c 'grep -q "== 8. 交班配对" "'"$LANE"'"'
+# 🔴 doctor 必须**跑到最后一行**:`[ ... ] && printf` 这种独立语句在 set -e 下条件为假即返回 1,
+#   会把 doctor 杀在半途,而症状是「某节整节空输出、后续节消失」——看起来像那节没检查项,
+#   不像崩了(2026-08-22 第 8 节实撞)。⇒ 钉住结尾行必现,这条能防整族「doctor 半途退出」。
+tout "doctor 必须跑完(set -e 半途退出=末节与体检结果行一起消失,看着像没检查项)" "体检结果" \
+  env LAIXIN_USAGE_API=http://127.0.0.1:1/nope "$LANE" doctor
 V16F2="$(mktemp)"; cp "$V16F" "$V16F2"
 # #105 端到端:真 git 仓 + 中文路径 + 默认 quotePath——跑生产同款管道,防「fixture 全绿真环境必不命中」重演
 V105="$(mktemp -d)"; ( cd "$V105" && git init -q . && mkdir -p 索引 && echo a > 索引/wiki-测试词汇表.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm base && echo b >> 索引/wiki-测试词汇表.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )

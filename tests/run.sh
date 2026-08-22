@@ -2466,6 +2466,18 @@ t "ctx巡检:死因落 WD_LOG(⛔ stderr 进 /dev/null——死了和没到档�
 t "doctor:据状态文件 mtime 判 ctx 巡检活性(⛔ 看门狗活着就当水位在被盯)" \
   bash -c 'grep -qF "ctx 水位巡检" "'"$LANE"'" && grep -qF "CTX_STATE" "'"$LANE"'"'
 rm -rf "$CTXW"
+# ── 看门狗反向守护:自愈链的根不许是单点(2026-08-22 生产级)──────────────────────
+# 盘点时发现:wd 管 ev/relay/dispatch,而 wd 自己死了**没有任何东西管它**;两个 launchd 项
+# 都只有 RunAtLoad(开机跑一次,⛔ KeepAlive),boot-full 的兜底文案还写着「五次未成交给看门狗」
+# ——把它当最后一道,而它自己没有最后一道。更要命的是**告警也是它发的** ⇒ 它一死,
+# 「自愈链失效」这件事本身也不会被喊出来,与「一切正常只是没事发生」完全不可分辨。
+# ⇒ ev 反向守 wd,与「wd 守 ev」构成互守,单点变双点。三条判据回退即红。
+t "ev_loop:反向检查看门狗(⛔ 自愈链的根是单点——它一死连告警都没了)" \
+  bash -c 'sed -n "/^ev_loop()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "if ! wd_alive; then"'
+t "ev_loop:反向重起要节流(⛔ 起不来时每拍重试——刷满的日志=没有日志)" \
+  bash -c 'sed -n "/^ev_loop()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "EV_WD_RETRY:-300"'
+t "ev_loop:反向重起的死因落 EV_LOG(⛔ 进 /dev/null,同 ctx 巡检那一课)" \
+  bash -c 'sed -n "/^ev_loop()/,/^}/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "cmd_watchdog start ) >/dev/null 2>>"'
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
 # 12:54 验收回执落盘。两处叠加:

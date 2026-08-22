@@ -2502,10 +2502,31 @@ ev_loop(){
   local hb_cutoff; hb_cutoff="$(ev_hb_cutoff)"
   ev_log "事件总线启动 tick=${EV_TICK}s stall=${EV_STALL}s 交付基线=$(wc -l < "$EV_SEEN" | tr -d ' ') 份 心跳截止=$(date -r "$hb_cutoff" '+%F %T')"
   board "事件总线" "启动(交付投递+卡住告警;监听不再随派工窗口死)"
-  local cur f m lastline vw _rid _ovd
+  local cur f m lastline vw _rid _ovd _wd_last_try=0 _now2
   while true; do
     sleep "$EV_TICK"
     date +%s > "$EV_HB"
+    # —— 看门狗反向守护(2026-08-22 生产级:自愈链的根此前无人守)——————————————
+    # 🔴 wd 管 ev / relay / dispatch,而 **wd 自己死了没有任何东西管它**;更要命的是
+    #   **告警也是它发的** ⇒ 它一死,连「自愈链失效了」这件事都不会被喊出来,
+    #   现象与「一切正常、只是没事发生」完全不可分辨(本仓最常栽的那一族)。
+    #   两个 launchd 项都只有 RunAtLoad(开机跑一次,⛔ KeepAlive),而 boot-full 的兜底
+    #   文案还写着「五次未成交给看门狗」——把它当最后一道,可它自己没有最后一道。
+    # ⇒ ev 反向守 wd,与「wd 守 ev」构成互守:**两个同时死**才彻底失效,单点变双点。
+    #   ⛔ 担心互相重起打架:两边都是「不活才动手」,都活着时双方都不动作;
+    #   且 cmd_watchdog start 首行 wd_alive && die 已挡住重复起(#20 那道守卫)。
+    #   节流 ${EV_WD_RETRY:-300}s:起不来时每拍重试会把日志刷满,而刷满的日志=没有日志。
+    if ! wd_alive; then
+      _now2="$(date +%s)"
+      if [ $(( _now2 - _wd_last_try )) -ge "${EV_WD_RETRY:-300}" ]; then
+        _wd_last_try="$_now2"
+        board "事件总线" "⚠️ 看门狗循环已死(自愈链的根)——反向重起;⛔ 等它自己回来,它没有兜底"
+        ev_log "看门狗已死,事件总线反向重起(互守;节流 ${EV_WD_RETRY:-300}s)"
+        ( cmd_watchdog stop ) >/dev/null 2>>"$EV_LOG" || true
+        ( cmd_watchdog start ) >/dev/null 2>>"$EV_LOG" \
+          || ev_log "⛔ 反向重起看门狗失败——循环存活,${EV_WD_RETRY:-300}s 后重试;人工核:laixin-lane doctor"
+      fi
+    fi
     # M1 认领巡检(复盘页#8):见到该片 verify-* 窗口=已认领销账;超阈值未认领=升级提醒一次(P→E 防刷屏)
     if [ -s "$EV_PENDING" ]; then
       _now="$(date +%s)"

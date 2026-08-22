@@ -2353,6 +2353,30 @@ t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bas
 t "#105 接线:生产调用带 quotePath=false" bash -c 'grep -qF -- "quotePath=false log --name-only" "'"$LANE"'"'
 rm -rf "$V105"
 rm -rf "$V16" "$V16F2"
+# ── 验收窗口名:tmux 目标语法字符必须转义(2026-08-22 V0.2 首片实撞,dispatch 52 报)──────
+# 原实现只换空格与斜杠,点号原样留着。而 tmux 目标语法里 `.` 是 **pane 分隔符** ⇒ 片名
+# `V0.2包①…` 生成的窗口名进 `-t "$SESSION:$w"` 后,window 只取到 `verify-V0`。
+# 🔴 **后果不是「起不来」而是「静默作用到别的窗口」**:当轮实测同时存在 verify-V0 与
+# verify-V0.2probe 时,`display-message -t laixin:verify-V0.2probe` 返回的是 **verify-V0**,
+# 毫无报错 ⇒ 派单送错窗、读状态读别人画面、回收 kill 错窗口。「成功」与「作用错对象」同形。
+# ⚠️ 判据函数落盘再 source,⛔ `source <(…)`:进程替换有 fd 竞态,source 可能读到空 ⇒ 函数没定义,
+#   而症状是 `vwin: command not found` 后 `[ "" = "verify-…" ]` 判假 —— **看起来像转义没生效**,
+#   指向的方向与真因完全无关(本仓 #108-fix 那几条已用落盘写法,首版没照抄,当轮自撞)。
+VWF="$(mktemp)"; sed -n '/^vwin()/,/^}/p' "$LANE" > "$VWF"
+t "vwin:片名含点必须转义(⛔ 让 tmux 把 .2 当 pane 号)" bash -c 'die(){ return 1; }; source "'"$VWF"'"; [ "$(vwin "V0.2包①x")" = "verify-V0-2包①x" ]'
+t "vwin:同族字符 : % \$ @ 一并转义(全是 tmux 目标语法的一部分)" bash -c 'die(){ return 1; }; source "'"$VWF"'"; [ "$(vwin "a:b%c\$d@e")" = "verify-a-b-c-d-e" ]'
+t "vwin:空格/斜杠原有行为保持" bash -c 'die(){ return 1; }; source "'"$VWF"'"; [ "$(vwin "含 空格/斜杠")" = "verify-含-空格-斜杠" ]'
+t "vwin:函数体确实被 source 到了(⛔ 空 source 让上面三条以「未定义」假过/假败)" bash -c 'die(){ return 1; }; source "'"$VWF"'"; type vwin >/dev/null 2>&1'
+
+# 🔴 端到端:在**独立 tmux 会话**里造出「同前缀 + 含点」两个窗口,证明未转义时 tmux 真的解析到前者
+# (这条是本 bug 的要害证据;⛔ 只测字符串替换——那证明不了危害)。
+t "vwin E2E:未转义名在 tmux 里会解析到同前缀的另一个窗口(危害证据)" bash -c '
+  S=lx-vwin-probe-$$; tmux kill-session -t "$S" 2>/dev/null
+  tmux new-session -d -s "$S" -n "verify-V0" 2>/dev/null || exit 1
+  tmux new-window -d -t "$S" -n "verify-V0.2probe" 2>/dev/null
+  got="$(tmux display-message -p -t "$S:verify-V0.2probe" "#{window_name}" 2>/dev/null)"
+  tmux kill-session -t "$S" 2>/dev/null
+  [ "$got" = "verify-V0" ]'
 # ── 交班形态判据(2026-08-22 实撞后立)──────────────────────────────────────────────
 # 失败样本:方案窗口第二十任把**同账号正常交班**办成了「2 个 CC 账号切换的交班」(创始人当面
 # 纠正);连锁=relay 据此报一条「即将静默发生的断链」告警,前提为假,10 分钟后撤回。

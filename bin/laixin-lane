@@ -3948,8 +3948,17 @@ vwait_ready_codex() {  # <窗口名> —— codex 引擎的就绪判据(#60①):
   return 1
 }
 
-vwin() {  # 验收窗口名(片名里的空格/斜杠换成 -)
-  local slug; slug="$(echo "$1" | tr ' /' '--' | cut -c1-24)"
+vwin() {  # 验收窗口名(片名里 tmux 目标语法有意义的字符一律换成 -)
+  # 🔴 **实撞(2026-08-22,V0.2 首片,dispatch 52 报)**:原实现只换空格与斜杠,**点号原样留着**。
+  #   而 tmux 的目标语法里 `.` 是 **pane 分隔符**(`session:window.pane`)⇒ 片名
+  #   `V0.2包①钱的去向信息首片` 生成的窗口名进到 `-t "$SESSION:$w"` 之后,
+  #   tmux 把 `.2包①…` 当 pane 部分,window 只取到 `verify-V0`。
+  #   ⚠️ **后果不是「起不来」而是「静默作用到别的窗口」** —— 当轮实测:同时存在 `verify-V0` 与
+  #   `verify-V0.2probe` 两个窗口时,`display-message -t laixin:verify-V0.2probe` 返回的是
+  #   **verify-V0**,毫无报错。⇒ 派单指令会送进另一个验收窗口、读状态读的是别人的画面、
+  #   回收时 kill 掉错误的窗口。**「成功了」与「作用错对象」在这里完全同形。**
+  #   同族字符一并处理:`:`(session 分隔)`%`(pane id)`$`(session id)`@`(window id)。
+  local slug; slug="$(echo "$1" | tr ' /.:%$@' '-------' | cut -c1-24)"
   [ -n "$slug" ] || die "片名不能为空"
   echo "verify-$slug"
 }

@@ -2352,6 +2352,14 @@ rm -rf "$V16" "$V16F2"
 #   而四条「应该失败」的断言**全部假绿** —— 因为「功能不存在」与「功能拦下了」都表现为
 #   非零退出码,**两者在断言眼里同形**。⇒ 断言"应该失败"时,必须确认失败的**原因**是被测的那个。
 SEATB="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-11c-seat"
+# ⭐ 兄弟脚本随行(2026-08-22 实撞):seat 加了硬闸、测试全绿、提交并 release 之后,**PATH 上跑的
+#   仍是旧快照**(它单独软链、不在 release 射程)⇒ 硬闸在真实起席时根本不跑。"仓库改了+测试绿了+
+#   发布了"三件齐备而生效面为零,且三件都指向"已生效"。⇒ 钉住 release 必须把兄弟脚本一起发。
+tout "release 兄弟脚本随行(⛔ 只发 *.py:seat 会永远停在旧版而三处证据都说已发布)" "laixin-11c-seat" \
+  bash -c 'sed -n "/^cmd_release()/,/^}/p" "'"$LANE"'"'
+tout "release 兄弟脚本换链失败必须出声(⛔ 静默吞掉=PATH 停旧版而输出说发布成功)" "换链失败" \
+  bash -c 'sed -n "/^cmd_release()/,/^}/p" "'"$LANE"'"'
+
 B11="$(mktemp -d)"; mkdir -p "$B11/allow/局X" "$B11/seal" "$B11/pick"
 b11env(){ env LAIXIN_11C_ALLOW_ROOT="$B11/allow" LAIXIN_11C_SEAL_DIR="$B11/seal" LAIXIN_11C_PICK_DIR="$B11/pick" "$@"; }
 t "11C 双盲:三类分居时 audit 过" bash -c 'env LAIXIN_11C_ALLOW_ROOT="'"$B11"'/allow" LAIXIN_11C_SEAL_DIR="'"$B11"'/seal" LAIXIN_11C_PICK_DIR="'"$B11"'/pick" "'"$SEATB"'" audit >/dev/null'

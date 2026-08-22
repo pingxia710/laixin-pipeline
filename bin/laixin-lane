@@ -1442,6 +1442,7 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   return 0
 }
 
+wrn_release(){ printf '   ⚠️  %s\n' "$*" >&2; }
 cmd_release(){  # #25 部署原子化:把仓库**已提交版**发布到版本化路径并原子切换软链
   # 两次实撞同根(07:17 verify-from 尾部假语法错 / 11:2x 换代竞态):~/.local/bin/laixin-lane 软链
   # 直指仓库工作树 bin/laixin-lane,运行中脚本被就地改写 ⇒ bash 逐段续读的偏移落进新内容中间。
@@ -1498,6 +1499,24 @@ $(head -5 <<< "$dirty")"
     [ -f "$rel_home/$(basename "$py")" ] || missing="$missing $(basename "$py")"
   done <<< "$(git -C "$repo" ls-tree --name-only "HEAD" -- bin/ | grep '\.py$' || true)"
   [ -z "$missing" ] || { rm -rf "$rel_home"; die "⛔ 发布目录 helper 差集非空:${missing}——拒绝换链(#59)"; }
+  # ── 兄弟可执行脚本随行(2026-08-22 立)────────────────────────────────────────────────
+  # 失败样本(当日实撞):`laixin-11c-seat` 加了双盲硬闸、测试 596 全绿、提交并 release 之后,
+  # **PATH 上跑的仍是 8-21 的旧快照**(它单独软链到 libexec/laixin-11c/<旧 hash>,不在本命令
+  # 射程内)⇒ **硬闸在真实起席时根本不跑**。"仓库改了 + 测试绿了 + 发布了"三件齐备,而生效面为零 ——
+  # 典型的「配置对 ≠ 能用」;更糟的是三个证据都指向"已生效",没有任何一处会露出破绽。
+  # ⇒ 兄弟脚本(bin/ 下非 .py 的可执行文件)与主脚本**同一次发布、同一个版本目录、各自原子换链**,
+  #   由此得到**同版本保证**:此前 seat 与 lane 的版本彼此无关,可能来自不同 commit。
+  local sib sibs="" sib_lbin sib_tmp
+  while IFS= read -r sib; do
+    [ -n "$sib" ] || continue
+    case "$sib" in bin/laixin-lane|*.py) continue ;; esac
+    git -C "$repo" cat-file -e "HEAD:$sib" 2>/dev/null || continue
+    if ! git -C "$repo" show "HEAD:$sib" > "$rel_home/$(basename "$sib")" 2>/dev/null; then
+      rm -rf "$rel_home"; die "⛔ 读兄弟脚本失败($sib),已撤本次发布目录拒绝换链"
+    fi
+    chmod +x "$rel_home/$(basename "$sib")" || { rm -rf "$rel_home"; die "⛔ 兄弟脚本置可执行失败($sib)"; }
+    sibs="$sibs $(basename "$sib")"
+  done <<< "$(git -C "$repo" ls-tree --name-only "HEAD" -- bin/ | grep -vE '\.py$|/laixin-lane$' || true)"
   [ ! -d "$lbin" ] || die "⛔ $lbin 解析为目录——mv 会移进去而非替换,人工处理"
   mkdir -p "$(dirname "$lbin")" || die "建软链目录失败"
   local old ltmp; old="$(readlink "$lbin" 2>/dev/null || echo "(无/非软链)")"
@@ -1509,7 +1528,17 @@ $(head -5 <<< "$dirty")"
   echo "     旧 → $old"
   echo "     新 → $(readlink "$lbin")"
   echo "   运行中的旧进程握旧 inode 不受影响;常驻循环(ev/wd)换代仍需 stop && start(#20⑥)"
+  # 兄弟脚本逐个原子换链(同款 ln -s 临时 + mv -f;失败只警不撤——主脚本已换链成功,
+  # ⛔ 把"兄弟没换成"静默吞掉:那正是本次要根治的形态)
+  for sib in $sibs; do
+    sib_lbin="$(dirname "$lbin")/$sib"
+    if [ -d "$sib_lbin" ] && [ ! -L "$sib_lbin" ]; then wrn_release "⛔ $sib_lbin 是目录,跳过换链(人工处理)"; continue; fi
+    sib_tmp="$(dirname "$lbin")/.${sib}.new.$$"
+    if ln -s "$rel_home/$sib" "$sib_tmp" 2>/dev/null && mv -f "$sib_tmp" "$sib_lbin" 2>/dev/null; then :
+    else rm -f "$sib_tmp"; wrn_release "⛔ $sib 换链失败——PATH 上仍是旧版,它的新逻辑不生效(人工核:ls -l $sib_lbin)"; fi
+  done
   echo "   已核:工作树干净(已提交态) · bash -n 语法 · 同目录原子换链 · helper 全集随行(差集空:${helpers:-无 py helper})(#50/#59)"
+  [ -n "$sibs" ] && echo "   兄弟脚本随行并换链(与主脚本同版本):${sibs}" || true
 }
 
 cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史

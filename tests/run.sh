@@ -2457,6 +2457,14 @@ t "ctx巡检:告警同时注入 dispatch(⛔ 只上看板——看板是给人�
   bash -c 'sed -n "/^ctx_watch_tick()/,/^}/p" "'"$LANE"'" | grep -qF "cmd_dmsg --from"'
 t "ctx巡检:接进看门狗循环且在派工分支之前(挂后面=派工一出事就没人盯水位)" \
   bash -c 'sed -n "/^wd_loop()/,/1. 派工窗口死了/p" "'"$LANE"'" | grep -qF "ctx_watch_tick"'
+# 🔑 「巡检死了」与「巡检活着但没到档位」在看板上长得一模一样(都是零告警)——本仓栽过这一族
+#    (statusline.py「兜底不许静默」、事件总线「stderr 也落此,死因不再无声」)。两道判据:
+#    ①死因不许进 /dev/null;②活性另有其物=状态文件 mtime,doctor 据此判,⛔ 拿「看门狗活着」当它。
+#    ⚠️ 判据 grep 要避开注释行:本节与源码注释都逐字写了被禁的写法(⛔ 自匹配)。
+t "ctx巡检:死因落 WD_LOG(⛔ stderr 进 /dev/null——死了和没到档位在看板上一模一样)" \
+  bash -c 'sed -n "/^wd_loop()/,/1. 派工窗口死了/p" "'"$LANE"'" | grep -v "^[[:space:]]*#" | grep -qF "ctx_watch_tick ) >/dev/null 2>>"'
+t "doctor:据状态文件 mtime 判 ctx 巡检活性(⛔ 看门狗活着就当水位在被盯)" \
+  bash -c 'grep -qF "ctx 水位巡检" "'"$LANE"'" && grep -qF "CTX_STATE" "'"$LANE"'"'
 rm -rf "$CTXW"
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、

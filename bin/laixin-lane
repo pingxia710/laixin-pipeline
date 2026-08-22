@@ -1874,6 +1874,20 @@ cmd_doctor() {
       else ok "看门狗循环代龄一致(循环不老于脚本,修复已生效)"; fi
     elif win_exists "$WATCHDOG_WIN"; then wrn "看门狗窗口在但循环已死(假绿形态,复盘页#20⑤)——laixin-lane watchdog stop && start"
     else wrn "看门狗未运行(窗口一死流水线就停,08-13 凌晨停了 7.8 小时)"; fi
+    # ctx 水位巡检活性(2026-08-22):**看门狗活着 ≠ 水位在被盯**——巡检挂在它循环里,
+    # 而巡检死了与「活着但没到档位」在看板上长得一模一样(两者都是零告警)。⇒ 用状态文件的
+    # mtime 判活:ctx_watch_tick 每拍都重写它,所以它的新鲜度就是「上次巡检时刻」。
+    # 阈值取巡检周期的 3 倍(5 分钟一拍 ⇒ 15 分钟没动=真出事了,⛔ 卡到 6 分钟制造抖动误报)。
+    if wd_alive; then
+      if [ -f "$CTX_STATE" ]; then
+        _cage=$(( $(date +%s) - $(stat -f %m "$CTX_STATE" 2>/dev/null || echo 0) ))
+        if [ "$_cage" -gt 900 ]; then
+          wrn "ctx 水位巡检 $((_cage/60)) 分钟没动过(应每 5 分钟一拍)——看门狗活着但这一项可能已死;死因看 $WD_LOG,复跑 laixin-lane ctx-all 自测"
+        else ok "ctx 水位巡检在跑($((_cage/60)) 分钟前刚巡过;闸门 65 准备/75 硬)"; fi
+      else
+        wrn "ctx 水位巡检尚未产出状态文件——看门狗换代后需 5 分钟才出首拍;超过 10 分钟仍无即为异常"
+      fi
+    fi
     if ev_alive; then ok "事件总线运行中(进程判活)"
       if loop_stale ev-loop; then wrn "事件总线循环代龄落后(脚本比循环新,修复未生效)——events stop && start 换代(#20⑥)"
       else ok "事件总线循环代龄一致(循环不老于脚本,修复已生效)"; fi
@@ -4017,7 +4031,14 @@ wd_loop() {
     # 每 ${CTX_EVERY:-5} 轮(默认 5 分钟)一次:读数变化以分钟计,每 60s 跑一次纯属白烧。
     ctx_tick=$((ctx_tick+1))
     if [ $((ctx_tick % ${CTX_EVERY:-5})) -eq 0 ]; then
-      ( ctx_watch_tick ) >/dev/null 2>&1 || true   # #44:保命循环里的子调用一律子 shell 隔离
+      # #44:保命循环里的子调用一律子 shell 隔离。
+      # ⛔ 连 stderr 一起吞进 /dev/null(首版写法):巡检**死了**和巡检**活着但没到档位**,
+      #   在看板上长得一模一样——那正是本仓反复栽的那族错(statusline.py「兜底不许静默」、
+      #   事件总线「stderr 也落此,死因不再无声」)。⇒ 死因落 WD_LOG,失败再显式记一行。
+      #   活性判据另有其物:ctx_watch_tick 每拍都重写状态文件,其 mtime 即「上次巡检时刻」,
+      #   doctor 据此判活(见 doctor 那节)。
+      ( ctx_watch_tick ) >/dev/null 2>>"$WD_LOG" \
+        || echo "[$(date '+%F %T')] ⛔ ctx 水位巡检失败(循环存活,下一拍重试)" >> "$WD_LOG"
     fi
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then

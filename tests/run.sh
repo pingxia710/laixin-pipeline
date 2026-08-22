@@ -2353,6 +2353,32 @@ t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bas
 t "#105 接线:生产调用带 quotePath=false" bash -c 'grep -qF -- "quotePath=false log --name-only" "'"$LANE"'"'
 rm -rf "$V105"
 rm -rf "$V16" "$V16F2"
+# ── 交付去重键:内容哈希 ⛔ mtime(2026-08-22 实撞)──────────────────────────────────
+# 原键是 mtime,于是 `touch` 一下就足以让**内容一字未变**的报告被当成新交付重投。当日实况:
+# dispatch 做空跑验证时 touch 过首片交付报告,事件总线 12:05 投一次、12:23 又投一次,
+# dispatch 被迫花一整轮全文复读确认「提交与报告内容不变」。同族还有备份工具改 mtime、
+# 编辑器保存同内容。⇒ 改哈希后:整改重交(内容真变)照旧触发,touch 不再制造假事件。
+EVSF="$(mktemp)"; sed -n '/^ev_scan_deliveries()/,/^}/p' "$LANE" > "$EVSF"
+EVT="$(mktemp -d)"; mkdir -p "$EVT/4-开发层/记录"
+printf 'x\n【交付完成】br abc123\n' > "$EVT/4-开发层/记录/probe.md"
+t "交付去重:touch 后键不变(⛔ 假交付事件把 dispatch 一整轮花在复读上)" bash -c '
+  A="$(KB="'"$EVT"'"; source "'"$EVSF"'"; ev_scan_deliveries)"
+  touch "'"$EVT"'/4-开发层/记录/probe.md"
+  B="$(KB="'"$EVT"'"; source "'"$EVSF"'"; ev_scan_deliveries)"
+  [ "$A" = "$B" ]'
+t "交付去重:内容变则键变(整改重交必须仍能触发 ⛔ 为了防重投把真重交也挡掉)" bash -c '
+  A="$(KB="'"$EVT"'"; source "'"$EVSF"'"; ev_scan_deliveries)"
+  printf "x\n【交付完成】br def456\n" > "'"$EVT"'/4-开发层/记录/probe.md"
+  C="$(KB="'"$EVT"'"; source "'"$EVSF"'"; ev_scan_deliveries)"
+  [ "$A" != "$C" ]'
+t "交付去重:键的第二段不是纯数字(=已离开 mtime 形态)" bash -c '
+  L="$(KB="'"$EVT"'"; source "'"$EVSF"'"; ev_scan_deliveries | head -1)"
+  h="${L##*|}"; [ -n "$h" ] && ! printf "%s" "$h" | grep -qE "^[0-9]+$"'
+rm -rf "$EVT" "$EVSF"
+# 🔴 格式迁移必须**静默重建 ⛔ 回放**:旧基线第二段是纯数字,与新键全体失配 ⇒ 不处理的话
+#   升级后第一拍会把全部历史交付/回执一次性重投,把 dispatch 淹掉。
+tout "交付去重:检出旧格式基线即重建并声明 ⛔ 回放历史" "⛔ 回放历史" \
+  bash -c 'sed -n "/^cmd_events()/,/^}/p" "'"$LANE"'"; sed -n "/^ev_loop()/,/^}/p" "'"$LANE"'"'
 # ── 验收窗口名:tmux 目标语法字符必须转义(2026-08-22 V0.2 首片实撞,dispatch 52 报)──────
 # 原实现只换空格与斜杠,点号原样留着。而 tmux 目标语法里 `.` 是 **pane 分隔符** ⇒ 片名
 # `V0.2包①…` 生成的窗口名进 `-t "$SESSION:$w"` 后,window 只取到 `verify-V0`。

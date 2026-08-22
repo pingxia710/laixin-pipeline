@@ -2073,7 +2073,13 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
     [ -f "$f" ] || continue
     # 用 if 不用 &&:glob 最后一个文件无标记时,&& 列表的失败会成为循环乃至函数的退出码,
     # 在 set -e/pipefail 调用方处炸掉——此前没炸只是文件排序的运气(执行级绊线抓出)
-    if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】'; then printf '%s|%s\n' "$f" "$(stat -f %m "$f")"; fi
+    # 🔴 去重键=**内容哈希 ⛔ mtime**(2026-08-22 实撞):原键是 mtime,于是 `touch` 一下就足以
+    #   让同一份**内容一字未变**的报告被当成新交付重投 —— 当日实况:dispatch 做空跑验证时
+    #   touch 过首片交付报告,事件总线 12:05 投过一次、12:23 又投一次,dispatch 被迫花一整轮
+    #   去全文复读确认「提交与报告内容不变」。⇒ 改哈希后:**整改重交(内容真变了)照旧触发**,
+    #   而 touch / 备份工具改 mtime / 编辑器保存同内容,一律不再制造假交付事件。
+    #   ⚠️ mtime 仍要用于「陈旧报告」判据,但那是在消费处按需现取,⛔ 塞进去重键。
+    if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】'; then printf '%s|%s\n' "$f" "$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)"; fi
   done | sort
   return 0
 }
@@ -2296,6 +2302,13 @@ ev_loop(){
   mkdir -p "$EV_DIR"
   # 基线只在首次建立;重启保留旧基线 ⇒ 死亡/重启期间落盘的交付会在下一 tick 被 diff 出来补投,不再永久丢失
   [ -s "$EV_SEEN" ] || ev_scan_deliveries > "$EV_SEEN"
+  # ⚠️ **格式迁移必须静默重建 ⛔ 回放**(2026-08-22 去重键 mtime→内容哈希):旧基线第二段是纯数字
+  #   (mtime),与新键格式全体失配 ⇒ 若不处理,升级后第一拍会把**全部历史交付/回执一次性重投**,
+  #   把 dispatch 淹掉。检出旧格式即用当前扫描结果覆盖基线,只记一行日志。
+  if [ -s "$EV_SEEN" ] && head -1 "$EV_SEEN" | awk -F'|' '{exit ($2 ~ /^[0-9]+$/) ? 0 : 1}'; then
+    ev_scan_deliveries > "$EV_SEEN"
+    ev_log "EV_SEEN 去重键升级(mtime→内容哈希):基线已按新键重建 $(wc -l < "$EV_SEEN" | tr -d ' ') 份,⛔ 回放历史"
+  fi
   # #105/#106 基线只在首次建立:材料广播与直令搬运都从「现在」起算,⛔ 回放历史(与 EV_SEEN 同哲学)
   [ -s "$EV_BOARD_POS" ] || wc -l < "$BOARD" | tr -d ' ' > "$EV_BOARD_POS"
   [ -s "$EV_VAULT_HEAD" ] || git -C "$EV_VAULT" rev-parse HEAD > "$EV_VAULT_HEAD" 2>/dev/null || true
@@ -2331,8 +2344,10 @@ ev_loop(){
     fi
     # 1) 新交付 → 投递(或暂存);mtime 早于心跳截止线的是重扫陈旧报告,记日志不投递
     cur="$(ev_scan_deliveries)"
-    comm -13 "$EV_SEEN" <(echo "$cur") | while IFS='|' read -r f m; do
+    comm -13 "$EV_SEEN" <(echo "$cur") | while IFS='|' read -r f _h; do
       [ -n "$f" ] || continue
+      # mtime 现取(去重键已换成内容哈希,⛔ 从键里读 mtime)
+      local_m="$(stat -f %m "$f" 2>/dev/null || echo '')"; m="$local_m"
       if [ -n "$m" ] && [ "$m" -lt "$hb_cutoff" ] 2>/dev/null; then
         ev_log "跳过陈旧交付(mtime $(date -r "$m" '+%m-%d %H:%M') 早于心跳截止,判重扫非新交付):$f"
         continue

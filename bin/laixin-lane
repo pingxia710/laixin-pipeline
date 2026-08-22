@@ -227,6 +227,17 @@ win() {
 lane_engine(){  # <轨> → 引擎名(#60②):a/b=codex;c=kimi(K3 前端位)。画面判据/起动命令按此分派
   case "$1" in c) echo kimi ;; *) echo codex ;; esac
 }
+kimi_act_pat(){  # kimi 在飞/活动迹象词表(**单点源**;lane_busy / send_swallow_check / confirm_briefed 三处共用)
+  # 🔴 0.37.2→0.38.0 签名漂移(2026-08-22 21:4x 11B 监测实撞):0.37 工作态=月相转轮 🌑…🌘 +「Thinking」,
+  #   0.38 改为盲文转轮 ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ +小写「thinking...」。当时 lane-c 正在 D11 改文件、屏上逐字
+  #   `⠹ thinking...`,而 lane_busy c=空闲(看门狗按「C 轨空闲」计静默戳、空闲告警第①项可打断它)、
+  #   send 给它投 main 前进广播报「疑似被吞」(21:24 看板实录)——三处词表全盲,**且三处各抄一份**。
+  #   ⇒ 收成单点源,两代签名并存(⛔ 只留新的:kimi 自更新回滚/多版本并存时再盲一次)。
+  #   `ctrl-s to steer`=kimi 有排队输入时的底部提示(只在工作中出现)⇒ 既是在飞、也是「消息已送达」的直接证据。
+  #   ⛔ 收「● Ran a command」「● Used Edit」一类——它们干完仍留在屏上,收了就永远在飞(方向反了)。
+  #   上游再改签名时:只改这里 + 补 tests 的 0.xx 画面夹具;⛔ 回到三处各改各的。
+  printf '%s' 'Working|Thinking|thinking\.\.\.|Running|Waiting|ctrl-s to steer|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'
+}
 
 # ── #68:kimi 起窗卡在 `Trust this folder?`(创始人 2026-08-19 17:1x 令「kimi 窗口需要修」)──────
 # 失败样本(委派方真环境实撞):`fresh c --dir ~/来信平台-c1` 后 lane-c 卡在 kimi 信任对话框,
@@ -466,7 +477,8 @@ send_swallow_check() {  # <轨道名>;由 cmd_send 的 8s 延时后台块调用
   # #60②:kimi(C 轨)的活动迹象词表与 codex 不同(2026-08-19 临时 tmux 会话实测 0.37.2):
   # 工作中=月相转轮(🌑…🌘)+「Running a command」,消息回显带 ✨ 前缀——拿 codex 文案量 kimi
   # 会把每次正常送达都误报被吞(误报随正常派工增长,三约束③ 反噬)。判据按引擎分派。
-  [ "$(lane_engine "$lane")" = "kimi" ] && _pat='Working|Thinking|Running|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘'
+  # 2026-08-22:kimi 词表收成单点源 kimi_act_pat(0.38 签名漂移三处同盲的修法,⛔ 再在此内联一份)
+  [ "$(lane_engine "$lane")" = "kimi" ] && _pat="$(kimi_act_pat)"
   _shot="$(tmux capture-pane -p -t "$(target "$lane")" 2>/dev/null | tail -30 || true)"
   if grep -qE "$_pat" <<< "$_shot"; then return 0; fi
   if grep -q "Waiting for background terminal" <<< "$_shot"; then
@@ -2277,6 +2289,7 @@ EV_DIR="$HOME/.laixin-events.d"
 EV_LOG="$EV_DIR/events.log"
 EV_SPOOL="$EV_DIR/spool"
 EV_SEEN="$EV_DIR/deliveries.seen"
+EV_SETTLING="$EV_DIR/settling"          # 本拍「疑仍在写」的交付候选 f|hash(⛔ 进 seen,下拍再核);见 ev_unsettled
 EV_PENDING="$EV_DIR/pending.ack"          # M1(复盘页#8):已投交付的认领台账 epoch|slug|状态(P待认领/E已升级)
 # #67②:relay-msg 出站暂存(dispatch→relay 那一跳)。索引行 epoch|id|目标|首行摘要,全文另存
 # RELAY_OUTBOX_D/<id>。**⛔ 拿「注入成功」当「送达」**:relay 是托管窗口、看门狗随时可重生它,
@@ -2334,6 +2347,20 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
     if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】'; then printf '%s|%s\n' "$f" "$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)"; fi
   done | sort
   return 0
+}
+
+ev_unsettled(){  # <mtime> <now> <tick> → 0=内容一拍之内还在动(待稳定,本拍 ⛔ 投);1=可投
+  # 🔴 去抖(2026-08-22 11B 监测实证):events.log 全史 430 次交付投递里 86 次(20%)是同一报告 ≤10 分钟内重投,
+  #   间隔多为 61~63s=开发方**边写边存**(末行【交付完成】先落、正文还在改),内容哈希每拍都新 ⇒ 每拍全量重投、
+  #   dispatch 每次都得整轮复读同一份报告(C7C8 片 19:14~19:18 连投四次即此)。
+  #   判据=**mtime 距今 < 一拍**(近 60s 内文件还被写过)⇒ 本拍不投也不进 seen,下拍哈希未再变即投;写完 ≥ 一拍
+  #   的报告零额外延迟。⛔ 改成「同文件 N 分钟内投过就压」——真整改重交会被一起压掉(方向反了);⛔ 改成「哈希稳定
+  #   一拍才投」——那给每份报告都硬加一拍延迟。
+  #   失效必须降级 ⛔ 反向(三约束②):mtime 取不到/非数字/在未来(时钟偏差)一律判可投——探针坏了不该让交付永远投不出。
+  local m="$1" now="$2" tick="$3" age
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  age=$(( now - m ))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$tick" ]
 }
 
 ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认 prompt 就绪,不认设计就绪)
@@ -2634,12 +2661,19 @@ ev_loop(){
     fi
     # 1) 新交付 → 投递(或暂存);mtime 早于心跳截止线的是重扫陈旧报告,记日志不投递
     cur="$(ev_scan_deliveries)"
+    : > "$EV_SETTLING"   # 本拍待稳定候选清零(循环体在管道子 shell 里,靠文件把名单带出来)
     comm -13 "$EV_SEEN" <(echo "$cur") | while IFS='|' read -r f _h; do
       [ -n "$f" ] || continue
       # mtime 现取(去重键已换成内容哈希,⛔ 从键里读 mtime)
       local_m="$(stat -f %m "$f" 2>/dev/null || echo '')"; m="$local_m"
       if [ -n "$m" ] && [ "$m" -lt "$hb_cutoff" ] 2>/dev/null; then
         ev_log "跳过陈旧交付(mtime $(date -r "$m" '+%m-%d %H:%M') 早于心跳截止,判重扫非新交付):$f"
+        continue
+      fi
+      # 去抖:一拍之内还被写过的报告本拍不投、不进 seen(见 ev_unsettled 注;2026-08-22 20% 重投实证)
+      if ev_unsettled "$m" "$(date +%s)" "$EV_TICK"; then
+        printf '%s|%s\n' "$f" "$_h" >> "$EV_SETTLING"
+        ev_log "交付候选待稳定(mtime 距今 $(( $(date +%s) - m ))s < ${EV_TICK}s,疑仍在写;下拍再核):$f"
         continue
       fi
       lastline="$(tail -1 "$f")"
@@ -2678,7 +2712,8 @@ ev_loop(){
 下一步:laixin-lane verify-from \"$f\" --prompt <该片prompt路径> --to dispatch;同轮内派该轨下一片(合并不是终点,派工才是)。" ;;
       esac
     done
-    echo "$cur" > "$EV_SEEN"
+    # seen 基线=本拍全集 − 待稳定候选(候选若进了 seen 就永远投不出;comm 两边同为 sort 输出,同一 locale)
+    if [ -s "$EV_SETTLING" ]; then comm -23 <(echo "$cur") <(sort "$EV_SETTLING") > "$EV_SEEN"; else echo "$cur" > "$EV_SEEN"; fi
     # 2) spool 补投(dispatch 刚起来)
     if dispatch_alive && [ -s "$EV_SPOOL" ]; then
       ev_deliver "交付" "【事件】补投暂存事件($(grep -c '^【事件】' "$EV_SPOOL" 2>/dev/null || echo '?')条,你不在时落的盘):
@@ -3125,7 +3160,7 @@ confirm_briefed() {  # <窗口名> <标签> [引擎] → 0=确认已提交;1=未
   local w="$1" label="$2" eng="${3:-claude}" tries=0
   local shot cls age pat='Working|Explored|Read |Thinking|Ran '
   [ "$eng" = "codex" ] && pat='Working|Explored|Reading|Search|Thinking|Applying|Running'
-  [ "$eng" = "kimi" ] && pat='Working|Thinking|Running|Waiting|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘'   # 取 lane_busy 的 kimi 词表(2026-08-22 补)
+  [ "$eng" = "kimi" ] && pat="$(kimi_act_pat)"   # kimi 词表单点源(2026-08-22 收拢;此前三处各抄一份,0.38 签名漂移时三处同盲)
   while [ "$tries" -lt 3 ]; do
     sleep 3
     shot="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null || true)"
@@ -3168,7 +3203,7 @@ lane_busy() {
   #    「⛔ 放宽判据 ⛔ 提高阈值」,它对 `Waiting` 的正确处置是**附状态说明而不动判据**,两者
   #    目的相反:这里要「别把在飞当空闲」,那里要「别把送达当被吞」。(11B 当轮误改并撤回一次)
   local _pat="Working|Explored|Reading|Search|Thinking|Applying|Running|Waiting"
-  [ "$(lane_engine "$1")" = "kimi" ] && _pat="Working|Thinking|Running|Waiting|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘"
+  [ "$(lane_engine "$1")" = "kimi" ] && _pat="$(kimi_act_pat)"   # 单点源(2026-08-22;0.38 盲文转轮+小写 thinking 见该函数注)
   tmux capture-pane -p -t "$SESSION:lane-$1" -S -30 2>/dev/null \
     | grep -qE "$_pat"
 }

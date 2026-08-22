@@ -1511,7 +1511,7 @@ rm -rf "$V39"
 
 echo "== 7f. #40 send 送达检测附状态(⚖️ 裁定:⛔ 放宽判据 ⛔ 提高阈值,只加状态说明) =="
 T40="$(mktemp -d)"
-{ sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$T40/f.sh"   # #60②:检测分引擎,lane_engine 一并抽出
+{ sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$T40/f.sh"   # #60②:检测分引擎,lane_engine 一并抽出
 cat > "$T40/stub.sh" <<'S40'
 win(){ echo "lane-$1"; }
 target(){ echo "s:lane-$1"; }
@@ -2142,7 +2142,7 @@ t "#配档:开发轨 cmd_up ⛔ 沾模型参数(射程不越界)" bash -c '
   body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
   ! grep -q "CODEX_MODEL" <<< "$body" && ! grep -q "model_reasoning_effort" <<< "$body"' "$LANE"
 # ⭐ kimi 画面判据(2026-08-19 临时会话实测):在飞=月相转轮/Running;codex 词表(Explored)⛔ 量 kimi
-C60B="$C60/busy.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^lane_busy()/,/^}/p" "$LANE"; } > "$C60B"
+C60B="$C60/busy.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE"; sed -n "/^lane_busy()/,/^}/p" "$LANE"; } > "$C60B"
 t "#60②:lane_busy 分引擎——kimi 月相=在飞,codex 词表不误判 kimi" bash -c '
   source "'"$C60B"'"; SESSION=s; win_exists(){ return 0; }
   tmux(){ echo " 🌔 · Tip: /sessions to browse"; }
@@ -2150,7 +2150,7 @@ t "#60②:lane_busy 分引擎——kimi 月相=在飞,codex 词表不误判 kimi
   tmux(){ echo "  Explored codebase"; }
   lane_busy a || exit 1
   ! lane_busy c'
-C60S="$C60/swallow.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^win()/,/^}/p" "$LANE"; sed -n "/^target()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$C60S"
+C60S="$C60/swallow.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE"; sed -n "/^win()/,/^}/p" "$LANE"; sed -n "/^target()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$C60S"
 t "#60②:send 被吞检测分引擎——kimi 工作画面不误报,空屏照报" bash -c '
   source "'"$C60S"'"; SESSION=s; die(){ echo "die: $*" >&2; exit 1; }; board(){ :; }
   tmux(){ echo "● Running a command"; echo " 🌕 ·"; }
@@ -2881,8 +2881,11 @@ t "判活:NONE ⇒ 存疑不动 ⛔ 判死(三约束②失效必须降级)" bash
 # 的同名词表**(那条裁定逐字「⛔ 放宽判据」,目的相反)——11B 当轮误改并撤回一次,本组守住边界。
 t "lane_busy:codex 档收 Waiting" bash -c '
   sed -n "/^lane_busy()/,/^}$/p" "'"$LANE"'" | grep -q "Applying|Running|Waiting"'
-t "lane_busy:kimi 档同样收 Waiting" bash -c '
-  sed -n "/^lane_busy()/,/^}$/p" "'"$LANE"'" | grep -q "Running|Waiting|🌑"'
+KPF="$(mktemp -d)/kp.sh"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE" > "$KPF"   # ⛔ source <(…):bash 3.2 下函数不落地(2026-08-22 实测)
+t "lane_busy:kimi 档同样收 Waiting(2026-08-22 起词表在单点源 kimi_act_pat)" bash -c '
+  source "'"$KPF"'"; pat="$(kimi_act_pat)"
+  grep -q "Running|Waiting|" <<< "$pat" && grep -q "🌑" <<< "$pat" &&
+  sed -n "/^lane_busy()/,/^}$/p" "'"$LANE"'" | grep -q "kimi_act_pat"'
 t "边界:#40 的判据⛔ 被顺手放宽(裁定=⛔ 放宽判据)" bash -c '
   sed -n "/^send_swallow_check()/,/^}$/p" "'"$LANE"'" | grep -q "Read |Thinking|Ran " &&
   ! sed -n "/^send_swallow_check()/,/^}$/p" "'"$LANE"'" | grep -q "Ran |Waiting"'
@@ -2935,6 +2938,57 @@ t "11c-trust:幂等未产生重复表(重复表=TOML 致命)" bash -c '[ "$(grep
 t "11c-trust:既有条目(/Users/pingxia)原样未动" bash -c 'grep -qF "[projects.\"/Users/pingxia\"]" "'"$TCFG"'"'
 t "11c-trust:备份文件已生成" bash -c 'ls "'"$TTD"'"/config.toml.bak-11ctrust-* >/dev/null'
 rm -rf "$TTD"
+
+# ── kimi 0.38 签名漂移(2026-08-22 21:4x 11B 监测实撞):盲文转轮+小写 thinking;三处词表收单点源 ──────
+# 失败样本:lane-c 屏上逐字 `⠹ thinking...` 在改文件,lane_busy c=空闲;send 广播给它报「疑似被吞」。
+# 夹具构造成「修复被回退即红」:0.38 画面必须判在飞/已送达;干完残留在屏的「● Ran a command」⛔ 判在飞。
+KP="$(bash -c "source \"$KPF\"; kimi_act_pat")"   # KPF 见上文 lane_busy 组(bash 3.2 ⛔ source <(…))
+# 自带夹具目录:C60 的 busy.sh/swallow.sh 在 rm -rf "$C60" 之后已不存在,⛔ 复用(首跑实撞:迷你跑道绿、全量红)
+K38="$(mktemp -d)"
+K38B="$K38/busy.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE"; sed -n "/^lane_busy()/,/^}/p" "$LANE"; } > "$K38B"
+K38S="$K38/swallow.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE"; sed -n "/^win()/,/^}/p" "$LANE"; sed -n "/^target()/,/^}/p" "$LANE"; sed -n "/^send_swallow_check()/,/^}/p" "$LANE"; } > "$K38S"
+t "#kimi0.38:单点源词表两代签名并存(月相+盲文+小写 thinking+排队提示),⛔ 收干完残留词" bash -c '
+  grep -q "⠦" <<< "$1" && grep -q "🌕" <<< "$1" && grep -q "thinking" <<< "$1" && grep -q "ctrl-s to steer" <<< "$1" &&
+  ! grep -q "Ran a command" <<< "$1" && ! grep -q "Used Edit" <<< "$1"' _ "$KP"
+t "#kimi0.38:三处 kimi 词表零内联(lane_busy/send_swallow_check/confirm_briefed 全走 kimi_act_pat)" bash -c '
+  for fn in lane_busy send_swallow_check confirm_briefed; do
+    body="$(sed -n "/^$fn()/,/^}/p" "$1")"
+    grep -q "kimi_act_pat" <<< "$body" || { echo "$fn 未走单点源"; exit 1; }
+    grep -qE "pat=.*🌑" <<< "$body" && { echo "$fn 赋值行仍内联月相词表"; exit 1; }
+  done; true' _ "$LANE"
+t "#kimi0.38:lane_busy 认 0.38 工作画面(⠹ thinking...)=在飞;干完残留「● Ran a command」=空闲" bash -c '
+  source "'"$K38B"'"; SESSION=s; win_exists(){ return 0; }
+  tmux(){ echo " ⠹ thinking..."; echo "   Hmm, the residue scan only shows line 54"; }
+  lane_busy c || exit 1
+  tmux(){ echo " ● Ran a command"; echo " ● Used Edit (…page.tsx)"; echo " │ >                │"; echo " auto  K3 thinking: max  ~/来信平台-c1"; }
+  ! lane_busy c'
+t "#kimi0.38:send 被吞检测认 0.38 工作画面与排队提示(ctrl-s to steer)=已送达;空闲提示符照报" bash -c '
+  source "'"$K38S"'"; SESSION=s; die(){ echo "die: $*" >&2; exit 1; }; board(){ :; }
+  tmux(){ echo " ⠦ thinking..."; echo "   The file was modified on disk since my last read"; }
+  out="$(send_swallow_check c 2>&1)"; [ -z "$out" ] || exit 1
+  tmux(){ echo "   ❯ 【main 前进广播 · 客观事实】 main 已从 ed94d7d 前进到 …"; echo "   ↑ to edit · ctrl-s to steer immediately"; }
+  out="$(send_swallow_check c 2>&1)"; [ -z "$out" ] || exit 1
+  tmux(){ echo " ● Ran a command"; echo " │ >                │"; }
+  out="$(send_swallow_check c 2>&1)"; grep -q "疑似被吞" <<< "$out"'
+t "#kimi0.38:底栏「K3 thinking: max」不得被 thinking... 判据击中(那是常驻状态栏,⛔ 当在飞)" bash -c '
+  source "'"$K38B"'"; SESSION=s; win_exists(){ return 0; }
+  tmux(){ echo " │ >                │"; echo " auto  K3 thinking: max  ~/来信平台-c1  v02-merchant"; }
+  ! lane_busy c'
+rm -rf "$K38"
+
+# ── 交付投递去抖 ev_unsettled(2026-08-22 11B 监测实证:430 次投递 86 次为 ≤10min 重投,间隔 61~63s=边写边存)──
+EVU="$(mktemp -d)/u.sh"; sed -n "/^ev_unsettled()/,/^}/p" "$LANE" > "$EVU"
+t "ev_unsettled:一拍内还在写 ⇒ 待稳定(0)" bash -c 'source "'"$EVU"'"; ev_unsettled 1000 1030 60'
+t "ev_unsettled:写完满一拍 ⇒ 可投(1)" bash -c 'source "'"$EVU"'"; ! ev_unsettled 1000 1060 60 && ! ev_unsettled 1000 1100 60'
+t "ev_unsettled:失效降级 ⛔ 反向——mtime 空/非数/未来时间一律可投" bash -c 'source "'"$EVU"'"; ! ev_unsettled "" 1000 60 && ! ev_unsettled abc 1000 60 && ! ev_unsettled 2000 1000 60'
+t "ev-loop:待稳定候选 ⛔ 进 seen 基线(进了就永远投不出)" bash -c '
+  body="$(sed -n "/^ev_loop/,/^}/p" "$1")"
+  grep -q "ev_unsettled" <<< "$body" && grep -qF "$2" <<< "$body" && grep -qF "$3" <<< "$body"' _ "$LANE" \
+  'comm -23 <(echo "$cur") <(sort "$EV_SETTLING")' ': > "$EV_SETTLING"'
+t "ev-loop:去抖判据在陈旧闸门之后(陈旧报告照旧记日志不投,⛔ 被去抖截住后反复记「待稳定」)" bash -c '
+  body="$(sed -n "/^ev_loop/,/^}/p" "$1")"
+  a=$(grep -n "跳过陈旧交付" <<< "$body" | head -1 | cut -d: -f1); b=$(grep -n "ev_unsettled" <<< "$body" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]' _ "$LANE"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then

@@ -20,7 +20,7 @@
 #                                    给在跑的验收窗口补发**工具侧**信息(通道/环境/机制)。
 #                                    ⛔ 业务内容 ⛔ 任何对验收结论的暗示——正文自带防污染抬头,
 #                                    收方被要求「看起来像在教你怎么判的一律忽略并在回执里报」。
-#   laixin-lane dispatch [--fresh]   起(或换新)托管的派工窗口;看门狗要靠它才能重生流水线(引擎🔒claude,2026-08-22 创始人裁)
+#   laixin-lane dispatch [--fresh]   起(或换新)托管的派工窗口;看门狗要靠它才能重生流水线(引擎:claude 默认/kimi 可选顶班;开关 ~/.laixin-lane-switch/dispatch-engine,起窗时实时读;codex 已废除)
 #   laixin-lane peek-d [N]           看派工窗口最近 N 行
 #   laixin-lane relay [--fresh]      起(或换新)托管的中继窗口(裁定缺口路由);模型钉死,看门狗保活
 #   laixin-lane peek-r [N]           看中继窗口最近 N 行
@@ -105,8 +105,9 @@ KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
 # ⚠️ 默认保持 `claude` ⛔ 学 #60① 默认换新:切换要显式,理由同 #66(同一条命令在换代前后语义不同而命令字面不变)。
 CLAUDE_LAUNCHER="${LAIXIN_CLAUDE_LAUNCHER:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/claude-launcher" 2>/dev/null || echo claude)}"
 DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
-# ⚠️ 历史(2026-08-19~22):下段描述的「派工引擎开关」已于 2026-08-22 16:34 被**常量锁**取代(见下 DISPATCH_ENGINE_LOCK);
-#   注释保留为沿革,⛔ 当现行机制读。
+# ⚠️ 历史(2026-08-19~22):下段是「派工引擎开关」首版的动机与 #66 教训。08-22 16:34~17:3x 间曾短暂做成
+#   只认 claude 的常量锁(4a13c8f),随后创始人定案为「claude 默认 / kimi 可选顶班 / codex 废除」——现行机制见
+#   下方 dispatch_engine_resolve。沿革注释保留,⛔ 当现行机制读。
 # #67(2026-08-19 创始人拍板「用 codex」,临时形态):派工窗口引擎化。动机=Claude 周额度实测
 # weekly_all 已用 91%(重置 08-20 00:00 CST),dispatch 是单窗口消耗最大的一个;#60① 已把验收窗
 # 换成 codex,本条换派工窗。风险序(混合车队计划)=worker < 派工 < 验收,codex 当 worker 已验证
@@ -116,18 +117,23 @@ DISPATCH_MODEL="${LAIXIN_DISPATCH_MODEL:-claude-opus-5}"
 #   `resurrect`/boot 链**自动调用**(整机重启后无人值守),默认值变更会在**没有人在场**时生效——
 #   届时"起了个派工窗口"这句话在看板上与从前逐字相同,而里面跑的是另一个引擎、另一套通信路径。
 #   ⇒ 切换只由创始人窗口**显式设环境变量**完成,代码里的默认值不动。
-# 🔒 派工席引擎锁定 claude(2026-08-22 16:34 创始人直令,经方案窗口 dmsg 落看板:「派工窗口立即换回 claude code 引擎,
-#   ⛔ 再用 codex」;同日 16:5x 创始人当面追加「后面这个位置只放 claude code」)。⇒ 决策变量是**常量**,
-#   ⛔ 再由 LAIXIN_DISPATCH_ENGINE / 开关文件决定:
-#   - 当日实撞:看门狗循环 15:52 起(内存里攥着当时的 codex 值),16:43 手工切回 claude 后 **WD_LOG 无重起记录**
-#     ⇒ 派工窗口若死掉会被它按 codex 重起——「进程启动时读一次」的开关在无人值守重生路径上会无声回退,
-#     一个会被旧进程回退的开关不是锁;常量没有这个问题(换代走 release + 循环 stop/start,doctor 代龄项会催)。
-#   - 回切(若创始人再裁)= 改本常量 + 绊线测试 + 提交 + release,⛔ 改配置(配置改动在看板上与从前同形,#66 同族)。
-#   - 残值(LAIXIN_DISPATCH_ENGINE / 开关文件 ≠ claude)只进 _REQ,用于 doctor 告警与起窗提示,**⛔ 参与决策**;
-#     codex/kimi 两条起窗分支与接管指令保留为回切形态,锁下不可达(tests 6p 标「回切形态」)。
-DISPATCH_ENGINE_LOCK="claude"
-DISPATCH_ENGINE="$DISPATCH_ENGINE_LOCK"
-DISPATCH_ENGINE_REQ="${LAIXIN_DISPATCH_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/dispatch-engine" 2>/dev/null || echo claude)}"
+# 🔁 派工引擎(2026-08-22 创始人定案,当日三改一锤:早切 codex → 16:34「立即换回 claude code,⛔ 再用 codex」→ 17:3x
+#   「claude 默认;我的 claude code 可能没有额度,需要 kimi code 顶一下;codex dispatch 已废除」):
+#   - **claude 默认**(⛔ 改默认——#66:dispatch 起窗被 resurrect/boot 链无人值守自动调用,默认值变更在无人在场时生效);
+#   - **kimi 可选顶班**(claude 额度耗尽时):沿用 codex 派工 08-22 10:05~16:43 跑通的非 claude 通信形态(relay-msg/dmsg);
+#     此前 C 分支只是占位——dispatch_alive 不认 kimi 进程、confirm_briefed 无 kimi 词表,本轮一并补齐;
+#   - **codex 废除**(上下文短、会压缩失去细节);请求 codex/拼错 ⇒ **按 claude 起 + 当面点名 + doctor 告警**
+#     (⛔ die:过期开关不该有权停掉自愈;⛔ 静默:否则「请求 X 得到 claude」在看板上同形);
+#   - 🔴 **起窗时实时解析 ⛔ 进程启动时读一次**(当日实撞:看门狗循环 15:52 起、内存攥着 codex,16:43 切回 claude 后 WD_LOG
+#     无重起记录 ⇒ 它仍会按 codex 重起)。cmd_dispatch 开头重新解析 ⇒ 看门狗/boot 链重生拿到当下的值,切引擎**不再需要重起循环**。
+#   取值顺序:env LAIXIN_DISPATCH_ENGINE > 开关文件 ~/.laixin-lane-switch/dispatch-engine > 默认 claude。
+dispatch_engine_resolve(){  # → stdout "<生效引擎> <请求值>";纯读零副作用;cmd_dispatch/doctor 都经它取值
+  local req eff
+  req="${LAIXIN_DISPATCH_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/dispatch-engine" 2>/dev/null || echo claude)}"
+  case "$req" in claude|kimi) eff="$req" ;; *) eff="claude" ;; esac
+  printf '%s %s\n' "$eff" "$req"
+}
+read -r DISPATCH_ENGINE DISPATCH_ENGINE_REQ <<< "$(dispatch_engine_resolve)"
 # 中继窗口(裁定缺口路由)同档钉死(2026-08-19 创始人直裁,#32):中继做的是**核库快裁**——
 # 要的是可靠核查不是极限推理,与 dispatch/verify 同档。⛔ 继承 /model:中继窗口此前由创始人
 # 手开,模型随手边设置漂移;入流水线托管后必须与另两类托管窗口同一条纪律(起窗命令行显式带 --model)。
@@ -801,6 +807,8 @@ for line in seats_raw.split("\n"):
     name,cwd,cmd=parts[0],parts[1],parts[2]
     st=parts[3].strip() if len(parts)>3 else ""
     if name not in whitelist: continue
+    if cmd not in ("node","codex"):   # 非codex引擎(kimi/claude 派工席等):⛔ 拿 cwd+时刻去匹配 codex rollout——匹配上也是别人的数
+        rows.append((name,cmd,"—",None,None,"unknown",f"非codex引擎({cmd})",0)); continue
     start_epoch=None
     if st:
         try: start_epoch=time.mktime(time.strptime(st,"%a %b %d %H:%M:%S %Y"))
@@ -1942,12 +1950,12 @@ cmd_doctor() {
   # #67:派工引擎=codex 时 DISPATCH_MODEL 不参与起窗——照旧显示「派工窗口钉:claude-…」会误导读者
   # 以为派工还在烧 Claude(#27 工具自述与实际防线不同步族,与 #60① 对验收窗口那一处同因同修)。
   # ⚠️ DISPATCH_ENGINE=claude 时,下面两行与旧版**逐字一致**(默认值就是 claude ⇒ 今天零变化)。
-  # 🔒 2026-08-22:派工引擎已是常量锁;「通过」态要可见(#50),残值要点名(⛔ 静默忽略——否则有人照旧记忆
-  #   `printf codex > dispatch-engine` 后会以为切成了,而看板/体检与从前同形)。
+  # 🔁 2026-08-22 定案:claude 默认 / kimi 可选顶班 / codex 废除。「通过」态要可见(#50),无效请求要点名
+  #   (⛔ 静默回落——否则有人照旧记忆 `printf codex > dispatch-engine` 后会以为切成了,而看板/体检与从前同形)。
   if [ "$DISPATCH_ENGINE_REQ" != "$DISPATCH_ENGINE" ]; then
-    wrn "派工引擎开关残值「${DISPATCH_ENGINE_REQ}」已失效——派工席锁定 $DISPATCH_ENGINE(2026-08-22 创始人裁:只放 claude code);清理:rm ~/.laixin-lane-switch/dispatch-engine / unset LAIXIN_DISPATCH_ENGINE"
+    wrn "派工引擎请求「${DISPATCH_ENGINE_REQ}」无效——派工引擎只有 claude(默认)/kimi(可选顶班),codex 已于 2026-08-22 废除;已按 claude 处理。清理:rm ~/.laixin-lane-switch/dispatch-engine / unset LAIXIN_DISPATCH_ENGINE"
   else
-    ok "派工引擎锁定:$DISPATCH_ENGINE(常量 DISPATCH_ENGINE_LOCK,2026-08-22 创始人裁;环境变量/开关文件不再生效)"
+    ok "派工引擎:${DISPATCH_ENGINE}(claude 默认 / kimi 可选顶班;开关 ~/.laixin-lane-switch/dispatch-engine 或 LAIXIN_DISPATCH_ENGINE,起窗时实时读;codex 已废除)"
   fi
   if [ "$DISPATCH_ENGINE" = "claude" ]; then
     if [ "$VERIFY_ENGINE" = "claude" ]; then
@@ -1957,9 +1965,9 @@ cmd_doctor() {
     fi
   else
     if [ "$VERIFY_ENGINE" = "claude" ]; then
-      ok "验收窗口钉:$VERIFY_MODEL(改用 LAIXIN_VERIFY_MODEL)  派工引擎:$DISPATCH_ENGINE(临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
+      ok "验收窗口钉:$VERIFY_MODEL(改用 LAIXIN_VERIFY_MODEL)  派工引擎:${DISPATCH_ENGINE}(顶班形态,DISPATCH_MODEL 不适用,模型=$KIMI_MODEL;回默认:printf claude > ~/.laixin-lane-switch/dispatch-engine)"
     else
-      ok "验收引擎:codex(#60①)  派工引擎:$DISPATCH_ENGINE(临时形态,DISPATCH_MODEL 不适用;回切:LAIXIN_DISPATCH_ENGINE=claude)"
+      ok "验收引擎:codex(#60①)  派工引擎:${DISPATCH_ENGINE}(顶班形态,DISPATCH_MODEL 不适用,模型=$KIMI_MODEL;回默认:printf claude > ~/.laixin-lane-switch/dispatch-engine)"
     fi
     # ⚠️ 工具层锁失效必须**在体检里说出来** ⛔ 只写在提交信息里:DISPATCH_DENY 实测只有一条
     # `Bash(git push*)`,而 codex 没有 disallowedTools 等价物 ⇒ 该锁静默失效,而「锁在」与
@@ -1976,11 +1984,11 @@ cmd_doctor() {
       else _hookmiss="$_hookmiss $(basename "$_hr")"; fi
     done
     if [ -n "$_hookmiss" ]; then
-      wrn "派工引擎=codex ⇒ 工具层 push 锁不生效(codex 无 disallowedTools 等价物),而 git 层兜底**也缺**:${_hookmiss} 的 .git/hooks/pre-push 不在位/判据不符(hooks ⛔ 随 clone 传播)⇒ 该仓此刻可被托管窗口误推,红线只剩派单指令"
+      wrn "派工引擎=${DISPATCH_ENGINE} ⇒ 工具层 push 锁不生效(${DISPATCH_ENGINE} 无 disallowedTools 等价物),而 git 层兜底**也缺**:${_hookmiss} 的 .git/hooks/pre-push 不在位/判据不符(hooks ⛔ 随 clone 传播)⇒ 该仓此刻可被托管窗口误推,红线只剩派单指令"
     else
-      ok "派工引擎=codex:工具层 push 锁不生效(codex 无 disallowedTools 等价物),但 git 层兜底**实测在位**(两仓 pre-push 按 BU_NAME 拦托管窗口;逃生口 LAIXIN_ALLOW_PUSH=1)"
+      ok "派工引擎=${DISPATCH_ENGINE}:工具层 push 锁不生效(${DISPATCH_ENGINE} 无 disallowedTools 等价物),但 git 层兜底**实测在位**(两仓 pre-push 按 BU_NAME 拦托管窗口;逃生口 LAIXIN_ALLOW_PUSH=1)"
     fi
-    ok "codex 派工出站:需对方判断的走 laixin-lane relay-msg(中继代发);回程走对方落盘【中转回复】+ events 投路径指针(中继无反向注入能力)"
+    ok "${DISPATCH_ENGINE} 派工出站:需对方判断的走 laixin-lane relay-msg(中继代发);回程走对方落盘【中转回复】+ events 投路径指针(中继无反向注入能力)"
   fi
   local gmodel
   gmodel="$(python3 -c "import json;print(json.load(open('$HOME/.claude-official/settings.json')).get('model','未设'))" 2>/dev/null || echo 未知)"
@@ -2991,7 +2999,7 @@ pane_claude_age(){  # <窗口名> → stdout=pane 前台 claude 进程存活秒�
   # #58 正向存活信号的取数半边:补偿动作(补 Enter)与它要补偿的故障(Enter 真丢)必须有
   # 可区分的触发判据——「画面静止」两者同形,「claude 进程在且 etime 短」只属于冷启动。
   local w="$1" ppid cpid et
-  case "$(pane_cmd "$w")" in node|claude|claude.exe) ;; *) return 1 ;; esac
+  case "$(pane_cmd "$w")" in node|claude|claude.exe|kimi) ;; *) return 1 ;; esac   # kimi:顶班派工席同样有冷启动窗口
   ppid="$(tmux display-message -p -t "$SESSION:$w" '#{pane_pid}' 2>/dev/null)"; [ -n "$ppid" ] || return 1
   cpid="$(pgrep -P "$ppid" 2>/dev/null | head -1 || true)"; [ -n "$cpid" ] || cpid="$ppid"  # 子进程取不到就量 pane shell 本身(claude 直起时二者同龄)
   et="$(ps -o etime= -p "$cpid" 2>/dev/null | tr -d ' ')"; [ -n "$et" ] || return 1
@@ -3082,6 +3090,7 @@ confirm_briefed() {  # <窗口名> <标签> [引擎] → 0=确认已提交;1=未
   local w="$1" label="$2" eng="${3:-claude}" tries=0
   local shot cls age pat='Working|Explored|Read |Thinking|Ran '
   [ "$eng" = "codex" ] && pat='Working|Explored|Reading|Search|Thinking|Applying|Running'
+  [ "$eng" = "kimi" ] && pat='Working|Thinking|Running|Waiting|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘'   # 取 lane_busy 的 kimi 词表(2026-08-22 补)
   while [ "$tries" -lt 3 ]; do
     sleep 3
     shot="$(tmux capture-pane -p -t "$SESSION:$w" 2>/dev/null || true)"
@@ -3137,7 +3146,7 @@ dispatch_alive() {
                         #    ⚖️ 同一条纪律在本文件的 RELAY_ENABLED 总闸门上是做对的(注释逐字
                         #    「标记丢了是不托管…⛔ 不是乱拉窗口」),而此处曾做反:查询不可靠时
                         #    去**杀掉一个活着的席位**。(relay 第十二任指出该对照)
-    node|claude|claude.exe) return 0 ;;   # claude 进程还在
+    node|claude|claude.exe|kimi) return 0 ;;   # claude 进程还在;kimi=顶班引擎的进程名(2026-08-22 补:此前不认 ⇒ 活着的 kimi 派工席会被判死重起)
     *) return 1 ;;                        # 掉回 shell = 已死
   esac
 }
@@ -3159,47 +3168,10 @@ DISPATCH_BRIEF='你是 laixin 开发流水线的**派工窗口**(由看门狗托
 状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。
 📌 记看板用 laixin-lane log "..."(本窗口的来源会按窗口名自动标为「派工窗口」,⛔ 再手工拼前缀)。'
 
-# #67:codex 引擎的接管指令。与 claude 版**逐条对齐**,只在四处必须不同的地方分叉,⛔ 借机改口径:
-#  ①开场读卡:codex 不走 Skill 调用 ⇒ 直读单点源实体文件(同 #60① 对验收窗口的做法);
-#  ②出站通信:codex **没有 SendMessage** ⇒ 需要对方判断的走 relay-msg 转办,事实类照旧落盘+events;
-#  ③ctx 读数:transcript 位置与格式都不同 ⇒ 必须带 --engine codex(⛔ 读到别人的会话还以为是自己);
-#  ④红线:codex 无 disallowedTools 等价物 ⇒ DISPATCH_DENY 的 git push 锁**失效**,改由指令明写。
-DISPATCH_BRIEF_CODEX='你是 laixin 开发流水线的**派工窗口**(引擎=Codex,由看门狗托管起动)。
-
-起手式,按序做完再报告:
-1. 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源),认领"派工窗口"角色(不要兼任验收);
-2. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md 的"进行中"节,再读同目录 来信平台-流水线看板.md 末 20 行,再读 知识库/log.md 末尾;
-3. 事件总线(events 窗口)已随本窗口自动运行——交付落盘、验收回执、转办回复、轨道与验收窗口卡住,都会**直接投递进你的输入框**。**你无需也不要自建监听**;每条【事件】/【告警】到达,同一轮内完成「判断→行动→可见输出」。⚠️ 事件投给你的是**路径指针不是内容**,凡带文件路径的事件一律**先读那个文件全文**再动手。交付事件的下一步通常是 laixin-lane verify-from "<报告路径>" --prompt <prompt路径> --to dispatch;
-4. 接管当前状态:该派工的立即派(laixin-lane fresh + send + peek 复核),已交付待验的用 laixin-lane verify 起一次性验收窗口——**你的会话名就是 dispatch,所以固定写 --to dispatch**。
-
-⚠️ **本引擎没有 SendMessage,出站通信按消息类型分两条路(⛔ 一律走 relay,也 ⛔ 一律落盘)**:
-- **需要对方判断/裁定/讨论的**(裁定缺口、挂起上报、请方案窗口补设计、口径请裁)→
-  laixin-lane relay-msg --to <目标> "<正文>" —— 投给中继窗口代发 SendMessage,**必须显式 --to**。
-  它只是**注入成功不等于送达**:等中继落盘【中转回执】才算转出,久无回执事件总线会告警;laixin-lane relay-msg --status 查未销账。
-  对方的答复会以**【中转回复】落盘 + 事件投路径指针**回到你这里,**⛔ 等它直接注入你的窗口**(那条路不存在)。
-- **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
-
-⚠️ **上下文占比必须带引擎**:laixin-lane ctx --engine codex(不带 --engine 读的是 claude 会话,那不是你——数字会是别人的)。
-🔴 **但这个数 ⛔ 换班判据**:本引擎自带上下文翻页——将满时会自动 reset,notes 与 history 跨窗口保留(实证:同一会话 86.3% 后归零、继续干活未换人)。⛔ 因为看到占比高就交班;换班看四轨判据的②片数 ③行为信号(开始重新查证、记不清数字来自哪次工具返回)④错误信号(台账不一致、被下游纠正)。
-
-派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
-
-接班先跑 laixin-lane doctor(体检)与 laixin-lane stats(看还剩多少燃料、有无总表状态滞后);合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
-**你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。所以状态一定随做随写进执行总表与看板,不要攒在窗口记忆里。
-
-🔴 **红线(本引擎没有 claude 的 disallowedTools 工具层禁令,以下以本指令为准)**:⛔ git push ——
-流水线不碰 origin,推远端一律不做;要备份走 laixin-lane backup。合并你照旧做(派工窗口持有合并权),
-但 merge 后按卡跑 merge-guard 收尾。越线即整轮作废并报创始人。
-
-铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
-状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。
-📌 记看板用 laixin-lane log "..."(本窗口的来源会按窗口名自动标为「派工窗口」,⛔ 再手工拼前缀)。'
-
-# 方案 C(kimi):与 codex 版同构,四处按实测差异改写 —— ①skills 用绝对路径 Read(⛔ 依赖 kimi 的
-# 自动发现);②ctx 看自己界面底部 `context: N%`(`laixin-lane ctx` 只认 claude/codex 会话文件,
-# 对 kimi 无效,⛔ 让它读到别人的数);③kimi 独有 Agent/AgentSwarm 子代理,派工窗口用它等于绕过
-# lane 与派工权锁而看板上看不出区别 ⇒ 明令禁;④告诉它 dmsg 这条入站路不需要它做任何事。
-DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kimi Code,由看门狗托管起动)。
+# (DISPATCH_BRIEF_CODEX 已于 2026-08-22 随 codex 派工废除而删除;非 claude 派工席的接管指令只剩 kimi 版,见下。
+#  kimi 版与 claude 版逐条对齐,只在四处必须不同的地方分叉:①开场读卡直读单点源实体文件;②出站通信 relay-msg;
+#  ③ctx 看自身 TUI;④红线由指令明写——⛔ 借机改口径。)
+DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kimi Code,claude 额度耗尽时的**顶班形态**;由看门狗托管起动)。
 
 起手式,按序做完再报告:
 1. 用 Read 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源,**绝对路径直读 ⛔ 靠 skill 自动发现**),认领"派工窗口"角色(不要兼任验收);
@@ -3217,7 +3189,7 @@ DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kim
 - **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
 - 📌 别人主动找你的消息走 laixin-lane dmsg,会以「【消息】来自 <来源>」的形态直接落进你的输入框——**那条路不需要你做任何事**。
 
-⚠️ **上下文占比看你自己界面底部的 `context: N%`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。≥75% 是交班硬闸门。
+⚠️ **上下文占比看你自己界面底部的 `context: N% (…/1M)`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。换班纪律与 claude 派工席同一套:65-75% 为换班窗口,≥75% 是交班硬闸门(本引擎是否自带翻页未实测,⛔ 按 codex 那套「满了自己翻」推定)。
 
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**。
 
@@ -3497,13 +3469,16 @@ cmd_dispatch() {
       *) die "未知参数:$1" ;;
     esac
   done
+  # 🔴 起窗时**实时解析**引擎(2026-08-22 实撞:看门狗循环内存攥着切换前的值,切回后仍按旧引擎重起)——
+  #   看门狗/boot 链在本进程内调本函数,只有这里重读,切引擎才不用重起循环。
+  read -r DISPATCH_ENGINE DISPATCH_ENGINE_REQ <<< "$(dispatch_engine_resolve)"
   # #67:引擎校验在动窗口**之前**(同 #60① 一课:值打错不该留下半个死窗口/半个被杀的旧窗口)
-  case "$DISPATCH_ENGINE" in codex|claude|kimi) : ;; *) die "未知派工引擎:$DISPATCH_ENGINE(LAIXIN_DISPATCH_ENGINE 只接受 codex|claude|kimi)" ;; esac
-  # 🔒 残值点名(⛔ 静默忽略,也 ⛔ die):die 会让看门狗/boot 链的无人值守重生整条失效——一个过期的开关文件
+  case "$DISPATCH_ENGINE" in claude|kimi) : ;; *) die "未知派工引擎:$DISPATCH_ENGINE(只接受 claude|kimi;dispatch_engine_resolve 失守)" ;; esac
+  # 无效请求点名(⛔ 静默忽略,也 ⛔ die):die 会让看门狗/boot 链的无人值守重生整条失效——一个过期的开关文件
   #   不该有权停掉自愈;静默则让「请求 codex 得到 claude」在看板上同形。⇒ 照常按 claude 起,但当面说、上看板。
   if [ "$DISPATCH_ENGINE_REQ" != "$DISPATCH_ENGINE" ]; then
-    echo "⚠️ 忽略派工引擎请求「${DISPATCH_ENGINE_REQ}」:派工席锁定 $DISPATCH_ENGINE(2026-08-22 创始人裁,常量 DISPATCH_ENGINE_LOCK);清残值:rm ~/.laixin-lane-switch/dispatch-engine / unset LAIXIN_DISPATCH_ENGINE"
-    board "$(caller_src)" "⚠️ 派工引擎请求「${DISPATCH_ENGINE_REQ}」被忽略——派工席锁定 $DISPATCH_ENGINE(2026-08-22 创始人裁),按 claude 起窗"
+    echo "⚠️ 派工引擎请求「${DISPATCH_ENGINE_REQ}」无效(只有 claude 默认/kimi 可选顶班;codex 已于 2026-08-22 废除),按 claude 起窗;清理:rm ~/.laixin-lane-switch/dispatch-engine / unset LAIXIN_DISPATCH_ENGINE"
+    board "$(caller_src)" "⚠️ 派工引擎请求「${DISPATCH_ENGINE_REQ}」无效(只有 claude 默认/kimi 可选;codex 已废除)——按 claude 起窗"
   fi
   ensure_session
   if [ -z "$nocheck" ] && ! check_rival_dispatch; then
@@ -3536,21 +3511,11 @@ cmd_dispatch() {
     fi
     die "$DISPATCH_WIN 启动超时。查看:laixin-lane peek-d 40"
   done
-  elif [ "$DISPATCH_ENGINE" = "codex" ]; then
-  # ── codex 引擎(#67,默认关闭):起窗形态照 cmd_verify 的 codex 分支——MCP 全量关闭
-  # (⛔ 引号 key,见 lane_mcp_off_flags 注释)、BU_NAME/BU_CDP_URL 派生规则**一字未改**
-  # (dispatch 的通道名与端口是固定值,两引擎共用 ⇒ cdp_sweep/halt 零改动)。
-  # ⛔ 用 claude 那条 #20c 定向重试:那个因是「claude 二进制被自更新替换」,codex 没有这个因,
-  #    照抄等于给一个不存在的故障装重试(而重试会掩盖真正的启动失败)。
-  # ⛔ 用 --settings/--disallowedTools:codex 无等价物,拼上去会整份拒载秒退(#11-③ 同族)。
-  _brief="$DISPATCH_BRIEF_CODEX"
-  local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
-  tmux new-window -t "$SESSION" -n "$DISPATCH_WIN" -c "$dir" 2>/dev/null || true
-  sleep 0.5
-  tmux send-keys -t "$SESSION:$DISPATCH_WIN" "$(codex_launch_cmd "dispatch" "$_cdp_port" "$_mcp_off")" C-m
-  vwait_ready_codex "$DISPATCH_WIN" || die "$DISPATCH_WIN 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-d 40"
   else
-  # ── kimi 引擎(方案 C):起窗形态与 lane 的 C 轨同一份(kimi_launch_cmd)。
+  # ── kimi 引擎(**可选顶班**,claude 额度耗尽时;2026-08-22 定案。codex 派工分支同日废除——它跑通的
+  #    非 claude 通信形态 relay-msg/dmsg 由 kimi 沿用):起窗形态与 lane 的 C 轨同一份(kimi_launch_cmd)。
+  # ⛔ 用 claude 那条 #20c 定向重试:那个因是「claude 二进制被自更新替换」,kimi 没有这个因。
+  # ⛔ 用 --settings/--disallowedTools:kimi 无等价物 ⇒ DISPATCH_DENY 的 git push 工具层锁失效,改由指令明写 + git 层 pre-push 兜底。
   # #68:kimi 对每个新工作目录弹 `Trust this folder?`,两个选项都是坑(不信任=直接退出)
   # ⇒ **起窗前预写信任记录**,⛔ 起完再想办法点按钮——托管窗口无人可点。
   _brief="$DISPATCH_BRIEF_KIMI"
@@ -3586,8 +3551,8 @@ cmd_dispatch() {
   echo "$DISPATCH_WIN 已起并接管(引擎=$DISPATCH_ENGINE;${_guard};15s 验尸+接管回读复核已挂后台,异常上看板)。复核:laixin-lane peek-d 30"
   # ⚠️ `[ ] && echo` 作为**函数最后一条语句**:条件为假时函数退出码=1 ⇒ wd_loop/resurrect 收码时
   #    会把一次正常的 claude 起窗读成失败(本仓 grep 零命中击穿函数同族)。必须 || true 兜底。
-  if [ "$DISPATCH_ENGINE" = "codex" ]; then
-    echo "⚠️ codex 引擎:出站需对方判断的消息走 laixin-lane relay-msg(中继代发);DISPATCH_DENY 的 git push 工具层锁**不生效**,已在派单指令里明写禁令。"
+  if [ "$DISPATCH_ENGINE" = "kimi" ]; then
+    echo "⚠️ kimi 引擎(顶班形态):出站需对方判断的消息走 laixin-lane relay-msg(中继代发);DISPATCH_DENY 的 git push 工具层锁**不生效**,已在派单指令里明写禁令(git 层 pre-push 兜底见 doctor §6);ctx 看其 TUI 底栏 context%(K3 窗口 1M)。"
   fi
   return 0
 }
@@ -4114,11 +4079,11 @@ wd_loop() {
     # ⚠️ 留下这段而不删,是因为**下一个人极可能重造它**——「给 codex 加个 ctx 监控」听起来
     #   天经地义。要恢复必须先回答:codex 自动翻页之后,人工换班还解决什么问题?
     #   ctx-all 命令保留(数字本身客观,可用来看它何时翻页),但⛔ 由机器据此催任何人。
-    # 📌 2026-08-22 16:43 起 dispatch 已换回并**锁定 claude**(DISPATCH_ENGINE_LOCK)——本段**仍不恢复**:
+    # 📌 2026-08-22 16:43 起 dispatch 换回 claude(默认;kimi 可顶班,codex 废除)——本段**仍不恢复**:
     #   ① claude 席位的水位提醒早已在当事人眼前:底栏 statusline.py 的 65/75 闸门每次渲染可见 + `laixin-lane ctx`
     #     (~/.claude-b/settings.json 的 statusLine 同样指向它,双通道都有);② ctx-all 只认 codex rollout,对 claude 席位
     #     本就无读数;③ 推送被撤的根因是「工具对在班席位下令」(见 ctx_watch_tick 内注),与引擎无关。
-    #   ⇒ 引擎换回不是恢复巡检的理由;恢复须创始人明令。
+    #   ⇒ 引擎换回不是恢复巡检的理由;kimi 顶班同理(其 TUI 底栏自带 context%,1M 窗口);恢复须创始人明令。
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then
       if [ "$restarts" -ge "$max_restart" ]; then

@@ -1052,28 +1052,29 @@ echo "== 6p. #67 派工引擎化(默认 claude)+ 出站中转 relay-msg(单向,�
 # 背景:Claude 周额度实测 weekly_all 91%,dispatch 是单窗口消耗最大的一个;#60① 已换验收窗,本批换派工窗。
 # codex 没有 SendMessage ⇒ 出站走中继代发;**回程 ⛔ 反向注入**——对方落盘、events 投**路径指针**,
 # dispatch 自读全文(events 的载荷从来不是结构化内容,这正是「讨论也能走落盘」的机关)。
-# ⭐ 绊线①(2026-08-22 16:34 起由「默认值必须是 claude」升级为**常量锁**):创始人直令「派工窗口立即换回
-#   claude code 引擎,⛔ 再用 codex」+ 当面追加「后面这个位置只放 claude code」。当日实撞=看门狗循环 15:52 起、
-#   内存里攥着当时的 codex 值,16:43 手工切回 claude 后 WD_LOG 无重起记录 ⇒ 派工窗口若死掉会被它按 codex 重起——
-#   「进程启动时读一次」的开关在无人值守重生路径上会无声回退,一个会被旧进程回退的开关不是锁。
-#   ⇒ 决策变量必须是常量;LAIXIN_DISPATCH_ENGINE/开关文件只进 _REQ 供告警,⛔ 参与决策。
-#   ⚠️ 原 tfail「未知引擎被拒」那条**必须撤**:锁下 `LAIXIN_DISPATCH_ENGINE=bogus dispatch` 不再被拒,会真的起一个
-#   claude 派工窗口到 fixture 会话里(与当年 kimi 成合法引擎后那次同形)——改为跑只读的 doctor。
-t "#67🔒 派工引擎是常量 claude(DISPATCH_ENGINE=\$DISPATCH_ENGINE_LOCK,⛔ 读 env/开关文件)" bash -c \
-  'l="$(grep -E "^DISPATCH_ENGINE=" "$1")"; [ "$l" = "DISPATCH_ENGINE=\"\$DISPATCH_ENGINE_LOCK\"" ] && grep -q "^DISPATCH_ENGINE_LOCK=\"claude\"$" "$1"' _ "$LANE"
-t "#67🔒 决策变量 ⛔ 再读 LAIXIN_DISPATCH_ENGINE/开关文件(残值只进 _REQ)" bash -c \
-  'l="$(grep -E "^DISPATCH_ENGINE=" "$1")"; ! grep -q "LAIXIN_DISPATCH_ENGINE" <<< "$l" && grep -q "^DISPATCH_ENGINE_REQ=.*LAIXIN_DISPATCH_ENGINE" "$1"' _ "$LANE"
-tout "#67🔒 LAIXIN_DISPATCH_ENGINE=codex 下 doctor 仍走 claude 派工行(锁生效于运行时,⛔ 只看源码)" "派工窗口钉:" \
-  env LAIXIN_DISPATCH_ENGINE=codex "$LANE" doctor
-tout "#67🔒 残值在 doctor 里被点名(⛔ 静默忽略——照旧记忆写开关文件的人要当场知道没生效)" "派工引擎开关残值「codex」" \
-  env LAIXIN_DISPATCH_ENGINE=codex "$LANE" doctor
-tout "#67🔒 bogus 残值同样只告警不致死(⛔ 让过期开关有权停掉自愈)" "派工引擎开关残值「bogus」" \
-  env LAIXIN_DISPATCH_ENGINE=bogus "$LANE" doctor
-tout "#67🔒 无残值时锁定态可见(#50:「没报警」与「没这项检查」不得同形)" "派工引擎锁定:claude" \
-  env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
-t "#67🔒 起窗残值点名在 ensure_session 之前且 ⛔ die(无人值守重生不许被过期开关拦停)" bash -c \
+# ⭐ 绊线①(2026-08-22 创始人定案,当日三改一锤:早切 codex → 16:34 换回 claude → 17:3x「claude 默认 / kimi 可选顶班 / codex 废除」):
+#   - 默认 claude ⛔ 改默认(#66:dispatch 起窗被 resurrect/boot 链无人值守自动调用,默认值变更在无人在场时生效);
+#   - kimi 是**可选顶班**(claude 额度耗尽时),必须真能起——此前 C 分支只是占位:dispatch_alive 不认 kimi 进程、
+#     confirm_briefed 无 kimi 词表、pane_claude_age 不认 kimi(看门狗会把活着的 kimi 派工席判死、重起、再判死);
+#   - codex 已废除:请求 codex ⇒ 按 claude 起 + 点名 + doctor 告警(⛔ die——过期开关不该有权停掉自愈;⛔ 静默——同形);
+#   - 🔴 起窗时**实时解析** ⛔ 进程启动时读一次(当日实撞:看门狗循环内存攥着切换前的值,切回后仍会按旧引擎重起)。
+#   ⚠️ ⛔ 用 `LAIXIN_DISPATCH_ENGINE=xxx dispatch` 当反例测「拒绝」:无效值不再被拒,会真起一个 claude 派工窗口到
+#     fixture 会话(与当年 kimi 成合法引擎后那次同形)——一律用只读的 doctor 测三态。
+t "#67 派工引擎默认 claude(dispatch_engine_resolve 兜底 echo claude,⛔ 兜底 codex/kimi)" bash -c \
+  'b="$(sed -n "/^dispatch_engine_resolve()/,/^}/p" "$1")"; grep -q "LAIXIN_DISPATCH_ENGINE:-.*echo claude" <<< "$b" && ! grep -qE "echo (codex|kimi)\)" <<< "$b"' _ "$LANE"
+t "#67 合法集只有 claude|kimi(codex 已废除,⛔ 再出现在 resolve 里)" bash -c \
+  'b="$(sed -n "/^dispatch_engine_resolve()/,/^}/p" "$1")"; grep -q "claude|kimi) eff=" <<< "$b" && ! grep -q "codex" <<< "$b"' _ "$LANE"
+t "#67 cmd_dispatch 起窗时实时解析引擎(⛔ 只用进程启动时读的值;看门狗重生路径靠这一行)" bash -c \
+  'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")"; c="$(grep -n "dispatch_engine_resolve" <<< "$b" | head -1 | cut -d: -f1)"; e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)"; [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ]' _ "$LANE"
+tout "#67 doctor 三态①claude(默认):报派工引擎行" "派工引擎:claude" env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
+tout "#67 doctor 三态②kimi 合法可选:报 派工引擎:kimi" "派工引擎:kimi" env LAIXIN_DISPATCH_ENGINE=kimi "$LANE" doctor
+tout "#67 doctor 三态③codex 已废除:请求被点名无效" "派工引擎请求「codex」无效" env LAIXIN_DISPATCH_ENGINE=codex "$LANE" doctor
+tout "#67 codex 请求下 doctor 仍报 claude 钉模型行(按 claude 处理,⛔ 只告警不落实)" "派工窗口钉:" env LAIXIN_DISPATCH_ENGINE=codex "$LANE" doctor
+tout "#67 拼错值同样点名(⛔ 静默回落)" "派工引擎请求「bogus」无效" env LAIXIN_DISPATCH_ENGINE=bogus "$LANE" doctor
+tout "#67 doctor 在 kimi 引擎下点名工具层 push 锁失效(kimi 无 disallowedTools 等价物)" "push 锁不生效" env LAIXIN_DISPATCH_ENGINE=kimi "$LANE" doctor
+t "#67 起窗无效值点名在 ensure_session 之前且 ⛔ die(无人值守重生不许被过期开关拦停)" bash -c \
   'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")";
-   c="$(grep -n "忽略派工引擎请求" <<< "$b" | head -1 | cut -d: -f1)";
+   c="$(grep -n "派工引擎请求「" <<< "$b" | head -1 | cut -d: -f1)";
    e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)";
    [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ] && seg="$(sed -n "${c},$((c+2))p" <<< "$b")" && ! grep -q "die " <<< "$seg"' _ "$LANE"
 t "#67 引擎校验在 ensure_session/kill-window 之前" bash -c \
@@ -1087,21 +1088,34 @@ tout "#67 claude 起窗命令行原样保留(--disallowedTools)" "disallowedTool
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
 tout "#67 claude 路径保留 #20c 自更新定向重试(codex 无此因 ⛔ 照抄)" "Claude Code CLI not found" \
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
-# ⭐ 绊线④:codex 路径起窗形态=照 cmd_verify 的 codex 分支(MCP 全关 + 通道注入 + codex 就绪判据)
-#   (2026-08-22 🔒 后:该分支**锁下不可达**,保留为回切形态;下列断言钉的是形态不是行为)
-tout "#67[回切形态] codex 起窗 MCP 全量关闭(照 lane/verify 同一函数,⛔ 另拼)" "lane_mcp_off_flags" \
+# ⭐ 绊线④:kimi 顶班形态必须**真能起**(此前 C 分支从未真跑过;2026-08-22 隔离 tmux 会话实起一次:4s 就绪、pane=kimi、
+#   就绪签名在 kimi 0.38.0 下仍成立、K3 窗口 1M)。以下钉的是起窗链路各环节对 kimi 的认知,缺一环看门狗就会误判。
+tout "#67 kimi 起窗走 kimi_launch_cmd(与 lane C 轨同一份,⛔ 另拼)" "kimi_launch_cmd \"dispatch\"" \
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
-tout "#67[回切形态] codex 就绪判据复用 vwait_ready_codex(⛔ 拿 claude 输入框判据量 codex)" "vwait_ready_codex \"\$DISPATCH_WIN\"" \
+tout "#67 kimi 就绪判据复用 vwait_ready_kimi(⛔ 拿 claude/codex 画面判据量 kimi)" "vwait_ready_kimi \"\$DISPATCH_WIN\"" \
   sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+t "#67 kimi 起窗前预写信任记录(#68,在起窗命令之前)" bash -c \
+  'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")"; p="$(grep -n "^  kimi_trust_prewrite " <<< "$b" | head -1 | cut -d: -f1)"; w="$(grep -n "\$(kimi_launch_cmd \"dispatch\"" <<< "$b" | head -1 | cut -d: -f1)"; [ -n "$p" ] && [ -n "$w" ] && [ "$p" -lt "$w" ]' _ "$LANE"
+t "#67 cmd_dispatch 已无 codex 分支,DISPATCH_BRIEF_CODEX 已删(codex 派工废除)" bash -c \
+  'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")"; ! grep -q "codex_launch_cmd" <<< "$b" && ! grep -q "DISPATCH_BRIEF_CODEX" <<< "$b" && ! grep -q "^DISPATCH_BRIEF_CODEX=" "$1"' _ "$LANE"
+t "#67 看门狗判活认 kimi 进程(dispatch_alive;此前只认 node|claude ⇒ 活着的 kimi 派工席会被判死重起)" bash -c \
+  'b="$(sed -n "/^dispatch_alive()/,/^}/p" "$1")"; grep -qE "node\|claude\|claude\.exe\|kimi\)" <<< "$b"' _ "$LANE"
+t "#67 接管回读复核有 kimi 活动词表(confirm_briefed;⛔ 拿 claude 词表量 kimi 而盲补 Enter)" bash -c \
+  'b="$(sed -n "/^confirm_briefed()/,/^}/p" "$1")"; grep -q "\"kimi\" \] && pat=" <<< "$b"' _ "$LANE"
+t "#67 冷启动宽限探针认 kimi(pane_claude_age;否则 kimi 冷启动静止被当 Enter 丢失盲补)" bash -c \
+  'b="$(sed -n "/^pane_claude_age()/,/^}/p" "$1")"; grep -q "claude\.exe|kimi)" <<< "$b"' _ "$LANE"
+t "#67 ctx-all 对非 codex 席位不认领 codex rollout(kimi/claude 派工席 ⛔ 被安上别人的数)" bash -c \
+  'b="$(sed -n "/^cmd_ctx_all()/,/^}/p" "$1")"; grep -q "非codex引擎" <<< "$b"' _ "$LANE"
 # ⭐ 绊线⑤:工具层锁失效必须**明写进派单指令**——DISPATCH_DENY 实测只有 git push 一条,
-#   codex 无 disallowedTools 等价物 ⇒ 锁静默失效,而「锁在」与「锁没了」在体检输出里原本同形。
-tout "#67[回切形态] codex 派单指令明写 git push 禁令(工具层锁失效的补位)" "⛔ git push" \
-  sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
+#   kimi 无 disallowedTools 等价物 ⇒ 锁静默失效,而「锁在」与「锁没了」在体检输出里原本同形。
+tout "#67 kimi 派单指令明写 git push 禁令(工具层锁失效的补位)" "⛔ git push" \
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/窗口记忆不算数/p" "$LANE"
+tout "#67 kimi 派单指令写明出站走 relay-msg(本引擎无 SendMessage)" "relay-msg --to" \
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/窗口记忆不算数/p" "$LANE"
 # 措辞随 #67④(2026-08-22 自述改实测)变过一次:原为「工具层锁**不生效**」,现为
 # 「工具层 push 锁不生效」+ git 层兜底实测结论。**断言意图不变**——doctor 必须当面点名
 # 工具层锁失效这件事,⛔ 只写在提交信息里;字面串跟着措辞走,⛔ 因为串对不上就删掉这条。
-# (2026-08-22 🔒 后)原 tfail「doctor 在 codex 引擎下点名 push 锁失效」随锁撤:那一行在锁下不可达,留着会逼人
-#   为了让测试绿而去解锁(测试不该对抗裁定)。push 锁的源码级断言仍在下方 #67④ 两条。
+# (2026-08-22)原「doctor 在 codex 引擎下点名 push 锁失效」随 codex 派工废除改为 kimi 版(见绊线①末条)。
 tout "#67 doctor 在 claude 引擎下旧文案逐字保留" "派工窗口钉:" \
   env LAIXIN_DISPATCH_ENGINE=claude "$LANE" doctor
 # * 绊线⑦(2026-08-22 实撞,创始人窗口修):`else` 写在 die 那一行的**行尾** ⇒ bash 把它当成 die 的
@@ -1111,8 +1125,9 @@ tout "#67 doctor 在 claude 引擎下旧文案逐字保留" "派工窗口钉:" \
 #   引擎=kimi 则 if/elif 都不成立而 else 已不存在 ⇒ **一个窗口都不建**。claude 路径不受影响 ⇒
 #   581 项测试全绿、doctor 全绿、`bash -n` 也过(语法合法)⇒ 潜伏两天:08-20 04:38「切 codex 失败」
 #   当时归因为 codex 自更新,实为本 bug。两条递进:①本处结构;②全文件同族 lint(bash -n 查不出)。
-tout "#67-fix codex 分支 die 行尾 ⛔ 挂 else(挂上=codex 起完再起 kimi;kimi 引擎零窗口)" "OK" \
-  bash -c 'n=$(grep -n "vwait_ready_codex .* || die" "'"$LANE"'" | head -1 | cut -d: -f1); [ "$(sed -n "$((n+1))p" "'"$LANE"'" | tr -d "[:space:]")" = "else" ] && echo OK'
+#   (2026-08-22 17:3x codex 派工分支废除后,结构变为 if claude … else kimi … fi;本条改钉新结构的两个关键字独立成行)
+tout "#67-fix 派工起窗 if/else/fi 结构:claude 分支 done 后独立一行 else、kimi 分支 die 后独立一行 fi(关键字挂在 die 行尾=被吞成参数)" "OK" \
+  bash -c 'b="$(sed -n "/^cmd_dispatch()/,/^}/p" "$1")"; n=$(grep -n "启动超时。查看:laixin-lane peek-d 40" <<< "$b" | head -1 | cut -d: -f1); k=$(grep -n "vwait_ready_kimi .* || die" <<< "$b" | head -1 | cut -d: -f1); [ -n "$n" ] && [ -n "$k" ] && [ "$(sed -n "$((n+1))p" <<< "$b" | tr -d "[:space:]")" = "done" ] && [ "$(sed -n "$((n+2))p" <<< "$b" | tr -d "[:space:]")" = "else" ] && [ "$(sed -n "$((k+1))p" <<< "$b" | tr -d "[:space:]")" = "fi" ] && echo OK' _ "$LANE"
 tout "#67-fix 全文件禁「引号行尾挂 else/fi/then/do」(同族一律被当参数吞掉)" "ZERO" \
   bash -c 'grep -nE "\"[[:space:]]+(else|fi|then|do|done)[[:space:]]*\$" "'"$LANE"'" || echo ZERO'
 # ⭐ 通道额度到线提醒(2026-08-22 立,创始人「先问机器化」):CC 双账号按额度轮换,而「该切了」
@@ -1150,11 +1165,12 @@ tout "#67④ push 锁自述改实测:⛔ 再写「待挪到 git 层」(钩子早
   bash -c 'grep -n "待 git pre-push hook" "'"$LANE"'" || echo ZERO'
 tout "#67④ push 锁判据=文件可执行且含 BU_NAME(⛔ 只看文件在:空壳钩子拦不住任何东西)" "BU_NAME" \
   bash -c 'sed -n "/工具层 push 锁不生效/,+2p" "'"$LANE"'"; sed -n "/_hookmiss=\"\" _hr/,+5p" "'"$LANE"'"'
-# ⭐ 绊线⑥:派单指令必须告诉 codex「回程不会弹进你的输入框」——否则它会干等一个永远不来的消息
-tout "#67 codex 派单指令写明回程走落盘+路径指针(⛔ 等它直接注入)" "那条路不存在" \
-  sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
-tout "#67 codex 派单指令写明 ctx 必须带 --engine codex(否则读到别人的数)" "ctx --engine codex" \
-  sed -n "/^DISPATCH_BRIEF_CODEX=/,/窗口记忆不算数/p" "$LANE"
+# ⭐ 绊线⑥:派单指令必须告诉非 claude 派工席「回程不会弹进你的输入框」——否则它会干等一个永远不来的消息
+#   (原 codex 版两条随 codex 派工废除改钉 kimi 版,断言意图不变)
+tout "#67 kimi 派单指令写明回程走落盘+路径指针(⛔ 等它直接注入)" "那条路不存在" \
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/窗口记忆不算数/p" "$LANE"
+tout "#67 kimi 派单指令写明 laixin-lane ctx 对本引擎无效(看自身 TUI 底栏 context%,⛔ 读到别人的数)" "对本引擎无效" \
+  sed -n "/^DISPATCH_BRIEF_KIMI=/,/窗口记忆不算数/p" "$LANE"
 
 # ── relay-msg:注入面自述可被逐条核(举证责任在实现方 ⛔ 在验收方)────────────────────
 # ⭐ 绊线⑦🔴(创始人明裁的边界,中继会亲自复核这一条):本命令只能向**一个**窗格注入=RELAY_WIN,
@@ -2538,8 +2554,8 @@ tout "来源优先级:LAIXIN_BOARD_SRC > LAIXIN_WINDOW > 窗口名推断 > 手�
   bash -c 'sed -n "/^caller_src()/,/^}/p" "'"$LANE"'"'
 t "来源优先级:推断排在两个显式变量之后" bash -c 'sed -n "/^caller_src()/,/^}/p" "'"$LANE"'" | grep -n "seat_src_infer" | cut -d: -f1 | { read -r n; [ "$n" -ge 4 ]; }'
 # 四处接管指令都要教到(此前一处没有 ⇒ 每任窗口都要重新踩一次)
-tout "接管指令:codex 版教了记看板的来源(⛔ 只靠事后 stderr 提示)" "来源会按窗口名自动标" \
-  bash -c 'sed -n "/^DISPATCH_BRIEF_CODEX=/,/^# 方案 C/p" "'"$LANE"'"'
+tout "接管指令:kimi 版教了记看板的来源(⛔ 只靠事后 stderr 提示;codex 版已随派工废除删除)" "来源会按窗口名自动标" \
+  bash -c 'sed -n "/^DISPATCH_BRIEF_KIMI=/,/^# ---- 派工权认领/p" "'"$LANE"'"'
 # ⚠️ 范围终点 ⛔ 用「窗口记忆不算数」:新加的行就在它下一行,会被截掉 ⇒ 断言红而代码是对的
 #   (当轮自撞;同族=拿一个"恰好在被测内容之前"的锚做范围终点)。改用下一个块的起始注释。
 tout "接管指令:relay 版教了记看板的来源" "来源按窗口名自动标" \
@@ -2719,7 +2735,7 @@ tout "codex:构造串与引入 kimi 前**逐字一致**(回归保护)" 'BU_NAME=
   source "'"$VKMF"'"; codex_launch_cmd d 9 "--x"'
 # ⛔ 在这里再写一条"未知引擎被拒":既有 #67 那条已覆盖,且它带 LAIXIN_SESSION 隔离;
 # 照抄时漏掉隔离 ⇒ 会在**真实** tmux 会话里跑起窗命令(2026-08-19 自撞,当轮发现并撤回)。
-tout "kimi:错误文案列出三种合法引擎(⛔ 只列两种)" "codex|claude|kimi" bash -c '
+tout "kimi:错误文案列出全部合法引擎(claude|kimi;codex 08-22 废除后只剩两种,⛔ 漏列 kimi)" "claude|kimi" bash -c '
   grep "未知派工引擎" "'"$LANE"'"'
 tout "kimi:BRIEF 禁 Agent/AgentSwarm(用子代理会绕过派工权锁且看板看不出)" "AgentSwarm" bash -c '
   sed -n "/^DISPATCH_BRIEF_KIMI=/,/^铁律/p" "'"$LANE"'"'

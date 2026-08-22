@@ -2353,6 +2353,29 @@ t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bas
 t "#105 接线:生产调用带 quotePath=false" bash -c 'grep -qF -- "quotePath=false log --name-only" "'"$LANE"'"'
 rm -rf "$V105"
 rm -rf "$V16" "$V16F2"
+# ── 看板来源自动推断(2026-08-22 监测中实撞)──────────────────────────────────────
+# dispatch(codex)记看板不带前缀 ⇒ 条目落成「未标注来源」(当日第 3 条)。根因**不在它**:
+# 三个接管指令与 RELAY_BRIEF 都没教过这件事,全靠 cmd_log 事后打一行 stderr 提示,
+# 而提示是事后的、且未必被读。⇒ 窗口名→角色是固定映射、免语义,直接推断。
+SRCF="$(mktemp)"; sed -n '/^seat_src_infer()/,/^}/p' "$LANE" > "$SRCF"
+t "来源推断:dispatch 窗口 → 派工窗口" bash -c 'source "'"$SRCF"'"; tmux(){ echo dispatch; }; TMUX_PANE=%9 seat_src_infer | grep -qx 派工窗口'
+t "来源推断:relay → 中继窗口" bash -c 'source "'"$SRCF"'"; tmux(){ echo relay; }; TMUX_PANE=%9 seat_src_infer | grep -qx 中继窗口'
+t "来源推断:verify-* → 验收窗口(前缀匹配 ⛔ 逐个片名硬编码)" bash -c 'source "'"$SRCF"'"; tmux(){ echo "verify-V0-2包①x"; }; TMUX_PANE=%9 seat_src_infer | grep -qx 验收窗口'
+t "来源推断:未知窗口名 → 空(推不出就是推不出 ⛔ 瞎猜一个)" bash -c 'source "'"$SRCF"'"; tmux(){ echo zz-unknown; }; [ -z "$(TMUX_PANE=%9 seat_src_infer)" ]'
+t "来源推断:不在 tmux 内 → 空(手开窗口照旧走提示那条路)" bash -c 'source "'"$SRCF"'"; tmux(){ echo dispatch; }; [ -z "$(TMUX_PANE= seat_src_infer)" ]'
+rm -f "$SRCF"
+# 显式给的来源**优先于推断**:重生路径(看门狗/resurrect)靠 LAIXIN_BOARD_SRC 声明自己是谁,
+# ⛔ 被窗口名推断覆盖成「派工窗口」——那会让「谁起的这个窗口」这条信息丢失。
+tout "来源优先级:LAIXIN_BOARD_SRC > LAIXIN_WINDOW > 窗口名推断 > 手工" "LAIXIN_BOARD_SRC" \
+  bash -c 'sed -n "/^caller_src()/,/^}/p" "'"$LANE"'"'
+t "来源优先级:推断排在两个显式变量之后" bash -c 'sed -n "/^caller_src()/,/^}/p" "'"$LANE"'" | grep -n "seat_src_infer" | cut -d: -f1 | { read -r n; [ "$n" -ge 4 ]; }'
+# 四处接管指令都要教到(此前一处没有 ⇒ 每任窗口都要重新踩一次)
+tout "接管指令:codex 版教了记看板的来源(⛔ 只靠事后 stderr 提示)" "来源会按窗口名自动标" \
+  bash -c 'sed -n "/^DISPATCH_BRIEF_CODEX=/,/^# 方案 C/p" "'"$LANE"'"'
+# ⚠️ 范围终点 ⛔ 用「窗口记忆不算数」:新加的行就在它下一行,会被截掉 ⇒ 断言红而代码是对的
+#   (当轮自撞;同族=拿一个"恰好在被测内容之前"的锚做范围终点)。改用下一个块的起始注释。
+tout "接管指令:relay 版教了记看板的来源" "来源按窗口名自动标" \
+  bash -c 'sed -n "/^RELAY_BRIEF=/,/laixin-lane log/p" "'"$LANE"'"'
 # ── 交付去重键:内容哈希 ⛔ mtime(2026-08-22 实撞)──────────────────────────────────
 # 原键是 mtime,于是 `touch` 一下就足以让**内容一字未变**的报告被当成新交付重投。当日实况:
 # dispatch 做空跑验证时 touch 过首片交付报告,事件总线 12:05 投一次、12:23 又投一次,

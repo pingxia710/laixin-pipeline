@@ -2990,6 +2990,61 @@ t "ev-loop:去抖判据在陈旧闸门之后(陈旧报告照旧记日志不投,�
   a=$(grep -n "跳过陈旧交付" <<< "$body" | head -1 | cut -d: -f1); b=$(grep -n "ev_unsettled" <<< "$body" | head -1 | cut -d: -f1)
   [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]' _ "$LANE"
 
+# ── #136 常驻循环随发布自换代 / #137 无燃料静默 / #138 M1 台账(2026-08-22 11B 监测后优化批)──────────
+T136="$(mktemp -d)"
+{ sed -n "/^loop_self_gen()/,/^}/p" "$LANE"; sed -n "/^loop_gen_record()/,/^}/p" "$LANE"; sed -n "/^loop_reload_due()/,/^}/p" "$LANE"; sed -n "/^loop_gen_label()/,/^}/p" "$LANE"; } > "$T136/f.sh"
+mkdir -p "$T136/rel/aaa" "$T136/rel/bbb" "$T136/rel/ccc" "$T136/out"
+printf '#!/bin/bash\necho a\n' > "$T136/rel/aaa/laixin-lane"; printf '#!/bin/bash\necho b\n' > "$T136/rel/bbb/laixin-lane"
+printf '#!/bin/bash\nif then fi\n' > "$T136/rel/ccc/laixin-lane"; : > "$T136/out/x"
+ln -s "$T136/rel/aaa/laixin-lane" "$T136/link"
+t "#136:软链未变 ⇒ 不到期" bash -c 'source "$1/f.sh"; ! loop_reload_due "$1/rel/aaa/laixin-lane" "$1/link" "$1/rel"' _ "$T136"
+t "#136:软链已指向另一个可用发布版 ⇒ 到期(exec 自换代)" bash -c 'source "$1/f.sh"; ln -sfn "$1/rel/bbb/laixin-lane" "$1/link"; loop_reload_due "$1/rel/aaa/laixin-lane" "$1/link" "$1/rel"' _ "$T136"
+t "#136:新目标 bash -n 不过 ⇒ 不到期(半截发布 ⛔ exec 进去自杀)" bash -c 'source "$1/f.sh"; ln -sfn "$1/rel/ccc/laixin-lane" "$1/link"; ! loop_reload_due "$1/rel/aaa/laixin-lane" "$1/link" "$1/rel"' _ "$T136"
+t "#136:指向发布目录之外 / 自身不是软链(开发直连)/ 记录为空 ⇒ 均不到期" bash -c 'source "$1/f.sh"
+  ln -sfn "$1/out/x" "$1/link"; ! loop_reload_due "$1/rel/aaa/laixin-lane" "$1/link" "$1/rel" || exit 1
+  ! loop_reload_due "$1/rel/aaa/laixin-lane" "$1/rel/aaa/laixin-lane" "$1/rel" || exit 2
+  ln -sfn "$1/rel/bbb/laixin-lane" "$1/link"; ! loop_reload_due "" "$1/link" "$1/rel"' _ "$T136"
+t "#136:loop_gen_label 发布路径取短名(目录名=commit 短 hash),非发布路径原样" bash -c 'source "$1/f.sh"; export LAIXIN_RELEASE_DIR="$1/rel"; [ "$(loop_gen_label "$1/rel/bbb/laixin-lane")" = bbb ] && [ "$(loop_gen_label /x/y)" = /x/y ]' _ "$T136"
+sed -n "/^loop_stale()/,/^}/p" "$LANE" > "$T136/stale.sh"
+t "#136:loop_stale 优先读 <loop>.gen——pid 相符且版本=软链现值 ⇒ 不落后;≠ ⇒ 落后;pid 不符回落 etime 判据" bash -c '
+  source "$1/stale.sh"; EV_DIR="$1/ev"; mkdir -p "$EV_DIR"
+  loop_pids(){ echo 4242; }; ps(){ :; }; etime_secs(){ echo 0; }
+  ln -sfn "$1/rel/bbb/laixin-lane" "$1/lbin"; export LAIXIN_RELEASE_BIN="$1/lbin"
+  echo "4242 $1/rel/bbb/laixin-lane" > "$EV_DIR/wd-loop.gen"; loop_stale wd-loop && exit 1
+  echo "4242 $1/rel/aaa/laixin-lane" > "$EV_DIR/wd-loop.gen"; loop_stale wd-loop || exit 2
+  echo "9999 $1/rel/aaa/laixin-lane" > "$EV_DIR/wd-loop.gen"; loop_stale wd-loop; [ $? -eq 1 ]' _ "$T136"
+t "#136:两条常驻循环都挂了自换代钩(记 gen + loop_reload_due + exec 同名循环)" bash -c '
+  w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"; e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
+  grep -q "loop_gen_record wd-loop" <<< "$w" && grep -q "loop_reload_due" <<< "$w" && grep -qF "exec \"\$0\" wd-loop" <<< "$w" &&
+  grep -q "loop_gen_record ev-loop" <<< "$e" && grep -q "loop_reload_due" <<< "$e" && grep -qF "exec \"\$0\" ev-loop" <<< "$e"' _ "$LANE"
+t "#136:release 文案改口——不再写「仍需 stop && start」为唯一路径" bash -c 'b="$(sed -n "/^cmd_release()/,/^}/p" "$1")"; grep -q "自换代" <<< "$b"' _ "$LANE"
+rm -rf "$T136"
+
+T137="$(mktemp -d)"; sed -n "/^wd_fuel()/,/^}/p" "$LANE" > "$T137/f.sh"
+t "#137:wd_fuel 全无 ⇒ 空;ready 片 / 待认领 P / 在跑 verify 窗 / 转办 outbox / C 轨起且有片 各=有燃料;E 态不算;总表不可读按有燃料" bash -c '
+  source "$1/f.sh"; SESSION=s; TABLE="$1/table.md"; : > "$TABLE"; EV_PENDING="$1/pending"; RELAY_OUTBOX="$1/outbox"; : > "$EV_PENDING"; : > "$RELAY_OUTBOX"
+  ev_next_ready(){ :; }; win_exists(){ return 1; }; tmux(){ :; }
+  [ -z "$(wd_fuel)" ] || { echo "全无应为空:$(wd_fuel)"; exit 1; }
+  ev_next_ready(){ [ "$1" = B ] && echo "某片"; }; grep -q "B:某片" <<< "$(wd_fuel)" || exit 2; ev_next_ready(){ :; }
+  echo "1|x|E" > "$EV_PENDING"; [ -z "$(wd_fuel)" ] || exit 3
+  echo "1|x|P" >> "$EV_PENDING"; grep -q "待认领" <<< "$(wd_fuel)" || exit 4; : > "$EV_PENDING"
+  tmux(){ echo "verify-某片"; }; grep -q "在跑验收" <<< "$(wd_fuel)" || exit 5; tmux(){ :; }
+  echo "1|id|to|x" > "$RELAY_OUTBOX"; grep -q "转办" <<< "$(wd_fuel)" || exit 6; : > "$RELAY_OUTBOX"
+  win_exists(){ [ "$1" = lane-c ]; }; ev_next_ready(){ [ "$1" = C ] && echo "C片"; }; grep -q "C:C片" <<< "$(wd_fuel)" || exit 7
+  win_exists(){ return 1; }; [ -z "$(wd_fuel)" ] || exit 8
+  rm -f "$TABLE"; grep -q "不可读" <<< "$(wd_fuel)"' _ "$T137"
+t "#137:wd_loop 无燃料钩位置正确——在 dispatch 死亡重起之后(死了照重起)、在静默重起分支之前;且燃料回归时封顶静默 ⛔ 直接触发重起" bash -c '
+  w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"
+  a=$(grep -n "if ! dispatch_alive; then" <<< "$w" | head -1 | cut -d: -f1); b=$(grep -n "无燃料静默" <<< "$w" | head -1 | cut -d: -f1); c=$(grep -n "\"\$silent\" -ge \"\$restart_after\"" <<< "$w" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] &&
+  grep -qF "[ \"\$silent\" -gt \"\$nudge_after\" ] && silent=\"\$nudge_after\"" <<< "$w" && grep -q "wd_fuel" <<< "$w"' _ "$LANE"
+rm -rf "$T137"
+
+t "#138:M1 登记同片去重(已在台账不重复登记)+ E 态超期出清(EV_PENDING_TTL)" bash -c '
+  d="$(sed -n "/^ev_deliver()/,/^}$/p" "$1")"; e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
+  grep -qF "grep -qF \"|\${_slug}|\" \"\$EV_PENDING\"" <<< "$d" && grep -q "不重复登记" <<< "$d" &&
+  grep -q "EV_PENDING_TTL" <<< "$e" && grep -q "M1 台账出清" <<< "$e"' _ "$LANE"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

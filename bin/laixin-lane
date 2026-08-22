@@ -1687,7 +1687,7 @@ cmd_release(){  # #25 部署原子化:把仓库**已提交版**发布到版本�
   # 两次实撞同根(07:17 verify-from 尾部假语法错 / 11:2x 换代竞态):~/.local/bin/laixin-lane 软链
   # 直指仓库工作树 bin/laixin-lane,运行中脚本被就地改写 ⇒ bash 逐段续读的偏移落进新内容中间。
   # 发布=已提交版复制到 ~/.local/libexec/laixin-lane-releases/laixin-lane-<short-hash> + 原子换链:
-  # 换链后运行中的旧进程握旧 inode 安全跑完;常驻循环(ev/wd)换代仍走 stop/start(loop_stale 提示)。
+  # 换链后运行中的旧进程握旧 inode 安全跑完;常驻循环(ev/wd)在下一拍自换代(#136;loop_stale 提示兜老循环)。
   # 原子方案选型(本机 macOS/bash 3.2,无 mv -T 无 GNU coreutils):
   #   ln -s 建临时链 + mv -f 临时链→正式链。BSD mv 在「目标存在且不解析为目录」时走 rename(2),
   #   POSIX 保证原子替换;ln -sfn 在 macOS 是 unlink+symlink 两步,中间有路径空窗 ⛔ 用。
@@ -1767,7 +1767,7 @@ $(head -5 <<< "$dirty")"
   echo "   软链:$lbin"
   echo "     旧 → $old"
   echo "     新 → $(readlink "$lbin")"
-  echo "   运行中的旧进程握旧 inode 不受影响;常驻循环(ev/wd)换代仍需 stop && start(#20⑥)"
+  echo "   运行中的旧进程握旧 inode 不受影响;常驻循环(ev/wd)下一拍自换代(#136;e8f6cc4 及更早起的老循环仍需 stop && start,doctor 代龄项会提示)"
   # 兄弟脚本逐个原子换链(同款 ln -s 临时 + mv -f;失败只警不撤——主脚本已换链成功,
   # ⛔ 把"兄弟没换成"静默吞掉:那正是本次要根治的形态)
   for sib in $sibs; do
@@ -2504,7 +2504,12 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
     # 卡住告警(verify-* 静默监视)+人工巡检兜,⛔ 复用一个判据方向相反的机制。
     if [ "$kind" = "交付" ]; then   # M1:登记待认领(slug 取报告名同 verify-from 口径)
       local _slug; _slug="$(echo "$text" | grep -oE '[^/]+\.md' | head -1 | sed -E 's/\.md$//; s/(验收记录|-?交付报告)$//; s/^来信平台-//' | tr ' /' '--' | cut -c1-24)"
-      [ -n "$_slug" ] && printf '%s|%s|P\n' "$(date +%s)" "$_slug" >> "$EV_PENDING"
+      if [ -n "$_slug" ]; then
+        # #138:同片重投(整改重交/去抖漏网)⛔ 各登一条——已在台账则不重复登记(保留最早那条,升级阈值按首投算;
+        #   实见 08-22 D9D10D11 片同片 5 条、M1 销账连刷 5 行)
+        if [ -s "$EV_PENDING" ] && grep -qF "|${_slug}|" "$EV_PENDING" 2>/dev/null; then ev_log "M1 已在台账不重复登记:${_slug}"
+        else printf '%s|%s|P\n' "$(date +%s)" "$_slug" >> "$EV_PENDING"; fi
+      fi
     fi
   else
     # #60①:回执与交付同为**事实**(落盘即已发生),dispatch 不在时同走 spool 暂存 ⛔ 丢弃;
@@ -2579,6 +2584,7 @@ ev_loop(){
   # (2026-08-13 实撞两次:12:06 起 60s 即死、重启后再死;窗口还在 ⇒ status/doctor 全报假绿灯)
   set +e; set +o pipefail
   mkdir -p "$EV_DIR"
+  local _ev_gen; _ev_gen="$(loop_self_gen)"; loop_gen_record ev-loop   # #136
   # 基线只在首次建立;重启保留旧基线 ⇒ 死亡/重启期间落盘的交付会在下一 tick 被 diff 出来补投,不再永久丢失
   [ -s "$EV_SEEN" ] || ev_scan_deliveries > "$EV_SEEN"
   # ⚠️ **格式迁移必须静默重建 ⛔ 回放**(2026-08-22 去重键 mtime→内容哈希):旧基线第二段是纯数字
@@ -2598,6 +2604,12 @@ ev_loop(){
   local cur f m lastline vw _rid _ovd _wd_last_try=0 _now2
   while true; do
     sleep "$EV_TICK"
+    # #136 自换代(同 wd_loop):release 换链后的下一拍 exec 新版;seen/pending/heartbeat 全在文件里,零丢失
+    if loop_reload_due "$_ev_gen" "$0"; then
+      ev_log "发布换代 $(loop_gen_label "$_ev_gen")→$(loop_gen_label "$(readlink "$0")"),exec 自换代(#136)"
+      board "事件总线" "自换代:发布版 $(loop_gen_label "$_ev_gen")→$(loop_gen_label "$(readlink "$0")")(#136;基线/台账在文件里零丢失)"
+      exec "$0" ev-loop
+    fi
     date +%s > "$EV_HB"
     # —— 看门狗反向守护(2026-08-22 生产级:自愈链的根此前无人守)——————————————
     # 🔴 wd 管 ev / relay / dispatch,而 **wd 自己死了没有任何东西管它**;更要命的是
@@ -2626,6 +2638,11 @@ ev_loop(){
       : > "$EV_PENDING.new"
       while IFS='|' read -r _pe _ps _pst; do
         [ -n "$_ps" ] || continue
+        # #138:E 态(已升级提醒过)超 EV_PENDING_TTL(默认 7 天)出清——两条销账判据都够不着的条目(非片类报告无 verify 窗、
+        #   片名含「交付报告」使 glob 对不上)此前永不退出台账(实见 08-19~21 五条残留)。超期出清 ⛔ 静默:记一行日志。
+        if [ "$_pst" = "E" ] && [ $(( _now - _pe )) -ge "${EV_PENDING_TTL:-604800}" ]; then
+          ev_log "M1 台账出清:${_ps}(E 态已 $(( (_now-_pe)/86400 )) 天,超期不再跟踪)"; continue
+        fi
         # 🔴 窗口名必须经 vwin 转义后再比(2026-08-22):vwin 已把片名里的 tmux 目标字符(. : % $ @)
         #   换成 `-`,而这里原先拼的是**未转义的原片名** ⇒ 凡片名含点(如 `V0.2包①…`)必然对不上,
         #   M1 会 100% 误报「无人认领」。**这是 vwin 修复的连带影响,同批补上 ⛔ 留给下一个人撞。**
@@ -2839,15 +2856,53 @@ etime_secs(){  # <ps -o etime= 串([[dd-]hh:]mm:ss)> → stdout=秒数
   else echo $(( (10#$d*24*60+10#$a)*60+10#$b )); fi   # 无小时段:a=分 b=秒(10# 防 08/09 被当八进制)
 }
 
+# ── #136 常驻循环随发布自换代(2026-08-22 11B 监测登记:当日 29 次提交、26 次人工 watchdog/events stop&start,
+#   每次换代还顺带重置静默计时/心跳截止/交付基线)。机理:release 是「新版落新目录+原子换链」,旧版文件从不被改写
+#   ⇒ 循环在拍末发现软链已指向别的发布版时 exec "$0" <loop> 即安全换代(内核按软链现值装载新版;状态全在文件里,
+#   内存计数归零=与手工 stop/start 同形)。⛔ 用 etime 判代龄——exec 不换 pid、etime 不归零,故循环自己把
+#   「pid 版本路径」记进 <loop>.gen,loop_stale 优先读它。开发直连态($0=仓库路径,非软链)⛔ 自动跳到发布版。
+loop_self_gen(){  # → stdout=本进程实际运行的版本路径($0 经软链解析一层;非软链=原样)
+  local t; t="$(readlink "$0" 2>/dev/null || true)"; printf '%s' "${t:-$0}"
+}
+loop_gen_record(){  # <loop名> 写 EV_DIR/<loop>.gen = "<pid> <版本路径>"(失败不致死:它只服务 loop_stale 的精确判据)
+  mkdir -p "$EV_DIR" 2>/dev/null || true
+  printf '%s %s\n' "$$" "$(loop_self_gen)" > "$EV_DIR/$1.gen" 2>/dev/null || true
+}
+loop_reload_due(){  # <启动时版本路径> <自身路径(传 $0)> [发布目录] → 0=软链已指向发布目录里的**另一个可用版本**,该 exec 自换代
+  # 不到期的情形全部显式:自身不是软链(开发直连)/软链读不到/指向发布目录之外/没变/新目标不存在或 bash -n 不过
+  #(失效降级 ⛔ 反向:发布目录被清、半截发布,老循环照跑,⛔ exec 进坏路径自杀)。
+  local was="$1" self="$2" rel_dir="${3:-${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}}" now
+  [ -L "$self" ] || return 1
+  now="$(readlink "$self" 2>/dev/null)" || return 1
+  case "$now" in "$rel_dir"/*) ;; *) return 1 ;; esac
+  [ -n "$was" ] || return 1
+  [ "$now" != "$was" ] || return 1
+  [ -f "$now" ] && [ -r "$now" ] && bash -n "$now" >/dev/null 2>&1
+}
+loop_gen_label(){  # <版本路径> → stdout=发布短名(发布目录下一级目录名=commit 短 hash;非发布路径原样)
+  case "$1" in "${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"/*) basename "$(dirname "$1")" ;; *) printf '%s' "$1" ;; esac
+}
+
 loop_stale(){  # <循环名 ev-loop|wd-loop> → 0=在跑的循环比脚本旧(驻内存的循环体不随文件更新换代)
   # 复盘页#20⑥破案(2026-08-19):ev-loop 自 08-18 09:15 跑的是旧代码,之后全部修复(含#1心跳)
   # 从未生效——#1 自己注明「下次重启起效」而重启从未发生。常驻循环的版本升级需要显式换代,
   # 本函数让 status/doctor 看得见「代龄落后」,不再靠人记得。etime 换算抽在 etime_secs。
-  local pid et up script_e
+  local pid et up script_e gen_f gen_pid gen_path lbin_t
   # ⛔ pgrep -f "laixin-lane $1" | head -1(2026-08-19 晚,relay 第十四任核出、方案窗口第十四任修):宽模式会命中 relay
   #   的 deny 形态命令行,head -1 按 pid 升序取到谁全凭运气——取错(量成 relay 的年龄)与取对在输出上同形。
   #   改走 loop_pids(与判活同判据);同族第三处 :355 的 CDP 端口 pkill 模式含端口号前缀,未见误伤,留待 11B 复核。
   pid="$(loop_pids "$1" | head -1)"; [ -n "$pid" ] || return 1
+  # #136:循环自己记了「pid 版本路径」⇒ 精确比对软链现值(exec 自换代后 pid 不变、etime 不归零,下面的 etime 判据会永远报落后);
+  #   gen 的 pid 与在跑 pid 不符(老版本循环/残留文件)⇒ 回落 etime 判据;软链读不到 ⇒ 不可判 ⛔ 判落后。
+  gen_f="$EV_DIR/$1.gen"
+  if [ -s "$gen_f" ]; then
+    read -r gen_pid gen_path < "$gen_f" || true
+    if [ "$gen_pid" = "$pid" ] && [ -n "$gen_path" ]; then
+      lbin_t="$(readlink "${LAIXIN_RELEASE_BIN:-$HOME/.local/bin/laixin-lane}" 2>/dev/null)" || return 1
+      [ -n "$lbin_t" ] || return 1
+      [ "$gen_path" != "$lbin_t" ]; return $?
+    fi
+  fi
   et="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"; [ -n "$et" ] || return 1
   up="$(etime_secs "$et")"
   script_e="$(stat -L -f %m "$0" 2>/dev/null)"; [ -n "$script_e" ] || return 1   # -L 必须:$0 经 ~/.local/bin 软链调用,不带 -L 取的是链自身 8月13 的 mtime,永远判不出新
@@ -4278,16 +4333,43 @@ ctx_watch_tick() {
 }
 
 # 看门狗主循环:纯 bash,不累不崩没有上下文,是整条流水线里唯一不会"忘"的东西
+# ── #137 无燃料静默(2026-08-22 11B 监测登记)──────────────────────────────────────────────
+#   实证:08-22 02:19~07:23 三轨全空、排队节零可发,看门狗仍每 30 分钟戳一次派工窗口(11 次),同时段看板零派工产出
+#   =11 轮 Opus 空转。与中继的「反应式角色,没有缺口时静默就是健康态」同一条原则(见 wd_loop 0.5 段注)。
+#   燃料判据全走文件/窗口枚举 ⛔ 问 dispatch:①排队节有 ready 片(ev_next_ready A/B;C 轨起了才算)②有投出未认领的交付
+#   (pending P 态)③有在跑的 verify-*/relay-* 窗 ④转办 outbox 非空;⑤执行总表自上次判定后被改过(解析器漏判时给一次
+#   机会,在 wd_loop 内判)。任一成立=有燃料,照旧 15 分钟戳/30 分钟重起;全无 ⇒ 不戳、⛔ 按静默重起(死了照重起:
+#   dispatch_alive 在本段之前)。失效降级:总表读不到 ⇒ 按有燃料(⛔ 因探针失效而静默)。
+wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在 set -e 下用命令替换接)
+  local src="" n
+  if [ ! -r "$TABLE" ]; then printf '%s' "总表不可读(探针失效按有燃料)"; return 0; fi
+  n="$(ev_next_ready A 2>/dev/null || true)"; [ -n "$n" ] && src="A:${n}"
+  n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }B:${n}"
+  if win_exists "lane-c"; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }C:${n}"; fi
+  if [ -s "$EV_PENDING" ] && grep -q '|P$' "$EV_PENDING" 2>/dev/null; then src="${src:+$src }待认领交付"; fi
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qE '^(verify|relay)-'; then src="${src:+$src }在跑验收/中继窗"; fi
+  if [ -s "$RELAY_OUTBOX" ]; then src="${src:+$src }转办待回执"; fi
+  printf '%s' "$src"; return 0
+}
+
 wd_loop() {
   local interval="${WD_INTERVAL:-60}"      # 秒
   local nudge_after="${WD_NUDGE:-900}"     # 静默多久先戳一下(15 分钟)
   local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
   local max_restart="${WD_MAX_RESTART:-3}"
   local last_hash="" silent=0 nudged=0 restarts=0 ctx_tick=0
+  local _gen nofuel=0 fuel_tbl_m=""; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
+  fuel_tbl_m="$(stat -f %m "$TABLE" 2>/dev/null || echo '')"                              # #137:启动不算「总表有变动」
   echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
   board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
   while true; do
     sleep "$interval"
+    # #136 自换代:release 换链后的下一拍 exec 新版(同窗口同 pid;内存计数归零=与手工 stop/start 同形)
+    if loop_reload_due "$_gen" "$0"; then
+      echo "[$(date '+%F %T')] 发布换代 $(loop_gen_label "$_gen")→$(loop_gen_label "$(readlink "$0")"),exec 自换代(#136)" >> "$WD_LOG"
+      board "看门狗" "自换代:发布版 $(loop_gen_label "$_gen")→$(loop_gen_label "$(readlink "$0")")(#136;同窗口同 pid,计数归零)"
+      exec "$0" wd-loop
+    fi
     # —— 0. 事件总线也要活着(它给派工窗口喂事件) ——
     # #44 纪律:cmd_events start/stop 现无 die 路径,但保命循环里的子调用一律子 shell 隔离(防将来加 die)。
     ev_alive || { board "看门狗" "事件总线循环已死(窗口在≠活着),重启"; ( cmd_events stop ) >/dev/null 2>&1 || true; ( cmd_events start ) >/dev/null 2>&1 || true; }
@@ -4388,6 +4470,26 @@ wd_loop() {
     # 各轨都在干活 ⇒ 派工窗口静止是正常等待,不打扰
     # #60②:lane-c 可选轨——**起了才算数**(在跑且空闲同样该被过问),没起不挡正常等待判定
     if lane_busy a && lane_busy b && { ! win_exists "lane-c" || lane_busy c; }; then continue; fi
+    # #137:三轨**全空**且无燃料 ⇒ 健康静默:不戳、⛔ 按静默重起(见 wd_fuel 注);燃料一出现立刻按「已到戳点」处理
+    if ! lane_busy a && ! lane_busy b && { ! win_exists "lane-c" || ! lane_busy c; }; then
+      local _fuel="" _tm=""
+      _tm="$(stat -f %m "$TABLE" 2>/dev/null || echo '')"
+      if [ -n "$_tm" ] && [ "$_tm" != "$fuel_tbl_m" ]; then _fuel="总表有变动($(date -r "$_tm" '+%H:%M'))"; fuel_tbl_m="$_tm"; else _fuel="$(wd_fuel)"; fi
+      if [ -z "$_fuel" ]; then
+        if [ "$nofuel" -eq 0 ]; then
+          nofuel=1
+          echo "[$(date '+%F %T')] 无燃料静默:三轨全空、排队节零可发、无待认领/在跑验收/转办 ⇒ 不戳不按静默重起(#137;燃料出现即恢复)" >> "$WD_LOG"
+          board "看门狗" "无燃料静默(#137):三轨全空且排队节零可发、无待认领/在跑验收/转办——派工窗口静默属健康态,不戳不按静默重起;燃料出现即恢复 15 分钟戳节奏"
+        fi
+        continue
+      fi
+      if [ "$nofuel" -eq 1 ]; then
+        nofuel=0
+        echo "[$(date '+%F %T')] 燃料出现(${_fuel}),恢复戳/重起节奏;静默已 ${silent}s ⇒ 按到戳点处理" >> "$WD_LOG"
+        [ "$silent" -gt "$nudge_after" ] && silent="$nudge_after"   # ⛔ 把无燃料期累计的静默直接算进重起阈值
+        nudged=0
+      fi
+    fi
     if [ "$silent" -ge "$restart_after" ]; then
       if [ "$restarts" -ge "$max_restart" ]; then
         board "看门狗" "⛔ 派工窗口持续无响应但已达重起上限,等人工介入"; continue

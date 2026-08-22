@@ -34,6 +34,10 @@ done
 # caller_src 是 #45 引入的;尚不存在时给空壳,让本驱动对 #45 之前的代码也能跑
 grep -q '^caller_src()' "$LANE" && sed -n '/^caller_src()/,/^}/p' "$LANE" >> "$TMPD/fns.sh" \
   || printf 'caller_src(){ echo 手工; }\n' >> "$TMPD/fns.sh"
+# #136/#137(2026-08-22)引入的循环内新依赖:自换代四函数 + 燃料判据;对之前的代码同样可跑(缺则不抽)
+for fn in loop_self_gen loop_gen_record loop_reload_due loop_gen_label wd_fuel; do
+  grep -q "^${fn}()" "$LANE" && sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$TMPD/fns.sh"
+done
 
 # —— fixture 桩(全部指向沙盒;定义在 source 之后 ⇒ 覆盖顺带抽进来的真实小函数) ——
 write_stubs() {  # 落成文件供本进程与 guard 模式的子 bash 共用
@@ -55,6 +59,10 @@ ensure_headless_settings(){ :; }
 win_exists()  { return 1; }
 vwait_ready() { return 1; }     # 沙盒起不了真 claude ⇒ 起窗必然走「启动超时」失败路径
 board(){ printf '| %s | %s |\n' "$1" "$2" >> "$BOARD_F" 2>/dev/null || true; }
+# #136/#137:wd_loop 启动即读 TABLE mtime、记 gen 文件;沙盒里给空表与沙盒 EV_DIR(set -u 下缺它们宿主会静默退出)
+#   ⚠️ guard 模式在独立子 bash 里 source 本文件,TMPD 不在其环境(set -u 下裸 $TMPD 即死)⇒ 自备沙盒目录
+_SB="${TMPD:-$(mktemp -d)}"; TABLE="$_SB/table.md"; : > "$TABLE"; EV_DIR="$_SB/ev"; mkdir -p "$EV_DIR"; EV_PENDING="$EV_DIR/pending"; RELAY_OUTBOX="$EV_DIR/outbox"
+ev_next_ready(){ :; }
 SESSION=lx-iso-44; RELAY_WIN=relay; DISPATCH_WIN=dispatch; WATCHDOG_WIN=watchdog
 RELAY_DENY=("Bash(x)"); RELAY_BRIEF=brief; RELAY_CDP_PORT=0; RELAY_MODEL=m
 STUBS

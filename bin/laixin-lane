@@ -42,6 +42,11 @@
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane channel-of <会话名>  它在哪个 CC 通道(配置目录)与账号;查不到即说查不到 ⛔ 猜
+#   laixin-lane quota                  两账号额度 + 派工席所在账号 + 哨兵线(仪表盘读不到即说读不到 ⛔ 读成充裕)
+#   laixin-lane quota-tick             手动让额度哨兵跑一拍(演练/换阈值后验证;LAIXIN_BOARD 可指向沙盒看板)
+#   laixin-lane account-switch --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force]
+#                                    按剧本切账号(2026-08-23 机器化):①写开关 ②方案窗口半边给人 ③dispatch 收班令→等收班条→--fresh 新账号
+#                                    ④relay 托管中则跟走。看门狗额度哨兵到 96%/98% 只提醒(WD 日志+看板+桌面通知)⛔ 自动切。
 #   laixin-lane handover-mode <继任> <前任>  交班形态:同账号正常交班 or 跨账号(判不了会直说)
 #   laixin-lane whoholds             谁当前持有派工权
 #   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
@@ -3503,6 +3508,90 @@ channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行�
 #   (2026-08-22 实测两通道均有此字段),⛔ 靠 Keychain 后缀反推(要授权,无人值守下会挂)。
 # 🔴 失效必须降级 ⛔ 反向(三约束②):仪表盘没起/取不到/字段缺 ⇒ 一律显示「读不到」,
 #   ⛔ 显示 0% 也 ⛔ 静默跳过 —— 「额度充裕」与「没测到」在屏幕上必须长得不一样。
+# ── 额度哨兵 + 账号切换机器化(2026-08-23;创始人「先把这个机制做好,再把这个机制留下来后面复用」)──────────────
+#   剧本(创始人 08-22 10:11 议定 + 08-23 00:3x/00:5x 定线与顺序):切换点=派工席所在账号周额度到 LAIXIN_QUOTA_SWITCH(默认 98%=剩 2%)
+#   ①方案窗口先切(人操作:新账号空白窗接新包,老窗不关只收存量,按包划分裁定权)②再拉新 dispatch(机器:收班令→等收班条→dispatch --fresh)
+#   ③relay 若托管中整个跟新账号走。**哨兵只提醒**(看门狗每 5 拍读一次仪表盘;每条线每个重置窗口提醒一次=WD 日志+看板+桌面通知)
+#   ⛔ 哨兵自动切——切换=对在班席位下令+改拓扑,必须由人或受创始人授权者跑 `laixin-lane account-switch`(tool-must-not-command-live-seats)。
+QUOTA_WARN="${LAIXIN_QUOTA_WARN:-96}"       # 预警线(创始人 08-23:96 提醒一次「还差几点」)
+QUOTA_SWITCH="${LAIXIN_QUOTA_SWITCH:-98}"   # 切换线(创始人 08-23:用到 98%=剩 2% 时切派工席)
+QUOTA_ALERTED="$EV_DIR/quota.alerted"       # 已提醒登记 mail|线|重置时刻(同一重置窗口内每线只提醒一次)
+quota_snapshot(){  # → stdout 每账号一行 "mail|weekly%|weekly_reset|session%|session_reset";读不到退 1(⛔ 读成充裕)
+  # LAIXIN_USAGE_RAW=<json 文件> 时直接读文件(测试/离线);否则 2s 探活 + 15s 拉取(与 channel_quota_verdict 同一对超时)
+  local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}" raw=""
+  if [ -n "${LAIXIN_USAGE_RAW:-}" ]; then raw="$(cat "$LAIXIN_USAGE_RAW" 2>/dev/null || true)"
+  else
+    local probe_url="${LAIXIN_USAGE_PROBE:-${url%/api/usage}/}"
+    [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$probe_url" 2>/dev/null || true)" = "200" ] || return 1
+    raw="$(curl -s -m "${LAIXIN_USAGE_TIMEOUT:-15}" "$url" 2>/dev/null || true)"
+  fi
+  [ -n "$raw" ] || return 1
+  printf '%s' "$raw" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(1)
+n=0
+for a in d.get("official_accounts") or []:
+    m=a.get("account"); lim={l.get("kind"):l for l in ((a.get("data") or {}).get("limits") or [])}
+    w=lim.get("weekly_all") or {}; s=lim.get("session") or {}
+    if not m or w.get("percent") is None: continue
+    print("%s|%s|%s|%s|%s" % (m, w.get("percent"), (w.get("resets_at") or "")[:16], s.get("percent") if s.get("percent") is not None else "?", (s.get("resets_at") or "")[:16])); n+=1
+sys.exit(0 if n else 1)'
+}
+cfgdir_mail(){  # <配置目录> → stdout=账号邮箱(读 <目录>/.claude.json oauthAccount.emailAddress);读不到空
+  python3 -c 'import json,sys
+try: print(((json.load(open(sys.argv[1]+"/.claude.json")).get("oauthAccount") or {}).get("emailAddress")) or "")
+except Exception: print("")' "$1" 2>/dev/null
+}
+launcher_cfgdir(){  # <入口名> → stdout=配置目录(claude→~/.claude-official,claude-b→~/.claude-b;其它读包装器文件里那一行)
+  local p
+  case "$1" in
+    claude) printf '%s' "$HOME/.claude-official" ;;
+    claude-b) printf '%s' "$HOME/.claude-b" ;;
+    *) p="$(command -v "$1" 2>/dev/null || true)"; [ -n "$p" ] && { grep -m1 -oE 'CLAUDE_OFFICIAL_CONFIG_DIR="?[^" \\]+' "$p" 2>/dev/null | cut -d= -f2- | tr -d '"' || true; } ;;
+  esac
+}
+dispatch_cfgdir(){  # → stdout=在班 dispatch 所在配置目录;不在班/查不到 ⇒ CLAUDE_LAUNCHER 指向的目录
+  local r
+  if r="$(channel_of "$DISPATCH_WIN" 2>/dev/null)"; then printf '%s' "${r%% *}"; else launcher_cfgdir "$CLAUDE_LAUNCHER"; fi
+}
+quota_alert_due(){  # <pct> <mail> <reset> [登记文件] → stdout=本次新到的线(每行一个)并登记;无新到零输出;恒返 0
+  local pct="$1" mail="$2" reset="$3" f="${4:-$QUOTA_ALERTED}" th
+  case "$pct" in ''|*[!0-9]*) return 0 ;; esac
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true; touch "$f" 2>/dev/null || true
+  for th in "$QUOTA_WARN" "$QUOTA_SWITCH"; do
+    [ "$pct" -ge "$th" ] || continue
+    grep -qxF "${mail}|${th}|${reset}" "$f" 2>/dev/null && continue
+    printf '%s|%s|%s\n' "$mail" "$th" "$reset" >> "$f"
+    echo "$th"
+  done
+  return 0
+}
+desktop_notify(){  # <标题> <正文> 桌面通知(macOS osascript;失败静默——它只是提醒的一条腿,看板/WD 日志才是主腿)
+  command -v osascript >/dev/null 2>&1 || return 0
+  osascript -e "display notification \"$(printf '%s' "$2" | tr '"' "'" | cut -c1-200)\" with title \"$(printf '%s' "$1" | tr '"' "'")\"" >/dev/null 2>&1 || true
+  return 0
+}
+quota_sentinel_tick(){  # 看门狗每 N 拍调一次:读派工席所在账号的周额度,到线提醒一次;**⛔ 任何切换/收班动作**(只报不动)
+  local snap cfg mail row pct reset th
+  snap="$(quota_snapshot 2>/dev/null)" || return 0        # 仪表盘读不到 ⇒ 本拍静默(doctor 会报「读不到」,⛔ 在此每 5 分钟刷屏)
+  cfg="$(dispatch_cfgdir)"; [ -n "$cfg" ] || return 0
+  mail="$(cfgdir_mail "$cfg")"; [ -n "$mail" ] || return 0
+  row="$(grep -F "${mail}|" <<< "$snap" | head -1 || true)"; [ -n "$row" ] || return 0
+  pct="$(cut -d'|' -f2 <<< "$row")"; reset="$(cut -d'|' -f3 <<< "$row")"
+  for th in $(quota_alert_due "$pct" "$mail" "$reset"); do
+    if [ "$th" = "$QUOTA_SWITCH" ]; then
+      echo "[$(date '+%F %T')] 🔴 额度哨兵:派工席账号 ${mail}(${cfg##*/})周额度 ${pct}% ≥ 切换线 ${th}% —— 按剧本切账号:laixin-lane account-switch --to <另一入口>(⛔ 哨兵自动切)" >> "$WD_LOG"
+      board "看门狗" "🔴 额度哨兵:派工席账号 ${mail}(${cfg##*/})周额度 ${pct}% 已到切换线 ${th}%(重置 ${reset})——按创始人剧本:①方案窗口先切(人)②laixin-lane account-switch --to <另一入口>(执行者=受授权者)③relay 跟新账号;⛔ 任何席位据额度自行切"
+      desktop_notify "laixin 额度哨兵" "派工席账号 ${mail} 周额度 ${pct}%,到切换线 ${th}%:该切账号了"
+    else
+      echo "[$(date '+%F %T')] ⚠️ 额度哨兵:派工席账号 ${mail} 周额度 ${pct}% ≥ 预警线 ${th}%(切换线 ${QUOTA_SWITCH}%)" >> "$WD_LOG"
+      board "看门狗" "⚠️ 额度哨兵:派工席账号 ${mail}(${cfg##*/})周额度 ${pct}% 过预警线 ${th}%,离切换线 ${QUOTA_SWITCH}% 还差 $(( QUOTA_SWITCH - pct )) 点(重置 ${reset})"
+      desktop_notify "laixin 额度哨兵" "派工席账号 ${mail} 周额度 ${pct}%,离 ${QUOTA_SWITCH}% 切换线还差 $(( QUOTA_SWITCH - pct )) 点"
+    fi
+  done
+  return 0
+}
 CHANNEL_QUOTA_WARN="${LAIXIN_CHANNEL_QUOTA_WARN:-80}"
 channel_quota_verdict(){
   local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}"
@@ -4381,6 +4470,91 @@ ${text}"
   fi
 }
 
+cmd_quota(){  # 两账号额度 + 派工席所在账号 + 哨兵线(快速看一眼;doctor §4 有同款判定与「读不到」降级)
+  local snap cfg mail m w wr sr sp
+  if ! snap="$(quota_snapshot)"; then echo "额度:用量仪表盘读不到(未起或拉取超时)⇒ 不适用 ⛔ 读成充裕;起它:01A 项目包 cc-usage-monitor"; return 1; fi
+  cfg="$(dispatch_cfgdir)"; mail="$(cfgdir_mail "$cfg")"
+  local how; if channel_of "$DISPATCH_WIN" >/dev/null 2>&1; then how="在班实测"; else how="dispatch 不在班,按 CLAUDE_LAUNCHER=${CLAUDE_LAUNCHER} 推定"; fi
+  echo "派工席账号:${mail:-?}(${cfg##*/};${how})  哨兵线:预警 ${QUOTA_WARN}% / 切换 ${QUOTA_SWITCH}%  开关 claude-launcher=$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/claude-launcher" 2>/dev/null || echo 未设)"
+  while IFS='|' read -r m w wr sp sr; do
+    [ -n "$m" ] || continue
+    printf '  %s 周额度 %s%%(重置 %s)5h窗口 %s%%%s\n' "$m" "$w" "$wr" "$sp" "$([ "$m" = "$mail" ] && printf '  <= 派工席' || true)"
+  done <<< "$snap"
+  if [ -s "$QUOTA_ALERTED" ]; then echo "  哨兵已提醒过(mail|线|重置):$(tr '\n' ' ' < "$QUOTA_ALERTED")"; fi
+  return 0
+}
+
+cmd_account_switch(){  # --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force]
+  # 剧本机器化(2026-08-23):①写开关 ②方案窗口半边给人 ③dispatch 收班令→等收班条→--fresh ④relay 托管中则跟走。
+  # 🔴 本命令对在班席位下令(收班令)⇒ 只许人或受创始人授权者手跑;看门狗/events ⛔ 调用(绊线钉住)。
+  local to="" dry="" wait_min="${LAIXIN_SWITCH_WAIT_MIN:-60}" nowait="" force=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) to="${2:?--to 需要入口名(claude|claude-b)}"; shift 2 ;;
+      --dry) dry=1; shift ;;
+      --wait-min) wait_min="${2:?--wait-min 需要分钟数}"; shift 2 ;;
+      --no-wait) nowait=1; shift ;;
+      --force) force=1; shift ;;
+      *) die "未知参数:$1(用法:laixin-lane account-switch --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force])" ;;
+    esac
+  done
+  [ -n "$to" ] || die "account-switch 必须 --to <入口名>(claude=~/.claude-official / claude-b=~/.claude-b)"
+  command -v "$to" >/dev/null 2>&1 || die "入口「${to}」不在 PATH(只认 claude / claude-b 包装器;核:ls ~/.local/bin/claude*)"
+  local tcfg cur_cfg cur_src; tcfg="$(launcher_cfgdir "$to")"
+  if channel_of "$DISPATCH_WIN" >/dev/null 2>&1; then cur_cfg="$(dispatch_cfgdir)"; cur_src="在班实测"; else cur_cfg="$(launcher_cfgdir "$CLAUDE_LAUNCHER")"; cur_src="dispatch 不在班,按 CLAUDE_LAUNCHER 推定"; fi
+  local snap tmail cmail trow crow
+  snap="$(quota_snapshot 2>/dev/null || true)"; tmail="$(cfgdir_mail "$tcfg")"; cmail="$(cfgdir_mail "$cur_cfg")"
+  trow="$(grep -F "${tmail:-∅}|" <<< "$snap" | head -1 || true)"; crow="$(grep -F "${cmail:-∅}|" <<< "$snap" | head -1 || true)"
+  echo "账号切换剧本(创始人 08-22 10:11 议定 · 08-23 00:5x 定顺序;执行者=$(caller_src))"
+  echo "  现派工席通道:${cur_cfg##*/}(${cmail:-?};${cur_src})周额度 $(cut -d'|' -f2 <<< "${crow:-?|?}")%"
+  echo "  目标通道:     ${tcfg##*/}(${tmail:-?})周额度 $(cut -d'|' -f2 <<< "${trow:-?|?}")%"
+  [ "$tcfg" != "$cur_cfg" ] || die "派工席已在目标通道 ${tcfg##*/},无需切换(要换全新上下文用 laixin-lane dispatch --fresh)"
+  local sw="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/claude-launcher"
+  echo "步骤:"
+  echo "  ① 开关 $sw → ${to}(之后新起的 dispatch/relay/relay-once(claude)/11C fable 全走它;在跑的不动)"
+  echo "  ② 方案窗口(人操作,⛔ 机器):创始人在 ${to} 账号开的空白窗接新包(读交接快照);老窗不关、只收存量、按包划分裁定权"
+  echo "  ③ dispatch:dmsg 收班令(在飞做到交接点、写交接包、⛔ 接新活)→ 等看板出现收班条(最多 ${wait_min} 分钟;--no-wait 跳过 / --force 超时仍换)→ dispatch --fresh(新窗起在 ${to})"
+  if relay_enabled; then echo "  ④ relay(托管中)整个跟新账号:relay --fresh"; else echo "  ④ relay 托管关闭(应召形态)⇒ 无动作;需要时 laixin-lane relay 即在新账号起"; fi
+  if [ -n "$dry" ]; then echo "[dry] 以上为计划,未动任何东西"; return 0; fi
+  # ① 开关(写文件 + 本进程变量同步:cmd_dispatch/cmd_relay 读的是启动时解析好的 CLAUDE_LAUNCHER,不改变量会用旧入口起新窗)
+  mkdir -p "$(dirname "$sw")"; echo "$to" > "$sw"; CLAUDE_LAUNCHER="$to"
+  board "$(caller_src)" "账号切换①:开关 claude-launcher → ${to}(${tcfg##*/});在跑席位不动,之后新起窗口走新账号"
+  echo "✅ ① 开关已写:$(cat "$sw")"
+  echo "⏸ ② 方案窗口由人操作(见上);本命令继续做 ③"
+  if ! dispatch_alive; then
+    echo "ℹ️ dispatch 不在班 ⇒ 直接以新账号起:"
+    local d0_rc=0; ( cmd_dispatch --fresh ) || d0_rc=$?
+    [ "$d0_rc" -eq 0 ] || die "dispatch 起窗失败 rc=${d0_rc}(看板有死因);开关已切,看门狗下一拍会再试"
+  else
+    local bl0; bl0="$(wc -l < "$BOARD" 2>/dev/null | tr -d ' ')"; bl0="${bl0:-0}"
+    cmd_dmsg --from "$(caller_src)" "【账号切换 · 收班令】执行者=$(caller_src),依据=创始人剧本(切换点已到;创始人授权执行)。请:①把在飞这一轮做到**可交接点**(⛔ 接新活 ⛔ 开新合并);②按换班纪律写交接包(执行总表进行中节 + 交接快照),并在看板留**收班条**(正文开头形如「收班 dispatch 第N任 → 继任起在 ${to} 通道」);③收班条落盘后停手等回收——本窗将被 dispatch --fresh 回收,继任起在 ${to}(${tcfg##*/});🔴 跨通道 SendMessage/ListAgents 不可达:交接一律落盘,⛔ 指望继任能收到你的 SendMessage。" >/dev/null
+    board "$(caller_src)" "账号切换③:已向 dispatch 发收班令(等收班条,最多 ${wait_min} 分钟)"
+    echo "✅ ③ 收班令已投 dispatch;等它的收班条…(看板行数基线 ${bl0})"
+    if [ -n "$nowait" ]; then echo "  --no-wait:不等收班条,直接换窗"; else
+      local waited=0 seen=""
+      while [ "$waited" -lt $(( wait_min * 60 )) ]; do
+        if ! dispatch_alive; then seen="dispatch 已自行退出"; break; fi
+        if tail -n +"$(( bl0 + 1 ))" "$BOARD" 2>/dev/null | grep -qE '^\|[^|]+\| 派工窗口 \| ?[^|]{0,10}(收班|交班|换班) dispatch 第[一二三四五六七八九十]+任'; then seen="收班条已见"; break; fi
+        sleep 20; waited=$((waited+20))
+      done
+      if [ -z "$seen" ]; then
+        if [ -n "$force" ]; then echo "⚠️ 等满 ${wait_min} 分钟未见收班条,--force:照换"; board "$(caller_src)" "账号切换③:等满 ${wait_min} 分钟未见收班条,--force 强制换窗"
+        else board "$(caller_src)" "账号切换③:等满 ${wait_min} 分钟未见 dispatch 收班条——未换窗(老 dispatch 仍在);核 peek-d 后重跑 account-switch --to ${to} --no-wait 或 --force"; die "等满 ${wait_min} 分钟未见 dispatch 收班条 ⇒ 未换窗(老 dispatch 仍在 ${cur_cfg##*/})。laixin-lane peek-d 40 看它在干什么;确认可换后重跑 --no-wait / --force"; fi
+      else echo "✅ ${seen}"; fi
+    fi
+    local d_rc=0 d_out=""; d_out="$(cmd_dispatch --fresh 2>&1)" || d_rc=$?
+    [ "$d_rc" -eq 0 ] || { board "$(caller_src)" "⛔ 账号切换③:dispatch --fresh 失败 rc=${d_rc}:$(tail -1 <<< "$d_out" | cut -c1-120)"; die "dispatch --fresh 失败 rc=${d_rc}:$(tail -1 <<< "$d_out")"; }
+    board "$(caller_src)" "账号切换③:dispatch 已换新窗,起在 ${to}(${tcfg##*/});老账号 ${cur_cfg##*/} 上的方案窗口按剧本只收存量"
+    echo "✅ ③ dispatch 新窗已起(${to})"
+  fi
+  if relay_enabled; then
+    local r_rc=0; ( cmd_relay --fresh --resurrect ) >/dev/null 2>&1 || r_rc=$?
+    if [ "$r_rc" -eq 0 ]; then board "$(caller_src)" "账号切换④:relay 已整个跟到 ${to}"; echo "✅ ④ relay 已换到 ${to}"; else echo "⚠️ ④ relay 换窗失败 rc=${r_rc}(看门狗会保活重试)"; fi
+  fi
+  echo "完成。核:laixin-lane doctor(通道拓扑)· laixin-lane quota"
+  return 0
+}
+
 cmd_relay_msg(){
   local to="" text="" id now
   while [ $# -gt 0 ]; do
@@ -4563,7 +4737,7 @@ wd_loop() {
   local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
   local max_restart="${WD_MAX_RESTART:-3}"
   local last_hash="" silent=0 nudged=0 restarts=0 ctx_tick=0
-  local _gen nofuel=0 fuel_tbl_m=""; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
+  local _gen nofuel=0 fuel_tbl_m="" qtick=0; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
   fuel_tbl_m="$(stat -f %m "$TABLE" 2>/dev/null || echo '')"                              # #137:启动不算「总表有变动」
   echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
   board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
@@ -4603,6 +4777,11 @@ wd_loop() {
         dialog_sweep_win "$RELAY_WIN" >/dev/null 2>&1 || true
       fi
     fi
+    # —— 0.6 额度哨兵(2026-08-23):每 WD_QUOTA_EVERY 拍读一次仪表盘,派工席所在账号到线**只提醒**(WD 日志+看板+桌面通知;
+    #    每条线每个重置窗口一次)。⛔ 在此自动切账号/自动收班——切换=对在班席位下令,走 laixin-lane account-switch(人/受授权者执行)。
+    #    子 shell 隔离(#44 纪律):哨兵任何失败都不得带死保命循环。
+    qtick=$((qtick+1))
+    if [ $(( qtick % ${WD_QUOTA_EVERY:-5} )) -eq 0 ]; then ( quota_sentinel_tick ) >/dev/null 2>&1 || true; fi
     # —— 0.7 上下文水位巡检:**已停用**(2026-08-22 当天上线当天撤)——————————————
     # 🔴 撤因:整套机制建立在一个**错误前提**上——「上下文满了必须换人」。那是 claude 席位的
     #   模型,而本流水线的 lane-a / lane-b(以及 08-22 10:05~16:43 间的 dispatch)是 **codex**,codex 自带翻页:
@@ -5444,6 +5623,9 @@ case "${1:-}" in
   stats)    shift; cmd_stats ;;
   handover-audit) shift; cmd_handover_audit "$@" ;;   # #108 全量:所有未配对的交班条(第 6 步漏做清单)
   channel-of)     shift; cmd_channel_of "$@" ;;      # 会话名 → 它所在的通道(配置目录)与账号
+  quota)          shift; cmd_quota "$@" ;;           # 两账号额度 + 派工席账号 + 哨兵线
+  quota-tick)     shift; quota_sentinel_tick; echo "哨兵已跑一拍(到线才有输出:WD 日志/看板/桌面通知);已提醒登记:$(tr '\n' ' ' < "$QUOTA_ALERTED" 2>/dev/null || echo 无)" ;;   # 手动跑一拍(演练/换阈值后验证;与看门狗每 5 分钟那拍同一函数)
+  account-switch) shift; cmd_account_switch "$@" ;;  # 按剧本切账号(人/受授权者手跑;哨兵 ⛔ 调用)
   handover-mode)  shift; cmd_handover_mode "$@" ;;   # 交班形态判据:同账号 or 跨账号(⛔ 靠推定)
   dispatch) shift; cmd_dispatch "$@" ;;
   peek-d)   shift; cmd_peekd "$@" ;;

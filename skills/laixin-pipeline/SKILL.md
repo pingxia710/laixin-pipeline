@@ -267,6 +267,8 @@ echo claude-b > ~/.laixin-lane-switch/claude-launcher   # 之后**新起的**席
 
 🪑 **11C 圆桌的 claude 席(`laixin-11c-seat … fable`)2026-08-23 起也吃这个开关**(此前硬编码 `claude-b`,流水线切账号时圆桌没通道可换——创始人当日点出)。解析顺序:`LAIXIN_11C_CLAUDE_LAUNCHER`(env)> `~/.laixin-lane-switch/claude-launcher-11c`(**11C 专用**,想让圆桌与流水线分账号时写它,例如流水线走 official、圆桌走 claude-b 以分摊额度)> `~/.laixin-lane-switch/claude-launcher`(与流水线共用,**切账号时圆桌跟着切**)> `claude`。起席时实时读并当面 note「claude 通道=… 配置目录=…」,入口不在 PATH 起席前拒。⇒ 切账号剧本里**不必单独处理 11C**:改共用开关即可;要分账号就多写一个 11C 专用开关。kimi/codex 席(k3/terra/luna)无此概念。
 
+🤖 **切换剧本机器化(2026-08-23,创始人「先把机制做好,再留下来复用」)**:①**额度哨兵**=看门狗每 5 分钟读一次用量仪表盘,对**派工席所在账号**的周额度到 `LAIXIN_QUOTA_WARN`(默认 96%)提醒一次「还差几点」、到 `LAIXIN_QUOTA_SWITCH`(默认 98%=剩 2%,创始人 08-23 定)提醒「该切了」——WD 日志+看板(来源看门狗)+macOS 桌面通知,每条线每个重置窗口一次;**只提醒 ⛔ 自动切**(切换=对在班席位下令)。②**`laixin-lane quota`** 一眼看两账号额度+派工席在哪个账号+哨兵线。③**`laixin-lane account-switch --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force]`**=按剧本执行(人/受创始人授权者手跑):写开关(并同步本进程入口变量)→ 打印方案窗口半边给人(新账号空白窗接新包,老窗不关只收存量)→ 向 dispatch `dmsg` **收班令**(在飞做到交接点、写交接包、看板留收班条「收班 dispatch 第N任 → 继任起在 X 通道」、⛔ 接新活)→ 等收班条(默认最多 60 分钟;`--no-wait` 不等 / `--force` 超时照换,否则超时不换并大声报)→ `dispatch --fresh` 新窗起在新账号 → relay 托管中则 `relay --fresh` 跟走。先 `--dry` 看计划。⚠️ 跨通道 SendMessage 不可达:老账号上的方案窗口对新 dispatch 只能 dmsg/落盘,交接包须写明继任通道。
+
 **`doctor` 的通道拓扑怎么读**:**多通道并存判 ✅ 正常**(那是切换中间态,⛔ 当故障)。只有两种计错:
 ①**两条通道同时有 dispatch**(违反派工唯一,而两条线各自看都正常);②**孤儿席位**(某通道只剩一个
 dispatch/relay,跨通道消息发不到,它没有任何可通信对象却照样在跑)。

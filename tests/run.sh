@@ -3146,6 +3146,56 @@ t "vwait_ready_codex:信任对话框快速失败并点名根因(⛔ 自动选默
 git -C "$TM/main" worktree remove --force "$TM/wt2" 2>/dev/null || true
 rm -rf "$TM"
 
+# ── 额度哨兵 + 账号切换机器化(2026-08-23;创始人「先把这个机制做好,再留下来后面复用」)──────────────────
+echo "== 额度哨兵(看门狗只提醒 ⛔ 自动切)+ laixin-lane quota / account-switch =="
+TQ="$(mktemp -d)"
+cat > "$TQ/usage.json" <<'JSON'
+{"official_accounts":[{"account":"a@x","data":{"limits":[{"kind":"session","percent":5,"resets_at":"2026-08-23T10:00:00Z"},{"kind":"weekly_all","percent":94,"resets_at":"2026-08-25T17:00:00Z"}]}},{"account":"b@x","data":{"limits":[{"kind":"weekly_all","percent":7,"resets_at":"2026-08-26T16:00:00Z"}]}}]}
+JSON
+{ sed -n "/^quota_snapshot()/,/^}/p" "$LANE"; sed -n "/^quota_alert_due()/,/^}/p" "$LANE"; sed -n "/^launcher_cfgdir()/,/^}/p" "$LANE"; } > "$TQ/f.sh"
+t "quota_snapshot:从 LAIXIN_USAGE_RAW 读两账号(mail|周%|重置|5h%|重置);5h 缺显 ?;文件不存在退 1" bash -c '
+  source "$1/f.sh"; out="$(LAIXIN_USAGE_RAW="$1/usage.json" quota_snapshot)" || exit 1
+  grep -q "^a@x|94|2026-08-25T17:00|5|2026-08-23T10:00$" <<< "$out" && grep -q "^b@x|7|2026-08-26T16:00|?|$" <<< "$out" &&
+  ! LAIXIN_USAGE_RAW="$1/没有.json" quota_snapshot >/dev/null' _ "$TQ"
+t "quota_alert_due:95 无;96 预警一次;再 96 不重复;98 到切换线一次;重置窗口换了再提醒(每线每窗口一次)" bash -c '
+  source "$1/f.sh"; QUOTA_WARN=96; QUOTA_SWITCH=98; F="$1/alerted"
+  [ -z "$(quota_alert_due 95 a@x R1 "$F")" ] || exit 1
+  [ "$(quota_alert_due 96 a@x R1 "$F")" = "96" ] || exit 2
+  [ -z "$(quota_alert_due 96 a@x R1 "$F")" ] || exit 3
+  [ "$(quota_alert_due 98 a@x R1 "$F")" = "98" ] || exit 4
+  [ -z "$(quota_alert_due 99 a@x R1 "$F")" ] || exit 5
+  [ "$(quota_alert_due 99 a@x R2 "$F" | tr "\n" ",")" = "96,98," ] || exit 6
+  [ -z "$(quota_alert_due abc a@x R2 "$F")" ]' _ "$TQ"
+t "launcher_cfgdir:claude→~/.claude-official,claude-b→~/.claude-b" bash -c 'source "$1/f.sh"; [ "$(launcher_cfgdir claude)" = "$HOME/.claude-official" ] && [ "$(launcher_cfgdir claude-b)" = "$HOME/.claude-b" ]' _ "$TQ"
+t "看门狗:挂了额度哨兵拍(子 shell 隔离),且哨兵/看门狗里零切换动作(⛔ account_switch ⛔ cmd_dispatch ⛔ cmd_dmsg 出现在哨兵体)" bash -c '
+  w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"; q="$(sed -n "/^quota_sentinel_tick()/,/^}/p" "$1")"
+  grep -q "( quota_sentinel_tick )" <<< "$w" && ! grep -q "account_switch" <<< "$w" &&
+  ! grep -qE "cmd_dispatch|cmd_dmsg|cmd_relay|account_switch" <<< "$q" && grep -q "desktop_notify" <<< "$q" && grep -q "board \"看门狗\"" <<< "$q"' _ "$LANE"
+t "account-switch:缺 --to / 入口不在 PATH ⇒ 拒" bash -c '
+  out="$("$1" account-switch 2>&1)"; [ $? -ne 0 ] && grep -q "必须 --to" <<< "$out" || exit 1
+  out="$("$1" account-switch --to claude-不存在 2>&1)"; [ $? -ne 0 ] && grep -q "不在 PATH" <<< "$out"' _ "$LANE"
+t "account-switch --dry:两个目标里恰一个打印四步计划、另一个报「已在目标通道」;dry 不写开关" bash -c '
+  SW="$1/sw"; mkdir -p "$SW"; echo claude-b > "$SW/claude-launcher"
+  a="$(env LAIXIN_SWITCH_DIR="$SW" LAIXIN_USAGE_RAW="$1/usage.json" "$2" account-switch --to claude --dry 2>&1)"; ra=$?
+  b="$(env LAIXIN_SWITCH_DIR="$SW" LAIXIN_USAGE_RAW="$1/usage.json" "$2" account-switch --to claude-b --dry 2>&1)"; rb=$?
+  na=$(grep -c "步骤:" <<< "$a"); nb=$(grep -c "步骤:" <<< "$b")
+  [ $((na+nb)) -eq 1 ] || { echo "计划数 $na+$nb"; exit 1; }
+  grep -q "已在目标通道" <<< "$a$b" || exit 2
+  grep -qE "① 开关.*② 方案窗口.*③ dispatch|① 开关" <<< "$a$b" && grep -q "\[dry\] 以上为计划" <<< "$a$b" &&
+  [ "$(cat "$SW/claude-launcher")" = claude-b ]' _ "$TQ" "$LANE"
+t "account-switch:写开关后同步本进程 CLAUDE_LAUNCHER(否则 cmd_dispatch 用旧入口起新窗);收班令→等收班条→--fresh 顺序;收班令含交接包/⛔ 接新活/跨通道" bash -c '
+  b="$(sed -n "/^cmd_account_switch()/,/^}$/p" "$1")"
+  grep -qF "echo \"\$to\" > \"\$sw\"; CLAUDE_LAUNCHER=\"\$to\"" <<< "$b" || { echo "未同步变量"; exit 1; }
+  s1=$(grep -n "echo \"\$to\" > \"\$sw\"" <<< "$b" | head -1 | cut -d: -f1); s2=$(grep -n "cmd_dmsg --from" <<< "$b" | head -1 | cut -d: -f1); s3=$(grep -n "收班|交班|换班) dispatch" <<< "$b" | head -1 | cut -d: -f1); s4=$(grep -n "d_out=\"\$(cmd_dispatch --fresh" <<< "$b" | head -1 | cut -d: -f1)
+  [ -n "$s1" ] && [ -n "$s2" ] && [ -n "$s3" ] && [ -n "$s4" ] && [ "$s1" -lt "$s2" ] && [ "$s2" -lt "$s3" ] && [ "$s3" -lt "$s4" ] || { echo "顺序 $s1 $s2 $s3 $s4"; exit 2; }
+  for k in "交接包" "⛔ 接新活" "跨通道 SendMessage" "收班条"; do grep -qF "$k" <<< "$b" || { echo "缺 $k"; exit 3; }; done' _ "$LANE"
+t "account-switch ⛔ 被看门狗/events 调用(只许人手跑)+ 帮助与分发齐全" bash -c '
+  w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"; e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
+  ! grep -q "cmd_account_switch" <<< "$w" && ! grep -q "cmd_account_switch" <<< "$e" &&
+  grep -q "^#   laixin-lane quota" "$1" && grep -q "^#   laixin-lane account-switch" "$1" && grep -qE "^  quota\)" "$1" && grep -qE "^  account-switch\)" "$1" && grep -qE "^  quota-tick\)" "$1"' _ "$LANE"
+tout "quota:仪表盘读不到时说读不到 ⛔ 读成充裕(退 1)" "读不到" bash -c 'LAIXIN_USAGE_RAW="'"$TQ"'/没有.json" "'"$LANE"'" quota; true'
+rm -rf "$TQ"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

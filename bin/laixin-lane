@@ -2120,6 +2120,20 @@ cmd_doctor() {
         fi
       done <<< "$_hp"
     else ok "近 ${_HB_DAYS} 天的交班条与复盘页盘点节全配对"; fi
+    # 8c. #108 ①态(方案窗口第二十三任 2026-08-23 裁):继任接班条已见而前任**既无交班条也无盘点节**——与 ②态(有交班条无盘点)分句报,
+    #     处置不同(①先补交班条再盘点 / ②直接盘点),同形即误导。射程=方案窗口席。
+    local _mp _mpl _br3
+    if [ -n "$_datepat" ] && [ -f "$BOARD" ]; then
+      local _dp3; _dp3="$(mktemp)"; _br3="$(mktemp)"; printf '%s\n' "$_datepat" | grep -vE '^$' > "$_dp3" || true
+      grep -F -f "$_dp3" "$BOARD" > "$_br3" 2>/dev/null || true
+      _mp="$(handover_missing_pred "$_br3" "$BOARD" "$_rp")"; rm -f "$_dp3" "$_br3"
+    else _mp="$(handover_missing_pred "$BOARD" "$BOARD" "$_rp")"; fi
+    if [ -n "$_mp" ]; then
+      while IFS= read -r _mpl; do
+        [ -n "$_mpl" ] || continue
+        wrn "$_mpl 前任**无交班条**且复盘页无「收班盘点」节(继任接班条已见)——交班卡第 2 步「交班快照进 log」漏做:**先补交班条再盘点**(#108 ①态;⛔ 与「有交班条无盘点」的 ②态同形;前任补写后本警自消)"
+      done <<< "$_mp"
+    fi
     # 8b. 方案窗口交班 × 总表请裁件(2026-08-23 方案窗口第二十三任接班规格):近 N 天看板有方案窗口交班条 ⇒ 列总表三个现状节里
     #     状态格首段仍为「候/已请方案窗口裁」的行——它们该出现在交接快照的移交件里(样本=B2 请裁件漏出 0823晨快照);无交班条时只记 ℹ️ 计数。
     local _pr _npr _hb_plan=""
@@ -2456,6 +2470,48 @@ ev_material_filter(){  # stdin=vault 变更文件路径列表 → stdout=订阅�
   # 实撞=3-方案层/前端设计/ 新类别落「…设计要点.md」不命中(文件名逐字含「设计要点」,病在前缀写死 4-开发层);
   # 权衡按通则四:列目录的失败=每新落点一次静默盲区(最贵);特征匹配的失败=偶发多送一条指针(最便宜)。
   grep -E '/[^/]*(词汇表|设计要点)[^/]*\.md$'
+}
+handover_missing_pred(){  # <近N天看板文件> <全量看板文件> <复盘页> → stdout「方案窗口 第N-1任」每行=继任接班条已见(近 N 天)而前任**既无交班条**(全量看板)**也无盘点节**;零输出=无
+  # #108 ①态(方案窗口第二十三任 2026-08-23 07:3x 裁「接班条纳入 #108 配对=纳入,可机器化;提示必须分两态报 ⛔ 同一句话」):
+  #   样本=第二十二任 06:57 快照+注册表「待接」齐、看板零交班条(交班卡第 2 步「交班快照进 log」漏做)⇒ 只认交班条的 #108 永远不提示它盘点。
+  #   判据=看板近 1 天有「接班 方案窗口 第N任」⇒ 视同第 N-1 任已交班 ⇒ 配对其盘点节;前任若有交班条则归 ②态(handover_unpaired),本函数不重报。
+  #   射程=方案窗口席(dispatch/中继仍按各自交班条);它随库状态变化——前任事后补了交班条/盘点,本警自然消失 ⛔ 当误报。
+  python3 - "$1" "$2" "$3" <<'PY'
+import re,sys
+rb,fb,p=sys.argv[1],sys.argv[2],sys.argv[3]
+CN="零一二三四五六七八九"
+def cn2i(t):
+    if t=="十": return 10
+    m=re.fullmatch(r'([一二三四五六七八九])?十([一二三四五六七八九])?|([一二三四五六七八九])', t)
+    if not m: return None
+    if m.group(3): return CN.index(m.group(3))
+    return (CN.index(m.group(1)) if m.group(1) else 1)*10+(CN.index(m.group(2)) if m.group(2) else 0)
+def i2cn(n):
+    if n<1 or n>99: return None
+    if n<10: return CN[n]
+    t,u=divmod(n,10); return ("" if t==1 else CN[t])+"十"+(CN[u] if u else "")
+def lines(f):
+    try: return open(f,encoding="utf-8",errors="replace").read().splitlines()
+    except Exception: return []
+try: page=open(p,encoding="utf-8",errors="replace").read()
+except Exception: page=""
+succ=re.compile(r'^\|[^|]+\| 方案窗口 \| ?(?:方案窗口)?[^|]{0,10}接班 ?方案窗口 ?第([一二三四五六七八九十]+)任')
+hand=re.compile(r'^\|[^|]+\| 方案窗口 \| ?(?:方案窗口)?[^|]{0,10}第([一二三四五六七八九十]+)任[^|]{0,24}(?:交班|封班|收班完成)')
+handed={m.group(1) for l in lines(fb) for m in [hand.match(l)] if m}
+heads=re.findall(r'^## .*$', page, flags=re.M)
+seen=[]
+for l in lines(rb):
+    m=succ.match(l)
+    if not m: continue
+    n=cn2i(m.group(1))
+    if not n or n<2: continue
+    pred=i2cn(n-1)
+    if not pred or pred in handed: continue
+    if any(("方案窗口" in h and ("第%s任"%pred) in h and "收班盘点" in h) for h in heads): continue
+    k="方案窗口 第%s任"%pred
+    if k not in seen: seen.append(k); print(k)
+PY
+  return 0
 }
 table_pending_rulings(){  # <执行总表> → stdout 每行「节|片名|状态格首段(截 70)」=进行中/排队/验收中三节里状态格**首段**仍写着「候/已请方案窗口裁」的行;零=零输出
   # 2026-08-23 方案窗口第二十三任接班规格:见方案窗口交班条时列出总表未销号的请裁件(样本=B2 落点请裁件未进第二十二任 0823晨快照,

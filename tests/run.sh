@@ -3230,6 +3230,25 @@ t "doctor 8b:方案窗口交班条**或接班条**(近 N 天)× 总表请裁未�
   grep -qF "|接班 ?方案窗口 ?第[一二三四五六七八九十]+任)" <<< "$d"' _ "$LANE"
 rm -rf "$TPR"
 
+# ── #108 ①态:接班条纳入交班配对(方案窗口第二十三任 2026-08-23 裁;样本=第二十二任零交班条) ──────────────
+TMP108="$(mktemp -d)"; sed -n "/^handover_missing_pred()/,/^}/p" "$LANE" > "$TMP108/f.sh"
+printf '| 08-23 07:05 | 方案窗口 | 接班 方案窗口 第二十三任 pingxia-a4(通道 official)… |\n| 08-23 06:48 | 方案窗口 | 🟢 A 轨解卡(方案窗口第二十二任晨间第一件)… |\n' > "$TMP108/recent.md"
+cp "$TMP108/recent.md" "$TMP108/full.md"; printf '## 二十七、别的节\n' > "$TMP108/page.md"
+t "#108①:接班 第二十三任 已见、第二十二任无交班条无盘点节 ⇒ 报「方案窗口 第二十二任」;提及型「第二十二任晨间第一件」⛔ 当交班条" bash -c '
+  source "$1/f.sh"; [ "$(handover_missing_pred "$1/recent.md" "$1/full.md" "$1/page.md")" = "方案窗口 第二十二任" ]' _ "$TMP108"
+t "#108①:复盘页已有「方案窗口第二十二任收班盘点」节 ⇒ 不报;前任有交班条 ⇒ 不报(归 ②态);接班 第一任 ⇒ 不报" bash -c '
+  source "$1/f.sh"
+  printf "## 三十一、方案窗口第二十二任收班盘点\n" > "$1/p2.md"; [ -z "$(handover_missing_pred "$1/recent.md" "$1/full.md" "$1/p2.md")" ] || exit 1
+  printf "| 08-23 06:57 | 方案窗口 | 方案窗口第二十二任 交班(快照 0823晨)… |\n" >> "$1/full.md"; [ -z "$(handover_missing_pred "$1/recent.md" "$1/full.md" "$1/page.md")" ] || exit 2
+  printf "| 08-23 07:05 | 方案窗口 | 接班 方案窗口 第一任 x |\n" > "$1/r1.md"; [ -z "$(handover_missing_pred "$1/r1.md" "$1/r1.md" "$1/page.md")" ]' _ "$TMP108"
+t "#108①:中文数字递减(第十→第九 / 第二十→第十九 / 第二十一→第二十 / 第三十三→第三十二)" bash -c '
+  source "$1/f.sh"; for pair in "十:九" "二十:十九" "二十一:二十" "三十三:三十二"; do n="${pair%%:*}"; e="${pair##*:}"
+    printf "| 08-23 07:05 | 方案窗口 | 接班 方案窗口 第%s任 x |\n" "$n" > "$1/r.md"; : > "$1/e.md"
+    [ "$(handover_missing_pred "$1/r.md" "$1/e.md" "$1/page.md")" = "方案窗口 第${e}任" ] || { echo "第${n}任 → $(handover_missing_pred "$1/r.md" "$1/e.md" "$1/page.md")"; exit 1; }; done' _ "$TMP108"
+t "doctor 8c:①态与 ②态分句报(先补交班条再盘点 vs 直接盘点),射程方案窗口席" bash -c '
+  d="$(sed -n "/^cmd_doctor()/,/^}$/p" "$1")"; grep -q "handover_missing_pred" <<< "$d" && grep -q "先补交班条再盘点" <<< "$d" && grep -q "#108 ①态" <<< "$d"' _ "$LANE"
+rm -rf "$TMP108"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

@@ -4,6 +4,10 @@
 set -uo pipefail
 LANE="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-lane"
 PASS=0; FAIL=0
+# 🔴 套件判据必须只依赖被测对象,⛔ 依赖调用者所在窗口/环境(2026-08-22 实撞:dispatch 窗口里跑本套件,shell 带着
+#   LAIXIN_WINDOW / TMUX_PANE ⇒ 来源推断类 3 条 + 1 条误红,而干净 shell 全绿——「同一套测试两处两种结果」)。
+#   ⇒ 开跑先卸掉会改变被测行为的调用者环境;需要它们的测试各自显式 env 传入。
+unset LAIXIN_WINDOW LAIXIN_BOARD_SRC TMUX_PANE TMUX 2>/dev/null || true
 # 🔴 套件零副作用的机器半边(2026-08-22 实撞):真实派工权锁在套件开跑时若在,跑完必须还在——
 #   当日 halt fixture 用真 HOME 的锁,把在班 dispatch 的派工权删了两遍而套件全绿;「绝不碰派工权锁」此前只是上面那行自述。
 REAL_LOCK_BEFORE="$(cat "$HOME/.laixin-dispatch.lock" 2>/dev/null || true)"
@@ -1301,8 +1305,8 @@ t "#75 起窗入口默认仍是 claude(⛔ 默认换新,切换要显式;理由�
   'grep -qE "LAIXIN_CLAUDE_LAUNCHER:-.*echo claude" "'"$LANE"'"'
 t "#75 起窗入口可被 LAIXIN_CLAUDE_LAUNCHER 覆盖" bash -c \
   'grep -q "LAIXIN_CLAUDE_LAUNCHER" "'"$LANE"'"'
-t "#75 三处起窗调用点全部走变量,零硬编码 claude(漏一处=该窗口静默用旧账号)" bash -c \
-  'n="$(grep -c "\$CLAUDE_LAUNCHER -n " "'"$LANE"'")"; [ "$n" = 3 ] || { echo "变量调用点=$n,应为3"; exit 1; };
+t "#75 四处起窗调用点全部走变量,零硬编码 claude(漏一处=该窗口静默用旧账号;2026-08-22 relay-once claude 分支加为第 4 处)" bash -c \
+  'n="$(grep -c "\$CLAUDE_LAUNCHER -n " "'"$LANE"'")"; [ "$n" = 4 ] || { echo "变量调用点=$n,应为4"; exit 1; };
    h="$(grep -c "\" claude -n " "'"$LANE"'" || true)"; [ "$h" = 0 ] || { echo "仍有 $h 处硬编码 claude -n"; exit 1; }'
 
 
@@ -2430,7 +2434,9 @@ t "验收派单:两引擎版本都带走查通道段(⛔ 只补 claude 版——
 #    发给验收方的就是**空串**——它 echo $BU_CDP_URL 得到空,正好回到 13:25「变量未注入」那个误判。
 #    源码里 grep "\$BU_CDP_URL" 对这种漏法完全无感(源码看着好好的),只有展开一次才看得见。
 VCDP="$(mktemp -d)"
-awk '/^  msg="\$\(cat <<EOF$/{n++} n==1{print} n==1 && /^EOF$/{exit}' "$LANE" > "$VCDP/body"
+# ⚠️ 先圈定 cmd_verify 函数体再抽第一个 msg heredoc(2026-08-22 实撞:relay-once 插在 cmd_verify 之前且同形 heredoc,
+#   按「全文件第一个」抽就抽到别的函数的派单,三条断言齐红而被测内容没变——范围锚必须是被测对象本身)。
+sed -n "/^cmd_verify()/,/^}/p" "$LANE" | awk '/^  msg="\$\(cat <<EOF$/{n++} n==1{print} n==1 && /^EOF$/{exit}' > "$VCDP/body"
 # ⚠️ 抽取终点取 EOF 会漏掉收尾的 `)"` ⇒ 落盘脚本语法错、跑不出东西而症状像「断言写错了」
 #   (本仓 sed 范围终点取早了那一课的同族,当轮自撞)——补回收尾行。⛔ source <(…):fd 竞态。
 { echo '#!/bin/bash'
@@ -2577,6 +2583,58 @@ tout "接管指令:kimi 版教了记看板的来源(⛔ 只靠事后 stderr 提�
 #   (当轮自撞;同族=拿一个"恰好在被测内容之前"的锚做范围终点)。改用下一个块的起始注释。
 tout "接管指令:relay 版教了记看板的来源" "来源按窗口名自动标" \
   bash -c 'sed -n "/^RELAY_BRIEF=/,/laixin-lane log/p" "'"$LANE"'"'
+# ── 6r. 一次性应召中继窗 relay-once(2026-08-22 创始人定案:中继两条路线都落到位——常驻 relay=claude;
+#   一次性 relay-once=claude 默认 / codex 第二方案)────────────────────────────────────────────
+# 背景:常驻中继第十八任 17:49 收摊(创始人「把 relay 换成 codex,直接动手干」),方案窗口把中继搬到执行层=一次性应召窗,
+#   但工具侧零实现零验证;创始人 19:2x:「这个路线没有验证过,需要把 2 种方案都落好。默认还是 claude code,因为后面 11C
+#   可能会用到,把 codex 当作第 2 方案。」⇒ 两条起窗链路都做实,并各在隔离 tmux 会话实起过一次(claude/codex 均就绪后回收)。
+echo "== 6r. 一次性应召中继窗 relay-once(claude 默认 / codex 第二)+ rdown =="
+RO_ITEM="$(mktemp)"; printf '自检件\n' > "$RO_ITEM"
+t "relay-once:引擎默认 claude(resolve 兜底 echo claude;⛔ 兜底 codex)" bash -c \
+  'b="$(sed -n "/^relay_once_engine_resolve()/,/^}/p" "$1")"; grep -q "LAIXIN_RELAY_ONCE_ENGINE:-.*echo claude" <<< "$b" && ! grep -q "echo codex)" <<< "$b"' _ "$LANE"
+t "relay-once:合法集 claude|codex(kimi ⛔ 入列——创始人定案只有这两条路线)" bash -c \
+  'b="$(sed -n "/^relay_once_engine_resolve()/,/^}/p" "$1")"; grep -q "claude|codex) eff=" <<< "$b" && ! grep -q "kimi" <<< "$b"' _ "$LANE"
+tout "relay-once --dry 默认走 claude" "引擎=claude(请求=claude)" env LAIXIN_RELAY_ONCE_ENGINE= "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+tout "relay-once --dry 开关=codex 走 codex(第二方案)" "引擎=codex(请求=codex)" env LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+tout "relay-once --engine 显式优先于开关" "引擎=codex(请求=codex)" env LAIXIN_RELAY_ONCE_ENGINE=claude "$LANE" relay-once 测试件 --file "$RO_ITEM" --engine codex --dry
+tout "relay-once 开关非法值按 claude 并当面点名(⛔ 静默回落)" "一次性中继引擎请求「bogus」无效" env LAIXIN_RELAY_ONCE_ENGINE=bogus "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+tfail "relay-once --engine 非法值在动窗口前拒(按件人工发起,非自愈路径 ⇒ die 合法)" "只接受 claude|codex" \
+  env LAIXIN_SESSION=bogus-ro "$LANE" relay-once 测试件 --file "$RO_ITEM" --engine bogus
+t "relay-once 非法引擎被拒时零 tmux 副作用" bash -c '! tmux has-session -t bogus-ro 2>/dev/null'
+tfail "relay-once 必须 --file(正文是件的事实载体,⛔ 塞命令行)" "必须 --file" env LAIXIN_SESSION=bogus-ro "$LANE" relay-once 测试件
+tfail "relay-once 正文文件不存在即拒" "正文文件不存在" env LAIXIN_SESSION=bogus-ro "$LANE" relay-once 测试件 --file /nonexistent/x.md
+tout "relay-once --dry 给出回复契约(末行【中转回复】<件名> 来自 relay-once——events 既有扫描零改动)" "末行【中转回复】测试件 来自 relay-once" \
+  "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
+t "relay-once:claude 分支钉 RELAY_MODEL + RELAY_ONCE_DENY + vwait_ready(与常驻 relay 同形态)" bash -c \
+  'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "\-\-model \$RELAY_MODEL" <<< "$b" && grep -q "RELAY_ONCE_DENY\[@\]" <<< "$b" && grep -q "vwait_ready \"\$w\"" <<< "$b"' _ "$LANE"
+t "relay-once:codex 分支走 codex_launch_cmd + vwait_ready_codex(33d679b 起显式 luna/max,与方案窗口对一次性中继窗的配档拍一致)" bash -c \
+  'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "codex_launch_cmd \"\$bu\"" <<< "$b" && grep -q "vwait_ready_codex \"\$w\"" <<< "$b"' _ "$LANE"
+t "relay-once:引擎校验在 ensure_session 之前(#60① 一课)" bash -c \
+  'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; c="$(grep -n "未知一次性中继引擎" <<< "$b" | head -1 | cut -d: -f1)"; e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)"; [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ]' _ "$LANE"
+t "relay-once:点名指令含回复契约/⛔ dmsg 注入/件毕即收/rdown 四要件" bash -c \
+  'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "【中转回复】\${item} 来自 relay-once" <<< "$b" && grep -q "dmsg 注入派工窗格" <<< "$b" && grep -q "件毕即收" <<< "$b" && grep -q "laixin-lane rdown \${item}" <<< "$b"' _ "$LANE"
+t "relay-once:codex 版红线写进指令本体(无 disallowedTools 等价物)" bash -c \
+  'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "以本指令为准,越线即整件作废" <<< "$b"' _ "$LANE"
+t "RELAY_ONCE_DENY ⊇ RELAY_DENY 且加 relay*/rdown*(一次性窗 ⛔ 起/收任何中继、⛔ 自我繁殖)" bash -c \
+  'grep -q "^RELAY_ONCE_DENY=(\"\${RELAY_DENY\[@\]}\" \"Bash(laixin-lane relay\*)\" \"Bash(laixin-lane rdown\*)\")" "$1"' _ "$LANE"
+tout "rowin 转义 tmux 目标字符(与 vwin 同款:. : % \$ @ 空格 斜杠)" "relay-a-b-c-d-e" bash -c \
+  'eval "$(sed -n "/^rowin()/,/^}/p" "$1")"; die(){ echo "$@"; exit 1; }; rowin "a.b:c d/e"' _ "$LANE"
+t "seat_src_infer:relay-* → 一次性中继窗(看板来源自动标)" bash -c \
+  'b="$(sed -n "/^seat_src_infer()/,/^}/p" "$1")"; grep -q "relay-\*)   echo \"一次性中继窗\"" <<< "$b"' _ "$LANE"
+t "看门狗对话框扫描覆盖 relay-*(同为无人值守一次性席位)" bash -c \
+  'b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"; grep -q "grep -E .\^(verify|relay)-." <<< "$b"' _ "$LANE"
+tout "doctor §6 报一次性中继引擎(默认 claude)" "一次性中继引擎:claude" env LAIXIN_RELAY_ONCE_ENGINE=claude "$LANE" doctor
+tout "doctor §6 报一次性中继引擎=codex(第二方案)" "一次性中继引擎:codex" env LAIXIN_RELAY_ONCE_ENGINE=codex "$LANE" doctor
+tout "doctor §6 一次性中继引擎非法值点名" "一次性中继引擎请求「bogus」无效" env LAIXIN_RELAY_ONCE_ENGINE=bogus "$LANE" doctor
+t "doctor §4:非 claude 派工席 + 常驻中继不在班 ⇒ 硬错(kimi 顶班的出站靠 relay-msg 注入窗口名 relay,一次性窗 ⛔ 替代)" bash -c \
+  'b="$(sed -n "/^cmd_doctor()/,/^}/p" "$1")"; grep -q "无代发方" <<< "$b" && grep -q "! relay_alive" <<< "$b"' _ "$LANE"
+t "路由表含 relay-once / rdown / peek-ro" bash -c \
+  'grep -q "^  relay-once) shift; cmd_relay_once" "$1" && grep -q "^  rdown)      shift; cmd_rdown" "$1" && grep -q "^  peek-ro)    shift; cmd_peekro" "$1"' _ "$LANE"
+tout "rdown 对不存在的窗口幂等(本就不存在 ⇒ 0)" "本就不存在" env LAIXIN_SESSION=bogus-ro "$LANE" rdown 测试件
+t "常驻 relay 仍只起 claude(结构:代发 SendMessage;⛔ 被一次性窗的引擎开关波及)" bash -c \
+  'b="$(sed -n "/^cmd_relay()/,/^}/p" "$1")"; grep -q "\-\-model \$RELAY_MODEL" <<< "$b" && ! grep -q "RELAY_ONCE_ENGINE\|codex_launch_cmd" <<< "$b"' _ "$LANE"
+rm -f "$RO_ITEM"
+
 # ── 交付去重键:内容哈希 ⛔ mtime(2026-08-22 实撞)──────────────────────────────────
 # 原键是 mtime,于是 `touch` 一下就足以让**内容一字未变**的报告被当成新交付重投。当日实况:
 # dispatch 做空跑验证时 touch 过首片交付报告,事件总线 12:05 投一次、12:23 又投一次,

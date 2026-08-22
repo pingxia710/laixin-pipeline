@@ -55,6 +55,10 @@ laixin-lane ctx                            # 上下文占比。claude 席位:≥
 laixin-lane stats                          # 流水线节奏(静默占比)+ 队列燃料(还能跑几片)
 laixin-lane evidence <片名>                # 合并前复查验收证据(回执数字须在此 grep 到)
 laixin-lane watchdog start|stop|status     # 看门狗(需先 laixin-lane dispatch 托管派工窗口)
+laixin-lane relay [--fresh]                # 常驻中继(claude,看门狗保活;kimi 顶班派工席的 relay-msg 代发**必须**它在班)
+laixin-lane relay-once <件名> --file <正文.md> [--engine claude|codex]   # 一次性应召中继窗:按件点名、件毕即收
+                                           #   引擎 claude 默认 / codex 第二(2026-08-22 创始人定案);回复落盘 记录/<件名>-中转回复.md
+                                           #   末行【中转回复】⇒ events 投路径指针给派工窗口;收:laixin-lane rdown <件名>
 ```
 
 多行文本(打回问题清单)走 stdin:`laixin-lane send a <<'EOF' ... EOF`
@@ -118,10 +122,11 @@ SendMessage / ListAgents 之类的工具」)。⇒ 派工窗口一旦切到 kimi
 | **入站·上述讨论的回程** | 对方 `SendMessage` 回你 | 对方**落盘**回复 +事件总线投一条**路径指针**,你自己读全文 |
 | **入站·别人主动找你**(⭐2026-08-19 晚补) | 对方 `SendMessage` 直达 | 对方跑 `laixin-lane dmsg --from <来源> "<正文>"` ⇒ **直接落进你的输入框**,你不需要做任何事 |
 
-🔴 **结构性事实:`relay` 席位没有引擎开关、模型钉死 claude** —— 它的全部职能就是**替没有
-`SendMessage` 的席位代发**,⇒ **它是这套拓扑里唯一不能换成 kimi 的席位**。这是结构保证,
+🔴 **结构性事实:常驻中继 `relay`(`laixin-lane relay`)没有引擎开关、模型钉死 claude** —— 它的全部职能就是**替没有
+`SendMessage` 的席位代发**,⇒ **它是这套拓扑里唯一不能换成 kimi/codex 的席位**。这是结构保证,
 不靠纪律。推论:非 claude 席位每多一个,拓扑就多依赖一次中继;而中继一挂,kimi 顶班的派工窗口
-**出站全断**(入站还剩 events 与 dmsg)。
+**出站全断**(入站还剩 events 与 dmsg)——`doctor` §4 对「派工席非 claude 且常驻中继不在班」报硬错。
+🔁 **中继两条路线(2026-08-22 创始人定案「两条路线都落到位」)**:①**常驻 `relay`**(claude;2026-08-22 17:49 第十八任收摊后**托管关闭**,需要时 `laixin-lane relay` 一条命令即恢复,看门狗随即保活)——承担**代发**与常设 11C 服务位;②**一次性应召中继窗 `laixin-lane relay-once <件名> --file <正文.md>`**(方案窗口同日形态变更:中继搬到执行层,dispatch 按件点名起、件毕即收 ⛔ 常驻 ⛔ 注册常任;承担核库快裁 / 点状快查 / 11C 三职)——**引擎 claude 默认 / codex 第二方案**(创始人:「codex 这个路线没有验证过…默认还是 claude code,因为后面 11C 可能会用到,把 codex 当作第 2 方案」;codex 形态=协作流程 :254 沿革注所定,起窗显式 luna/max),开关 `~/.laixin-lane-switch/relay-once-engine` 或 `--engine`,起窗时实时读;回复契约=落盘 `记录/<件名>-中转回复.md` 末行行首 `【中转回复】<件名> 来自 relay-once`(events 既有扫描,投路径指针给派工窗口),件毕 `laixin-lane rdown <件名>` 回收。**⛔ 拿一次性窗替代常驻的代发**——`relay-msg` 注入的是窗口名 `relay`。两条链路都已在隔离 tmux 会话实起验证(2026-08-22)。
 
 **分流原则**:只让「需要对方判断」的消息走中继。事实本来就不需要「人话」这一跳,而中继是唯一枢纽,
 每多走一条就多吃它一份上下文。
@@ -138,6 +143,7 @@ SendMessage / ListAgents 之类的工具」)。⇒ 派工窗口一旦切到 kimi
 在你眼里与成功完全同形。⇒ `relay-msg` 投递**之前**先把全文落盘,等中继落盘的【中转回执】才算转出;
 超时事件总线会告警并给出原文路径。随时可查:`laixin-lane relay-msg --status`。
 
+📌 **一次性中继窗同契约**(2026-08-22):回复落 `记录/<件名>-中转回复.md`,末行 `【中转回复】<件名> 来自 relay-once`;件名即 id;随件落账取常驻期精神(摩擦如实落盘 · 悬空核对),⛔ 走收班五步。
 #### 🔁 中继侧:收方半边(2026-08-20 01:4x 立;relay 第十四任核源码提出「全库零常驻落点」,11B pingxia-37 落卡并同轮修掉销账取 id 的 bug;**上节全是 dispatch 侧动作,本节是中继接到 `【转:给X】` 后要做的事**——中继是托管席位随时换人,恰恰最需要常驻落点)
 
 1. **回执落点只有一个**:`$KB/4-开发层/记录/<id>-中转回执.md`(`KB` 默认 `~/Obsidian/项目入口/来信平台/知识库`)——事件总线 `ev_scan_deliveries` **只扫这一个目录**的 `*.md` 末行;**落在别处=等于没落**:outbox 不销账 → 10 分钟后 dispatch 收「疑似丢失」告警 → 原样重发 → **同一条被代发两次**。而在中继眼里「我写了回执」与「回执生效」完全同形。

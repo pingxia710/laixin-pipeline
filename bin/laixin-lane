@@ -25,6 +25,12 @@
 #   laixin-lane relay [--fresh]      起(或换新)托管的中继窗口(裁定缺口路由);模型钉死,看门狗保活
 #   laixin-lane peek-r [N]           看中继窗口最近 N 行
 #   laixin-lane relay-down           收中继窗口并**关闭托管**(清除启用标记,看门狗从此不再管它)
+#   laixin-lane relay-once <件名> --file <正文.md> [--engine claude|codex] [--dir DIR] [--dry]
+#                                    起**一次性应召中继窗**(按件点名、件毕即收 ⛔ 常驻;2026-08-22 方案窗口形态变更+创始人定案
+#                                    「claude 默认 / codex 第二方案,两条路线都落到位」):回复落盘 记录/<件名>-中转回复.md
+#                                    末行【中转回复】,events 投路径指针给派工窗口;常驻中继 `relay` 仍是 claude(结构:代发 SendMessage)
+#   laixin-lane rdown <件名>         回收一次性中继窗(+清其 CDP 通道)
+#   laixin-lane peek-ro <件名> [N]   看一次性中继窗最近 N 行
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane channel-of <会话名>  它在哪个 CC 通道(配置目录)与账号;查不到即说查不到 ⛔ 猜
@@ -196,6 +202,7 @@ seat_src_infer(){  # tmux 窗口名 → 角色名;推不出则空。⛔ 依赖�
   case "$w" in
     dispatch)  echo "派工窗口" ;;
     relay)     echo "中继窗口" ;;
+    relay-*)   echo "一次性中继窗" ;;
     verify-*)  echo "验收窗口" ;;
     lane-a|lane-b|lane-c) echo "$w" ;;
     *) : ;;
@@ -1933,6 +1940,13 @@ cmd_doctor() {
     else ok "转办 outbox 空(无未确认转出的消息;#67②)"; fi
     local vs; vs="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^verify-' || true)"
     [ "${vs:-0}" -gt 0 ] && ok "在跑的验收窗口:$vs 个" || ok "无在跑的验收窗口"
+    local ros; ros="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^relay-' || true)"
+    [ "${ros:-0}" -gt 0 ] && ok "在跑的一次性中继窗:$ros 个(件毕即收 ⛔ 常驻;回收:laixin-lane rdown <件名>)" || ok "无在跑的一次性中继窗(应召形态,不跑是常态)"
+    # 🔴 非 claude 派工席(kimi 顶班)出站靠 relay-msg 注入**常驻**中继代发——常驻中继不在班 ⇒ 它的请裁/上报整条断掉,
+    #    而「注入失败」只在它跑 relay-msg 那一刻才暴露。体检当面报 ⛔ 等它撞上。
+    if [ "$DISPATCH_ENGINE" != "claude" ] && ! relay_alive; then
+      bad "派工席引擎=${DISPATCH_ENGINE}(无 SendMessage)而常驻中继 relay 不在班 ⇒ 它的出站(relay-msg)无代发方:先 laixin-lane relay(一次性 relay-once ⛔ 替代——relay-msg 只注入窗口名 relay)"
+    fi
   else bad "tmux 会话 $SESSION 不存在"; fi
 
   # 通道一致性(账号隔离):⛔ 放进上面的 has-session 块 —— 会话分区与 tmux 无关,
@@ -1965,6 +1979,13 @@ cmd_doctor() {
     wrn "派工引擎请求「${DISPATCH_ENGINE_REQ}」无效——派工引擎只有 claude(默认)/kimi(可选顶班),codex 已于 2026-08-22 废除;已按 claude 处理。清理:rm ~/.laixin-lane-switch/dispatch-engine / unset LAIXIN_DISPATCH_ENGINE"
   else
     ok "派工引擎:${DISPATCH_ENGINE}(claude 默认 / kimi 可选顶班;开关 ~/.laixin-lane-switch/dispatch-engine 或 LAIXIN_DISPATCH_ENGINE,起窗时实时读;codex 已废除)"
+  fi
+  # 中继两条路线(2026-08-22 创始人定案「两条路线都落到位」):常驻 relay=claude(结构:替无 SendMessage 的席位代发,⛔ 换引擎);
+  # 一次性应召 relay-once=claude 默认 / codex 第二方案(codex 形态=方案窗口当日形态变更,创始人令先当第二方案直到实战验证)。
+  if [ "$RELAY_ONCE_ENGINE_REQ" != "$RELAY_ONCE_ENGINE" ]; then
+    wrn "一次性中继引擎请求「${RELAY_ONCE_ENGINE_REQ}」无效(只有 claude 默认/codex 第二)——已按 claude;清理:rm ~/.laixin-lane-switch/relay-once-engine / unset LAIXIN_RELAY_ONCE_ENGINE"
+  else
+    ok "一次性中继引擎:${RELAY_ONCE_ENGINE}(claude 默认 / codex 第二方案;开关 ~/.laixin-lane-switch/relay-once-engine 或 LAIXIN_RELAY_ONCE_ENGINE,起窗时实时读);常驻中继 relay=claude(结构,无开关)$( relay_enabled && echo ';常驻托管=开' || echo ';常驻托管=关(应召形态)' )"
   fi
   if [ "$DISPATCH_ENGINE" = "claude" ]; then
     if [ "$VERIFY_ENGINE" = "claude" ]; then
@@ -3813,6 +3834,159 @@ cmd_relay_down() {
 
 cmd_peekr() { tmux capture-pane -p -t "$SESSION:$RELAY_WIN" -S "-${1:-30}"; }
 
+# ══ 一次性应召中继窗 relay-once(2026-08-22)═══════════════════════════════════════════════
+# 沿革:常驻中继 relay 第十八任 17:49 收摊——创始人当面直令「把 relay 换成 codex,直接动手干」,方案窗口第二十二任据
+#   「上位认知:方案与执行」把中继从常驻角色搬到执行层 ⇒ **一次性应召中继窗**(dispatch 按件点名起、件毕即收、⛔ 常驻
+#   ⛔ 注册常任;协作流程 :254 沿革注 · 11C 总纲 §〇 承载条)。当日只落了形态与模板,**工具侧零实现、零验证**。
+# 创始人 19:2x 定案:「relay 现在也换成 codex 了,但这个路线没有验证过,所以需要把 2 种方案都落好。默认还是 claude code,
+#   因为后面 11C 可能会用到,把 codex 当作第 2 方案。两条路线都落到位。」⇒ 本命令:引擎 claude 默认 / codex 第二,
+#   两条起窗链路都做实并各在隔离会话实起验证;常驻 relay(cmd_relay)**原样保留为 claude**——它的代发职能结构上只能
+#   claude(kimi 顶班派工席的 relay-msg 注入的是窗口名 relay);一次性窗 ⛔ 替代常驻的代发,两者分工见 SKILL 卡。
+# 形态照 cmd_verify(同为一次性席位):窗口名 relay-<件名 slug>(vwin 同款转义)· BU_NAME/BU_CDP_URL 同派生 ·
+#   claude=RELAY_MODEL + RELAY_ONCE_DENY;codex=codex_launch_cmd(33d679b 起显式 luna/max,与方案窗口对一次性中继窗的
+#   配档拍一致)· 起窗即派点名指令 · 回复契约=落盘 记录/<件名>-中转回复.md 末行【中转回复】(events 既有扫描与投递,零改动)。
+RELAY_ONCE_ENGINE_REQ=""; RELAY_ONCE_ENGINE=""
+relay_once_engine_resolve(){  # → stdout "<生效引擎> <请求值>";env > 开关文件 > 默认 claude;非法值按 claude(体检/起窗点名)
+  local req eff
+  req="${LAIXIN_RELAY_ONCE_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/relay-once-engine" 2>/dev/null || echo claude)}"
+  case "$req" in claude|codex) eff="$req" ;; *) eff="claude" ;; esac
+  printf '%s %s\n' "$eff" "$req"
+}
+read -r RELAY_ONCE_ENGINE RELAY_ONCE_ENGINE_REQ <<< "$(relay_once_engine_resolve)"
+# 一次性窗在常驻 deny 上再收两格:⛔ 起/收任何中继(含再起一次性窗——件毕即收,不得自我繁殖)。
+# "laixin-lane relay*" 通配在此合法:一次性窗不是 dispatch,relay-msg 对它本就被 whoami 机器闸拒;其余 relay/relay-down/relay-once 都不该由它发起。
+RELAY_ONCE_DENY=("${RELAY_DENY[@]}" "Bash(laixin-lane relay*)" "Bash(laixin-lane rdown*)")
+
+rowin() {  # 一次性中继窗名(件名 → relay-<slug>;转义规则与 vwin 逐字同款——tmux 目标字符 . : % $ @ 与空格斜杠)
+  local slug; slug="$(echo "$1" | tr ' /.:%$@' '-------' | cut -c1-24)"
+  [ -n "$slug" ] || die "件名不能为空"
+  echo "relay-$slug"
+}
+
+cmd_relay_once() {
+  local item="${1:-}"; shift || true
+  [ -n "$item" ] || die "relay-once 需要件名:laixin-lane relay-once <件名> --file <正文.md> [--engine claude|codex] [--dir DIR] [--dry]"
+  local file="" dir="$HOME" eng_opt="" dry=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file)   file="${2:?--file 需要正文文件路径}"; shift 2 ;;
+      --engine) eng_opt="${2:?--engine 需要 claude|codex}"; shift 2 ;;
+      --dir)    dir="${2:?--dir 需要路径}"; shift 2 ;;
+      --dry)    dry=1; shift ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  [ -n "$file" ] || die "relay-once 必须 --file <正文.md>:件的正文(请裁原文/点状快查题面/11C 点名单)⛔ 塞进命令行——正文是件的事实载体,要留盘可核"
+  [ -f "$file" ] || die "正文文件不存在:$file"
+  # 起窗时实时解析引擎(与 dispatch 同一课:⛔ 进程启动时读一次);--engine 显式优先于开关
+  read -r RELAY_ONCE_ENGINE RELAY_ONCE_ENGINE_REQ <<< "$(relay_once_engine_resolve)"
+  if [ -n "$eng_opt" ]; then RELAY_ONCE_ENGINE="$eng_opt"; RELAY_ONCE_ENGINE_REQ="$eng_opt"; fi
+  # 引擎校验在动窗口**之前**(#60① 一课);本命令是按件人工/dispatch 发起 ⛔ 无人值守自愈路径 ⇒ 非法值 die 即可
+  case "$RELAY_ONCE_ENGINE" in claude|codex) : ;; *) die "未知一次性中继引擎:$RELAY_ONCE_ENGINE(只接受 claude|codex;claude 默认 / codex 第二方案)" ;; esac
+  if [ "$RELAY_ONCE_ENGINE_REQ" != "$RELAY_ONCE_ENGINE" ]; then
+    echo "⚠️ 一次性中继引擎请求「${RELAY_ONCE_ENGINE_REQ}」无效(只有 claude 默认/codex 第二),按 claude 起窗;清理:rm ~/.laixin-lane-switch/relay-once-engine / unset LAIXIN_RELAY_ONCE_ENGINE"
+  fi
+  local w; w="$(rowin "$item")"
+  local bu port; bu="r$(printf '%s' "$w" | cksum | awk '{print $1}')"
+  port="$(cdp_port_verify "$w")"
+  local reply="$KB/4-开发层/记录/${item}-中转回复.md"
+  local friction="${LAIXIN_RELAY_FRICTION:-$HOME/.laixin-relay-friction.md}"
+  local opener
+  if [ "$RELAY_ONCE_ENGINE" = "claude" ]; then
+    opener='调 Skill laixin-pipeline(流水线操作卡),认领「一次性中继窗」角色'
+  else
+    opener='用 Read 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源,**绝对路径直读 ⛔ 靠 skill 自动发现**),认领「一次性中继窗」角色'
+  fi
+  local redline
+  if [ "$RELAY_ONCE_ENGINE" = "claude" ]; then
+    redline='(工具层已禁:laixin-lane send/fresh/up/down/claim/dispatch/halt/resurrect/release/watchdog/events/verify/vdown/relay*/rdown 与 git push/merge/reset --hard)'
+  else
+    redline='——**本引擎没有 claude 的 disallowedTools 工具层禁令,以下以本指令为准,越线即整件作废**:⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ laixin-lane send/fresh/up/down/claim/dispatch/halt/resurrect/release/watchdog/events/verify/vdown/relay/relay-down/relay-once/rdown'
+  fi
+  local msg
+  msg="$(cat <<EOF
+你是 laixin 开发流水线的**一次性应召中继窗**(角色全名:裁定缺口路由·一次性形态;引擎=${RELAY_ONCE_ENGINE};由派工窗口按件点名起,**件毕即收 ⛔ 常驻 ⛔ 注册常任 ⛔ 再接新件**)。
+
+件名:${item}
+件正文(先通读,它是本件的事实载体):${file}
+
+起手式,按序做完再动手(⛔ 跳步 ⛔ 凭印象补):
+1. 跑 date 实测当前时间——⛔ 拿推断的/记忆里的时间写任何登记;
+2. ${opener};
+3. 读 ${friction} 末尾「🧰 给一次性中继窗的工具箱」一节(grep -n "给一次性中继窗的工具箱" 定位后只读该节,⛔ 通读全档——它有几十万字);
+4. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-开发协作流程.md 的「中继窗口(裁定缺口路由)」相关节(含 :254 形态变更沿革注)与 来信平台-流水线看板.md 末 30 行;
+5. **收到任何请裁/转递件,第一步核该件在库里的当前状态**(请裁方的读数与库之间隔着一段时间,那段时间里发生的事没有任何信号会告诉你)。
+
+处置原则(工具箱 ④ 三条自检):**该退回的退回 · 不该做的自己拦下 · 说不准的标明射程。** 按件取用:核库快裁 / 点状快查·事实核对 / 11C 三职(书记员·调研归口·质疑席,职责在 11C-圆桌总纲)。⛔ 对技术内容出倾向(裁定归方案窗口/创始人);原则性问题 ⛔ 自裁,在回复里写明「需转方案窗口」并给出你已核到的事实与射程。
+
+回复契约(硬约束):把结论写入
+   ${reply}
+**最后一行行首固定为**:【中转回复】${item} 来自 relay-once
+——事件总线扫到末行后给派工窗口投**路径指针**(正文长度格式不限,派工窗口自己读全文);不落盘=件未完成。
+随件落账取常驻期精神:摩擦如实落盘(追加到 ${friction},带 date 实测时刻)· 悬空核对(你登的每件问题确认已有归属方接手,⛔ 只登不核)。
+
+红线 ${redline}
+🔴 ⛔ 用 laixin-lane dmsg 注入派工窗格——那是被封禁动作换个名字(⚠️ 工具层拦不住你,这不是「做不到」是「不该做」);
+⛔ 自决切通道 ⛔ 起常驻中继 ⛔ 再起一次性窗。
+
+收摊:回复落盘后你的活就结束了;派工窗口会 laixin-lane rdown ${item} 回收本窗(你⛔ 自收——看板要留「回收」条且来源是回收方)。
+看板记录用 laixin-lane log "..."(本窗口来源会按窗口名自动标为「一次性中继窗」,⛔ 再手工拼前缀)。
+EOF
+)"
+  if [ -n "$dry" ]; then
+    echo "[dry] 引擎=${RELAY_ONCE_ENGINE}(请求=${RELAY_ONCE_ENGINE_REQ}) 窗口=$w cwd=$dir BU_NAME=$bu 端口=$port"
+    echo "[dry] 回复契约:$reply 末行【中转回复】${item} 来自 relay-once"
+    echo "[dry] 点名指令首行:$(head -1 <<< "$msg" | cut -c1-120)"
+    return 0
+  fi
+  ensure_session
+  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
+    die "$w 已存在——同一件不重复起一次性中继窗(要换新先 laixin-lane rdown $item)"
+  fi
+  tmux new-window -t "$SESSION" -n "$w" -c "$dir"
+  sleep 0.5
+  if [ "$RELAY_ONCE_ENGINE" = "claude" ]; then
+    local deny; deny="$(printf '"%s" ' "${RELAY_ONCE_DENY[@]}")"
+    ensure_headless_settings
+    tmux send-keys -t "$SESSION:$w" "BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" $CLAUDE_LAUNCHER -n \"$w\" --model $RELAY_MODEL --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $deny" C-m
+    vwait_ready "$w" "$dir" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-ro $item 40"
+  else
+    local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
+    tmux send-keys -t "$SESSION:$w" "$(codex_launch_cmd "$bu" "$port" "$_mcp_off")" C-m
+    vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-ro $item 40"
+  fi
+  sleep 1
+  printf '%s' "$msg" | tmux load-buffer -b laixin-romsg -
+  tmux paste-buffer -p -b laixin-romsg -t "$SESSION:$w"
+  tmux delete-buffer -b laixin-romsg
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$w" C-m
+  ( confirm_briefed "$w" "relay-once" "$RELAY_ONCE_ENGINE" ) >/dev/null 2>&1 &
+  board "$(caller_src)" "起一次性中继窗 $w ← 件「${item}」(正文 $file;引擎=$RELAY_ONCE_ENGINE;件毕即收)"
+  echo "$w 已起并派点名指令(引擎=$RELAY_ONCE_ENGINE)。复核:laixin-lane peek-ro $item 30"
+  echo "回复契约:$reply 末行行首【中转回复】${item} 来自 relay-once——事件总线投路径指针给派工窗口;件毕:laixin-lane rdown $item"
+  return 0
+}
+
+cmd_rdown() {
+  local item="${1:-}"
+  [ -n "$item" ] || die "rdown 需要件名"
+  local w; w="$(rowin "$item")"
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" \
+    || { echo "$w 本就不存在"; return 0; }
+  tmux kill-window -t "$SESSION:$w"
+  cdp_sweep "$(cdp_port_verify "$w")"
+  board "$(caller_src)" "回收一次性中继窗 $w(件「${item}」毕)"
+  echo "$w 已回收"
+  return 0
+}
+
+cmd_peekro() {
+  local item="${1:-}"; local n="${2:-30}"
+  [ -n "$item" ] || die "peek-ro 需要件名"
+  tmux capture-pane -p -t "$SESSION:$(rowin "$item")" -S "-$n"
+}
+
 # ══ #67②:出站中转 relay-msg —— dispatch 换 codex 后唯一的真工程 ═══════════════════════════
 # 背景:codex **没有 SendMessage**。入站没问题(events 靠 tmux send-keys 投递,任何引擎都收得到,
 # 零改动);出站是问题——skills/laixin-pipeline/SKILL.md 有 5 处依赖 SendMessage。
@@ -4133,7 +4307,7 @@ wd_loop() {
       2) continue ;;                                      # 挡住且不敢动键:告警已发,不做无效戳/重起
     esac
     local vw
-    for vw in $(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep '^verify-' || true); do
+    for vw in $(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -E '^(verify|relay)-' || true); do   # relay-*=一次性中继窗,同为无人值守的一次性席位
       dialog_sweep_win "$vw" >/dev/null 2>&1 || true
     done
     # —— 2. 活着但静止:先判是不是"正常等待" ——
@@ -4894,6 +5068,9 @@ case "${1:-}" in
   relay-down) shift; cmd_relay_down "$@" ;;   # 收窗并**关闭托管**(清标记,看门狗从此不管 relay)
   dmsg)      shift; cmd_dmsg "$@" ;;          # 主动消息→派工窗口(引擎无关:codex/kimi 无 SendMessage 时的入站通道)
   relay-msg)  shift; cmd_relay_msg "$@" ;;    # #67②:出站转办(**单向** dispatch→relay;回程走落盘+events,零扩权)
+  relay-once) shift; cmd_relay_once "$@" ;;   # 一次性应召中继窗(claude 默认 / codex 第二;件毕即收)
+  rdown)      shift; cmd_rdown "$@" ;;        # 回收一次性中继窗
+  peek-ro)    shift; cmd_peekro "$@" ;;
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)

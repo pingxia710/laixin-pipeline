@@ -3196,6 +3196,40 @@ t "account-switch ⛔ 被看门狗/events 调用(只许人手跑)+ 帮助与分�
 tout "quota:仪表盘读不到时说读不到 ⛔ 读成充裕(退 1)" "读不到" bash -c 'LAIXIN_USAGE_RAW="'"$TQ"'/没有.json" "'"$LANE"'" quota; true'
 rm -rf "$TQ"
 
+# ── 方案窗口第二十三任接班两件(2026-08-23 07:0x):log 旗标拒收 · doctor 8b 交班×总表请裁件 ──────────────
+TPR="$(mktemp -d)"; : > "$TPR/board.md"
+t "log:-h/--help/--xx 旗标拒收 ⛔ 入账(首撞=接班时 log --help 记出空条);正常文本照记" bash -c '
+  out="$(env LAIXIN_BOARD="$1/board.md" LAIXIN_WINDOW=测试 "$2" log --help 2>&1)"; rc=$?; [ $rc -ne 0 ] && grep -q "没有旗标" <<< "$out" || { echo "未拒:$out"; exit 1; }
+  out="$(env LAIXIN_BOARD="$1/board.md" LAIXIN_WINDOW=测试 "$2" log -h 2>&1)"; [ $? -ne 0 ] || exit 2
+  [ ! -s "$1/board.md" ] || { echo "旗标入账了"; exit 3; }
+  env LAIXIN_BOARD="$1/board.md" LAIXIN_WINDOW=测试 "$2" log "正文一条" >/dev/null 2>&1 && grep -q "正文一条" "$1/board.md"' _ "$TPR" "$LANE"
+cat > "$TPR/table.md" <<'TBL'
+## 📦 交接包 · dispatch 第N任
+| **旧片(交接包里的)** | B | 候方案窗口裁落点 |
+## 进行中(= 轨道占用)
+| 片名 | 轨 | 状态 |
+|---|---|---|
+| **在飞请裁片** | A | 🔴 **已请方案窗口裁两件**(02:25 `date`)<br>叙述里再提一次候方案窗口裁 |
+| **叙述提及片** | A | 开发中<br>历史上曾候方案窗口裁 |
+| **划线已销片** | B | ~~候方案窗口裁落点~~ ✅ 已裁 |
+> 引用块里写着 候方案窗口裁 也不算
+## 排队(无裁定依赖)
+| **V0.2 包④ B2 顾问发起转出** | B | 🔴🔴 **发车前重实测推翻了登记前提,已请方案窗口裁(2026-08-23 02:25:59 `date` 实测)**<br>方案包④第 39 行… |
+## 已完成(今日)
+| **已完成片** | A | 分支 | ✅ 已合入;当年候方案窗口裁过 |
+TBL
+sed -n "/^table_pending_rulings()/,/^}/p" "$LANE" > "$TPR/f.sh"
+t "table_pending_rulings:只认进行中/排队/验收中三节 × 状态格首段;叙述/<br> 后/删除线/引用块/交接包/已完成一律不算" bash -c '
+  source "$1/f.sh"; out="$(table_pending_rulings "$1/table.md")"
+  [ "$(grep -c "|" <<< "$out")" -eq 2 ] || { echo "行数≠2:"; echo "$out"; exit 1; }
+  grep -q "^进行中|在飞请裁片|" <<< "$out" && grep -q "^排队|V0.2包④B2顾问发起转出|" <<< "$out" &&
+  ! grep -q "叙述提及片\|划线已销片\|旧片\|已完成片" <<< "$out"' _ "$TPR"
+t "doctor 8b:方案窗口交班条**或接班条**(近 N 天)× 总表请裁未销号行 ⇒ 逐条 wrn(≤5 条,余计数);都无 ⇒ 只 ℹ️ 计数;零行 ⇒ ok(首跑实撞:第二十二任零交班条只写快照)" bash -c '
+  d="$(sed -n "/^cmd_doctor()/,/^}$/p" "$1")"
+  grep -q "table_pending_rulings \"\$TABLE\"" <<< "$d" && grep -q "未销号行——核它们是否进了交接快照" <<< "$d" && grep -q "head -5" <<< "$d" && grep -q "无「候/已请方案窗口裁」未销号行(8b)" <<< "$d" &&
+  grep -qF "|接班 ?方案窗口 ?第[一二三四五六七八九十]+任)" <<< "$d"' _ "$LANE"
+rm -rf "$TPR"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

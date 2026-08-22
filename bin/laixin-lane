@@ -515,7 +515,10 @@ cmd_log() {
   # **处置照复盘页原文裁定:打一行提示,⛔ 拒绝执行**——打断记录比来源字段错更贵;提示不得惩罚
   # 「记看板」这个想鼓励的行为(三约束③ 噪声必须与目标行为同向)⇒ 提示走 stderr、退出码仍 0,
   # stdout 的「已记录到看板」保持不变(有窗口在解析它)。
-  local src="${LAIXIN_WINDOW:-}"
+  # 来源优先级与 caller_src 对齐(2026-08-22 监测中实撞:11B 归口带 LAIXIN_BOARD_SRC=11B归口 记看板,条目仍落
+  #   「未标注来源」——cmd_log 只认 LAIXIN_WINDOW,而起窗/重生路径的来源变量是 LAIXIN_BOARD_SRC,两条路各认一个变量
+  #   ⇒ 同一调用方在不同命令上来源不一致)。显式 LAIXIN_WINDOW 仍最优先(在班窗口的自报身份),其次 LAIXIN_BOARD_SRC。
+  local src="${LAIXIN_WINDOW:-${LAIXIN_BOARD_SRC:-}}"
   # 未显式给来源时先按窗口名推断(托管席位确定性地对);推不出才落「未标注来源」并提示
   [ -n "$src" ] || src="$(seat_src_infer)"
   if [ -z "$src" ]; then

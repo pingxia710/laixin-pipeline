@@ -1349,6 +1349,12 @@ t "未设来源时记录照常落盘(不打断记看板)" bash -c 'grep -q "测�
 #   (三约束② 失效必须降级 ⛔ 反向)。必须是自曝的「未标注来源」,stats 来源统计里一眼可见。
 t "兜底来源自曝为「未标注来源」⛔ 伪装成「窗口」" bash -c \
   'grep -q "| 未标注来源 | 测试事件丙 |" "'"$L26"'/b.md" && ! grep -q "| 窗口 | 测试事件丙 |" "'"$L26"'/b.md"'
+# ⭐ 绊线③-bis(2026-08-22 监测中实撞):log 要认 LAIXIN_BOARD_SRC(起窗/重生路径的来源变量),与 caller_src 同一优先级族——
+#   否则同一调用方 `log` 落「未标注来源」而 `dispatch`/`relay` 起窗条目落「11B归口」,两条路各认一个变量。
+t "log 认 LAIXIN_BOARD_SRC 做来源(LAIXIN_WINDOW 未设时)" bash -c \
+  'env -u LAIXIN_WINDOW LAIXIN_BOARD_SRC=11B归口 LAIXIN_BOARD="'"$L26"'/b.md" "'"$LANE"'" log "测试事件丁" >/dev/null 2>&1; grep -q "| 11B归口 | 测试事件丁 |" "'"$L26"'/b.md"'
+t "log 来源优先级:LAIXIN_WINDOW 仍高于 LAIXIN_BOARD_SRC(在班窗口自报身份优先)" bash -c \
+  'env LAIXIN_WINDOW=派工窗口 LAIXIN_BOARD_SRC=11B归口 LAIXIN_BOARD="'"$L26"'/b.md" "'"$LANE"'" log "测试事件戊" >/dev/null 2>&1; grep -q "| 派工窗口 | 测试事件戊 |" "'"$L26"'/b.md"'
 # ⭐ 绊线④:设了来源就**零提示**——噪音不得随正确用法增长
 t "设了 LAIXIN_WINDOW 则零提示(不制造噪音)" bash -c \
   '! grep -q "未设 LAIXIN_WINDOW" <<< "$(env LAIXIN_WINDOW=派工窗口 LAIXIN_BOARD="'"$L26"'/b.md" "'"$LANE"'" log "测试事件丁" 2>&1)"'

@@ -262,6 +262,8 @@ seat_src_infer(){  # tmux 窗口名 → 角色名;推不出则空。⛔ 依赖�
     relay-*)   echo "一次性中继窗" ;;
     m-*)       echo "机动窗" ;;
     prompt-*)  echo "写单窗" ;;
+    dispatch-11c) echo "11C派工窗口" ;;
+    scribe-*)  echo "11C书记员窗" ;;
     verify-*)  echo "验收窗口" ;;
     lane-a|lane-b|lane-c) echo "$w" ;;
     *) : ;;
@@ -4975,6 +4977,11 @@ cmd_tool_down() {  # <件名>
   local item="${1:-}"
   [ -n "$item" ] || die "tool-down 需要件名"
   local w; w="$(toolwin "$item")"
+  # 🔴 幂等安静(2026-08-23 实撞:对从未 tool-up 过的件跑 tool-down,看板照记「回收」——「回收了」与
+  #   「有东西被回收」在台账上必须可分辨;照 m-down 语义:无窗=本就不存在,零看板条)
+  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
+    echo "$w 本就不存在"; return 0
+  fi
   tmux kill-window -t "$SESSION:$w" 2>/dev/null || true
   cdp_sweep "$(cdp_port_verify "$w")" 2>/dev/null || true
   board "$(caller_src)" "回收 11B/11C 开发维护窗 $w(件=${item};⚠️ worktree 需另行 git worktree remove)"

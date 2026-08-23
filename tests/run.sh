@@ -2460,6 +2460,22 @@ t "#105 E2E:中文路径经 quotePath=false 管道命中" bash -c 'source "'"$V1
 t "#130 席位活性:在班无会话=报(受控真火形态)" bash -c 'awk "/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl-fn.sh; source /tmp/lx-sl-fn.sh; printf "%s\n" "| **测试席位甲** | **\`pingxia-zz\`**(**第一任在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; seat_liveness /tmp/lx-sl-reg.md | grep -q "pingxia-zz"'
 t "#130 席位活性:待接/看门狗托管不报(⛔ 交接期与 tmux 内误报)" bash -c 'source /tmp/lx-sl-fn.sh; printf "%s\n%s\n" "| **席位丙** | **待接**(\`pingxia-yy\` 已交班) | — | 任 | 时 | 人 |" "| **席位丁** | \`dwin\`(tmux 内,看门狗托管;**在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; [ -z "$(seat_liveness /tmp/lx-sl-reg.md)" ]'
 t "#130 席位活性:首版 awk 分列假阴性已钉死(cell 必须取到第 3 竖列)" bash -c 'grep -q "cut -d.|. -f3" "'"$LANE"'" && ! grep -qE "awk -F. \\\\\| . .\{print .2\}" "'"$LANE"'"'
+# ── #130-tmux 直测半边(2026-08-23 监测实撞:dispatch-11c 两局之间合法待命 >45 分钟,心跳启发式 19:16 假阳性)──
+t "#130 tmux 内活窗(pane 非 shell)⇒ 直测判活不报〔应召机务窗形态〕" bash -c '
+  awk "/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl2-fn.sh; source /tmp/lx-sl2-fn.sh
+  tmux kill-session -t lxslt-$$ 2>/dev/null
+  tmux new-session -d -s lxslt-$$ -n live-seat-zz -x 40 -y 8 "sleep 25"   # -n 显式命名=tmux 自动关 automatic-rename(rename-window 会被自动改名顶回)
+  printf "%s\\n" "| **测试机务窗** | **\`live-seat-zz\`**(**在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl2-reg.md
+  out="$(LAIXIN_SEATLIVE_TMUX_SESSIONS=lxslt-$$ seat_liveness /tmp/lx-sl2-reg.md)"
+  tmux kill-session -t lxslt-$$ 2>/dev/null
+  [ -z "$out" ]'
+t "#130 tmux 无此窗 ⇒ 仍走心跳判如实报(失效可见性不降)" bash -c '
+  source /tmp/lx-sl2-fn.sh
+  printf "%s\\n" "| **幽灵席** | **\`no-such-win-zz\`**(**在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl2-reg.md
+  out="$(LAIXIN_SEATLIVE_TMUX_SESSIONS=lxslt-none-$$ seat_liveness /tmp/lx-sl2-reg.md)"
+  rm -f /tmp/lx-sl2-fn.sh /tmp/lx-sl2-reg.md
+  grep -q "no-such-win-zz" <<< "$out"'
+
 t "#108-fix 提及型不误报:窗口条目里提及他窗口交班的句子不算交班条" bash -c 'source /tmp/lx-hb-fn.sh 2>/dev/null || awk "/^handover_unpaired\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-hb-fn.sh && source /tmp/lx-hb-fn.sh; printf "%s\n" "| 08-20 10:40 | 方案窗口 | dispatch 41 交班三件处置:①CDP skill 片 |" "| 08-20 11:15 | 方案窗口 | 收口读数入账 方案窗口第十五任真正收摊,第十六任在班 |" > /tmp/lx-hb-b.md; printf "## 占位\n" > /tmp/lx-hb-p.md; [ -z "$(handover_unpaired /tmp/lx-hb-b.md /tmp/lx-hb-p.md)" ]'
 t "#108-fix 真交班条仍报:正文开头形态命中" bash -c 'source /tmp/lx-hb-fn.sh; printf "%s\n" "| 08-20 10:58 | 方案窗口 | 方案窗口第十五任 pingxia-8a 交班(date 10:58 实测封班) |" > /tmp/lx-hb-b.md; printf "## 占位\n" > /tmp/lx-hb-p.md; handover_unpaired /tmp/lx-hb-b.md /tmp/lx-hb-p.md | grep -q 第十五任'
 t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bash -c 'source "'"$V16F2"'"; ! git -C "'"$V105"'" log --name-only --format= HEAD~1..HEAD | ev_material_filter >/dev/null'
@@ -3498,7 +3514,9 @@ t "chrome-up 实体:tmux 服务端托管(new-window chrome-<端口>)⛔ nohup/�
   u="$(sed -n "/^cmd_chrome_up()/,/^}$/p" "$1")"; d="$(sed -n "/^cmd_chrome_down()/,/^}$/p" "$1")"
   grep -q "tmux new-window -d -t \"\$SESSION\" -n \"\$cw\"" <<< "$u" && ! grep -q "nohup" <<< "$u" && grep -q "/json/version" <<< "$u" && grep -q "EV_DIR/cdp" <<< "$u" &&
   grep -q "tmux kill-window -t \"\$SESSION:\$cw\"" <<< "$d" && grep -q "cdp_sweep \"\$p\"" <<< "$d" && grep -q "rm -f \"\$EV_DIR/cdp/" <<< "$d"' _ "$LANE"
-tout "chrome-down:目标无窗时幂等(端口 sweep 照跑不报错)" "已关" env LAIXIN_SESSION=lx-nowin-$$ "$LANE" chrome-down a --port 9599
+# 🔴 2026-08-23 监测破案:本行原漏沙盒 LAIXIN_BOARD ⇒ 每跑一遍套件往生产看板写一条假清理记录(当日 46 条,来源「手工」;
+#   与 #165 漏真窗同族=夹具沙盒不全)。凡夹具调用会 board 的子命令,LAIXIN_BOARD 必随 LAIXIN_SESSION 一起接管。
+tout "chrome-down:目标无窗时幂等(端口 sweep 照跑不报错)〔看板已沙盒——此前每跑一遍套件污染生产看板一条〕" "已关" env LAIXIN_SESSION=lx-nowin-$$ LAIXIN_BOARD=/tmp/lx-cdown-board-$$.md "$LANE" chrome-down a --port 9599
 t "doctor §4 报无主 tmux 托管 Chrome;宪法头第 12 条含 chrome-up 句(方案窗口给句);帮助与分发齐" bash -c '
   grep -q "tmux 托管 headless Chrome 有 \${_orph} 个无主" "$1" && grep -q "^#   laixin-lane chrome-up" "$1" && grep -qE "^  chrome-(up|down|list)\)" "$1" &&
   m="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/prompt/来信平台-prompt宪法头模板.md"; { [ ! -f "$m" ] || grep -q "一律用 \`laixin-lane chrome-up <轨>\`" "$m"; }' _ "$LANE"
@@ -3660,7 +3678,10 @@ t "#165 tool_running 零命中恒返 0〔病灶:pipefail 下 grep 退 1 ⇒ 调�
   SESSION=绝不存在的会话-zzz; tool_running >/dev/null; rc=$?; rm -rf "$T"; [ "$rc" -eq 0 ]'
 tfail "#165 --prompt 必填(创始人:也需要派工窗口写 prompt;⛔ 把任务塞进命令行)" "必须 --prompt" "$LANE" tool-up t165 --dir "'"$W165"'"
 tfail "#165 --dir 必填且必须是工具仓 worktree" "必须 --dir" "$LANE" tool-up t165 --prompt "$W165/p.md"
-tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M 件 ⛔ 落 A 轨主树同族)" "不得落工具仓主树" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$(cd "$(dirname "$LANE")/.." && pwd)"
+# 🔴 2026-08-23 三撞:本测原拿「被测脚本所在仓」当主树靶子,套件在 worktree 里跑时该路径 ≠ TOOL_REPO ⇒ 守卫正确放行
+#   一棵合法 worktree、测试假红,**且误放行会在真 laixin 会话漏起一个 tool-t165 codex 窗**(当日三次,均人工回收)。
+#   修法=LAIXIN_RELEASE_REPO 钉到被测仓自身 ⇒ 任何检出位置下守卫都拒绝「自己的树」,失败面不再漏窗。
+tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M 件 ⛔ 落 A 轨主树同族)〔worktree 里跑也成立〕" "不得落工具仓主树" env LAIXIN_RELEASE_REPO="$(cd "$(dirname "$LANE")/.." && pwd)" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$(cd "$(dirname "$LANE")/.." && pwd)"
 tfail "#165 ⛔ 拿产品仓 worktree 起工具件(本线只维护 11B/11C)" "不是\*\*工具仓\*\*的 worktree" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$HOME/来信平台"
 t "#165 起动串与开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd(那条钉 luna/sol,是验收窗与中继件的射程)" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"

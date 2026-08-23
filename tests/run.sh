@@ -3327,9 +3327,13 @@ t "③ev_last_get/set:按文件记末行哈希,覆盖不累积,不同文件互�
   [ -z "$(ev_last_get /a.md)" ] || exit 1
   ev_last_set /a.md h1; ev_last_set /b.md h9; ev_last_set /a.md h2
   [ "$(ev_last_get /a.md)" = h2 ] && [ "$(ev_last_get /b.md)" = h9 ] && [ "$(grep -c "^/a.md|" "$EV_LAST")" -eq 1 ]' _ "$TB4"
+# 🔁 沿革(2026-08-23 #167):本条钉的是「降级判断在**分流 case** 之前」。#167 在降级处新增了一个
+#   `case "$lastline" in 【交付完成】*|…` **单行** case(限定降级射程),使原来按 `case "$lastl` 取「第一个 case」
+#   的定位落到了新那行 ⇒ 顺序断言假红。⇒ 定位收紧为**行尾 `in`**(分流那个 case 是行尾 in,新加的是同行带模式)。
+#   ⛔ 删本条——它钉的意图仍然成立,只是定位串要跟着代码形态走。
 t "③ev-loop:末行未变的内容变更 ⇒ 投「更新」(⛔ verify-from ⛔ M1),且判在分流 case 之前;末行变了照旧全量投并登记" bash -c '
   e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
-  a=$(grep -n "ev_last_get \"\$f\"" <<< "$e" | head -1 | cut -d: -f1); b=$(grep -n "ev_deliver \"更新\"" <<< "$e" | head -1 | cut -d: -f1); c=$(grep -n "case \"\$lastline\" in" <<< "$e" | head -1 | cut -d: -f1); d=$(grep -n "ev_last_set \"\$f\" \"\$_llh\"" <<< "$e" | head -1 | cut -d: -f1)
+  a=$(grep -n "ev_last_get \"\$f\"" <<< "$e" | head -1 | cut -d: -f1); b=$(grep -n "ev_deliver \"更新\"" <<< "$e" | head -1 | cut -d: -f1); c=$(grep -n "case \"\$lastline\" in$" <<< "$e" | head -1 | cut -d: -f1); c_unused=$(grep -n "case \"\$lastline\" in" <<< "$e" | head -1 | cut -d: -f1); d=$(grep -n "ev_last_set \"\$f\" \"\$_llh\"" <<< "$e" | head -1 | cut -d: -f1)
   [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$d" ] && [ "$d" -lt "$c" ] &&
   grep -q "末行未变,非新交付" <<< "$e" && grep -q "⛔ 重起 verify-from" <<< "$e" &&
   dd="$(sed -n "/^ev_deliver()/,/^}$/p" "$1")"; grep -qF "[ \"\$kind\" = \"交付\" ]" <<< "$dd"' _ "$LANE"
@@ -3743,6 +3747,18 @@ printf '| 名 | b | c | d |\n|---|---|---|---|\n| ⛔ 甲行 | x | y | z |\n' > 
 tout "#166③ --match 带前导竖线应命中〔真根因=前导竖线 ⛔ 报告方归因的「含 ⛔」;三态实测:带竖线不含⛔ 同样零命中〕" "唯一命中" "$LANE" table-lint "$V166/m.md" --match "| ⛔ 甲行"
 tout "#166③ --match 不带前导竖线等价命中" "唯一命中" "$LANE" table-lint "$V166/m.md" --match "⛔ 甲行"
 rm -rf "$V166"
+
+
+# ── #167 末行未变降级只对带 commit 的契约(2026-08-23 实撞:书记员回复被判「更新」⇒ 收方据文案判不用管)──
+echo "== #167 降级射程 =="
+t "#167 降级射程=只对【交付完成】/【验收回执】(末行带 commit/结论)" bash -c '
+  seg="$(sed -n "/末行未变的内容变更/,/^      fi$/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "【交付完成】\*|【验收回执】\*) _prev=" <<< "$seg"'
+t "#167 末行固定句的三种契约 ⛔ 降级〔病灶:中转回复末行永远是「…来自 relay-once」,同件第二次落盘会永远被判更新〕" bash -c '
+  seg="$(sed -n "/末行未变的内容变更/,/^      fi$/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "\*) _prev=\"\"" <<< "$seg"'
+t "#167 病灶级:失败面是「投了一条告诉人别管的事件」⛔「没投递」——注释须留住这条判读" bash -c '
+  grep -q "投的却是一条\*\*告诉人别管\*\*的事件" "'"$LANE"'"'
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

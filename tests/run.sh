@@ -2898,7 +2898,7 @@ t "lane_busy:codex 档收 Waiting" bash -c '
 KPF="$(mktemp -d)/kp.sh"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE" > "$KPF"   # ⛔ source <(…):bash 3.2 下函数不落地(2026-08-22 实测)
 t "lane_busy:kimi 档同样收 Waiting(2026-08-22 起词表在单点源 kimi_act_pat)" bash -c '
   source "'"$KPF"'"; pat="$(kimi_act_pat)"
-  grep -q "Running|Waiting|" <<< "$pat" && grep -q "🌑" <<< "$pat" &&
+  grep -q "Running|Waiting for background terminal|" <<< "$pat" && grep -q "🌑" <<< "$pat" &&
   sed -n "/^lane_busy()/,/^}$/p" "'"$LANE"'" | grep -q "kimi_act_pat"'
 t "边界:#40 的判据⛔ 被顺手放宽(裁定=⛔ 放宽判据)" bash -c '
   sed -n "/^send_swallow_check()/,/^}$/p" "'"$LANE"'" | grep -q "Read |Thinking|Ran " &&
@@ -3248,6 +3248,49 @@ t "#108①:中文数字递减(第十→第九 / 第二十→第十九 / 第二�
 t "doctor 8c:①态与 ②态分句报(先补交班条再盘点 vs 直接盘点),射程方案窗口席" bash -c '
   d="$(sed -n "/^cmd_doctor()/,/^}$/p" "$1")"; grep -q "handover_missing_pred" <<< "$d" && grep -q "先补交班条再盘点" <<< "$d" && grep -q "#108 ①态" <<< "$d"' _ "$LANE"
 rm -rf "$TMP108"
+
+# ── 11B 待定轨首批四件(2026-08-23 方案窗口第二十三任点名排序):①seat_liveness 多通道 ④Waiting 收口 ③假交付降级 ⑤#107 按 diff ──
+echo "== 11B 待定轨首批:seat_liveness 多通道 · lane_busy Waiting 收口 · 假交付降级 · #107 按 diff =="
+TB4="$(mktemp -d)"
+sed -n "/^seat_liveness()/,/^}/p" "$LANE" > "$TB4/sl.sh"
+mkdir -p "$TB4/home/.claude-b/sessions" "$TB4/home/.claude-official/sessions" "$TB4/socks"
+now_ms=$(( $(date +%s) * 1000 ))
+printf '{"name":"pingxia-a4","updatedAt":%s}\n' "$now_ms" > "$TB4/home/.claude-official/sessions/111.json"
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$TB4/socks/111.sock"   # 真 unix socket(-S 判据;⛔ 空文件冒充)
+printf '| **方案窗口** | **`pingxia-a4`**(第二十三任在班)… |\n| **派工窗口** | **`dispatch`**(在班 · tmux 内看门狗托管)… |\n' > "$TB4/reg.md"
+t "①seat_liveness:缺省枚举全部 \$HOME/.claude*/sessions(席位在 official 不再被判死);LAIXIN_CC_SESS 显式单目录仍可用" bash -c '
+  source "$1/sl.sh"; export HOME="$1/home" LAIXIN_CC_SOCKS="$1/socks"
+  unset LAIXIN_CC_SESS; out="$(seat_liveness "$1/reg.md")"; [ -z "$out" ] || { echo "误判死:$out"; exit 1; }
+  out="$(LAIXIN_CC_SESS="$1/home/.claude-b/sessions" seat_liveness "$1/reg.md")"; grep -q "pingxia-a4|" <<< "$out" || { echo "单目录应判死:$out"; exit 2; }
+  grep -q "已枚举全部通道" <<< "$(rm -f "$1/socks/111.sock"; seat_liveness "$1/reg.md")"' _ "$TB4"
+t "④lane_busy:裸 Waiting 退场——uvicorn「Waiting for application startup.」⛔ 判在飞;codex「Waiting for background terminal」仍在飞;kimi 词表同口径" bash -c '
+  { sed -n "/^lane_engine()/,/^}/p" "$1"; sed -n "/^kimi_act_pat()/,/^}/p" "$1"; sed -n "/^lane_busy()/,/^}/p" "$1"; } > "$2/lb.sh"; source "$2/lb.sh"; SESSION=s; win_exists(){ return 0; }
+  tmux(){ echo "INFO:     Waiting for application startup."; echo "INFO:     Application startup complete."; }; lane_busy a && { echo "uvicorn 日志被判在飞"; exit 1; }
+  tmux(){ echo "  Waiting for background terminal (2m30s)"; }; lane_busy a || exit 2
+  tmux(){ echo "INFO:     Waiting for application startup."; }; lane_busy c && { echo "kimi 同族误判"; exit 3; }
+  ! grep -qE "\|Waiting\|" <<< "$(kimi_act_pat)"' _ "$LANE" "$TB4"
+{ sed -n "/^ev_last_get()/,/^}$/p" "$LANE"; grep -E '^ev_last_(get|set)\(\)' "$LANE" >/dev/null; grep -E '^ev_last_get\(\)|^ev_last_set\(\)' "$LANE"; } > "$TB4/el.sh"
+t "③ev_last_get/set:按文件记末行哈希,覆盖不累积,不同文件互不干扰" bash -c '
+  source "$1/el.sh"; EV_DIR="$1/ev"; EV_LAST="$1/ev/deliveries.last"
+  [ -z "$(ev_last_get /a.md)" ] || exit 1
+  ev_last_set /a.md h1; ev_last_set /b.md h9; ev_last_set /a.md h2
+  [ "$(ev_last_get /a.md)" = h2 ] && [ "$(ev_last_get /b.md)" = h9 ] && [ "$(grep -c "^/a.md|" "$EV_LAST")" -eq 1 ]' _ "$TB4"
+t "③ev-loop:末行未变的内容变更 ⇒ 投「更新」(⛔ verify-from ⛔ M1),且判在分流 case 之前;末行变了照旧全量投并登记" bash -c '
+  e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
+  a=$(grep -n "ev_last_get \"\$f\"" <<< "$e" | head -1 | cut -d: -f1); b=$(grep -n "ev_deliver \"更新\"" <<< "$e" | head -1 | cut -d: -f1); c=$(grep -n "case \"\$lastline\" in" <<< "$e" | head -1 | cut -d: -f1); d=$(grep -n "ev_last_set \"\$f\" \"\$_llh\"" <<< "$e" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$d" ] && [ "$d" -lt "$c" ] &&
+  grep -q "末行未变,非新交付" <<< "$e" && grep -q "⛔ 重起 verify-from" <<< "$e" &&
+  dd="$(sed -n "/^ev_deliver()/,/^}$/p" "$1")"; grep -qF "[ \"\$kind\" = \"交付\" ]" <<< "$dd"' _ "$LANE"
+# ⑤ kb-commit 按 diff:临时 vault git 仓
+V5="$TB4/vault"; mkdir -p "$V5" && git -C "$V5" init -q && printf '| 08-22 22:4x | 历史行含占位 | 内容 |\n' > "$V5/f.md" && git -C "$V5" add f.md && git -C "$V5" -c user.email=t@t -c user.name=t commit -q -m init
+t "⑤kb-commit #107:改含历史占位(22:4x)的长行而新增文本无占位 ⇒ 不报;新增文本含 23:1x ⇒ 报且只报新引入的" bash -c '
+  printf "| 08-22 22:4x | 历史行含占位 | 内容 追加一段无占位文字 |\n" > "$1/f.md"
+  out="$(env LAIXIN_VAULT="$1" GIT_AUTHOR_EMAIL=t@t GIT_AUTHOR_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_COMMITTER_NAME=t "$2" kb-commit "t1" "$1/f.md" 2>&1)"; grep -q "已提交" <<< "$out" || { echo "$out"; exit 1; }
+  ! grep -q "#107 占位时刻" <<< "$out" || { echo "误报历史占位:$out"; exit 2; }
+  printf "| 08-22 22:4x | 历史行含占位 | 内容 追加 23:1x 新占位 |\n" > "$1/f.md"
+  out="$(env LAIXIN_VAULT="$1" GIT_AUTHOR_EMAIL=t@t GIT_AUTHOR_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_COMMITTER_NAME=t "$2" kb-commit "t2" "$1/f.md" 2>&1)"
+  grep -q "#107 占位时刻" <<< "$out" && grep -q "23:1x" <<< "$out" && ! grep -q "22:4x" <<< "$out"' _ "$V5" "$LANE"
+rm -rf "$TB4"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then

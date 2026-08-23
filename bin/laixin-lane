@@ -250,7 +250,7 @@ kimi_act_pat(){  # kimi 在飞/活动迹象词表(**单点源**;lane_busy / send
   #   `ctrl-s to steer`=kimi 有排队输入时的底部提示(只在工作中出现)⇒ 既是在飞、也是「消息已送达」的直接证据。
   #   ⛔ 收「● Ran a command」「● Used Edit」一类——它们干完仍留在屏上,收了就永远在飞(方向反了)。
   #   上游再改签名时:只改这里 + 补 tests 的 0.xx 画面夹具;⛔ 回到三处各改各的。
-  printf '%s' 'Working|Thinking|thinking\.\.\.|Running|Waiting|ctrl-s to steer|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'
+  printf '%s' 'Working|Thinking|thinking\.\.\.|Running|Waiting for background terminal|ctrl-s to steer|🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'   # 裸 Waiting 被 uvicorn 日志污染(2026-08-23)
 }
 
 # ── #68:kimi 起窗卡在 `Trust this folder?`(创始人 2026-08-19 17:1x 令「kimi 窗口需要修」)──────
@@ -1668,7 +1668,10 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
     # #107 半边:新增行含占位时刻形态即警(全部提交文件;只警不拦,理由同 cmd_log 处)
     local _pf _ph
     for _pf in "${args[@]}"; do
-      _ph="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | ph_time_hits 2>/dev/null | head -3 | tr '\n' ' ')" || true
+      # 按 diff 判 ⛔ 按行判(2026-08-23 方案窗口第二十三任规格):改一个含历史占位(如 22:4x)的长行,旧占位会被当新增命中 ⇒ 误导人去改历史文本
+      #   (那正是 #107 自己禁止的)。改法=新增行命中 − 对应删除行命中,只报**本次新引入**的占位;纯新增行照旧全报。
+      _ph="$(comm -23 <(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | ph_time_hits 2>/dev/null | sort -u) \
+                    <(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^-' | grep -v '^---' | ph_time_hits 2>/dev/null | sort -u) 2>/dev/null | head -3 | tr '\n' ' ')" || true
       [ -n "${_ph:-}" ] && echo "⚠️ #107 占位时刻:$(basename "$_pf") 本次新增行含 ${_ph}——先 date 取实测值,改完再 kb-commit 一次(提交已落库 ⛔ 回滚)"
     done
   fi
@@ -2343,6 +2346,9 @@ EV_LOG="$EV_DIR/events.log"
 EV_SPOOL="$EV_DIR/spool"
 EV_SEEN="$EV_DIR/deliveries.seen"
 EV_SETTLING="$EV_DIR/settling"          # 本拍「疑仍在写」的交付候选 f|hash(⛔ 进 seen,下拍再核);见 ev_unsettled
+EV_LAST="$EV_DIR/deliveries.last"       # 每文件上次投递时的末行哈希 f|h——末行未变的内容变更=同一交付的文本更新 ⇒ 降级「更新」事件(2026-08-23)
+ev_last_get(){ [ -s "$EV_LAST" ] && grep -F "$1|" "$EV_LAST" 2>/dev/null | tail -1 | cut -d'|' -f2 || true; }
+ev_last_set(){ mkdir -p "$EV_DIR" 2>/dev/null || true; { grep -vF "$1|" "$EV_LAST" 2>/dev/null || true; printf '%s|%s\n' "$1" "$2"; } > "$EV_LAST.new" && mv -f "$EV_LAST.new" "$EV_LAST"; }
 EV_PENDING="$EV_DIR/pending.ack"          # M1(复盘页#8):已投交付的认领台账 epoch|slug|状态(P待认领/E已升级)
 # #67②:relay-msg 出站暂存(dispatch→relay 那一跳)。索引行 epoch|id|目标|首行摘要,全文另存
 # RELAY_OUTBOX_D/<id>。**⛔ 拿「注入成功」当「送达」**:relay 是托管窗口、看门狗随时可重生它,
@@ -2572,7 +2578,12 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
   # tmux 托管席(单元格含「看门狗托管」)由看门狗管,本函数跳过;标「待接」不算死(交接中属正常)。
   # 判活=名下有 sessions/*.json 且其 pid 的 socket 存在且 updatedAt 距今 < 45 分钟(三跳逐跳可见,通则五)。
   local reg="${1:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-窗口角色注册表.md}"
-  local sess_dir="${LAIXIN_CC_SESS:-$HOME/.claude-b/sessions}"
+  # 🔴 sessions 目录按通道枚举(2026-08-23 首发级:此前写死 ~/.claude-b/sessions ⇒ 账号软切换后 .claude-official 上每个 tmux 外席位必被判死——
+  #   当日方案窗口第二十三任被误报三次;创始人「接下来要经常换」⇒ 每切一次撞一次)。LAIXIN_CC_SESS 仍可显式指定单目录(测试/回切);
+  #   缺省=枚举 $HOME/.claude*/sessions 全部(通道拓扑同一口径:doctor 的 channel_quota_verdict 也这样枚举)。
+  local sess_dirs="" _d
+  if [ -n "${LAIXIN_CC_SESS:-}" ]; then sess_dirs="$LAIXIN_CC_SESS"
+  else for _d in "$HOME"/.claude*/sessions; do [ -d "$_d" ] && sess_dirs="${sess_dirs:+$sess_dirs }$_d"; done; fi
   [ -f "$reg" ] || { echo "注册表不可读|—|跳过(⛔ 当通过)"; return 0; }
   grep -E '^\| \*\*' "$reg" | while IFS= read -r row; do
     local cell name role
@@ -2586,15 +2597,16 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
     [ -n "$name" ] || continue
     local hit=0 j pid upd now
     now="$(date +%s)"
-    for j in "$sess_dir"/*.json; do
+    local _sd
+    for _sd in $sess_dirs; do for j in "$_sd"/*.json; do
       [ -f "$j" ] || continue
       grep -q "\"name\":\"$name\"" "$j" || continue
       pid="$(basename "$j" .json)"
       [ -S "${LAIXIN_CC_SOCKS:-/tmp/cc-socks}/$pid.sock" ] || continue
       upd="$(grep -oE '"updatedAt":[0-9]+' "$j" | grep -oE '[0-9]+' | head -1)"
       [ -n "$upd" ] && [ $(( now - upd/1000 )) -lt 2700 ] && { hit=1; break; }
-    done
-    [ "$hit" = 1 ] || printf '%s|%s|注册表标在班但无活会话(socket 缺或心跳超 45 分钟)\n' "$role" "$name"
+    done; [ "$hit" = 1 ] && break; done
+    [ "$hit" = 1 ] || printf '%s|%s|注册表标在班但无活会话(socket 缺或心跳超 45 分钟;已枚举全部通道 sessions)\n' "$role" "$name"
   done
 }
 
@@ -2804,6 +2816,18 @@ ev_loop(){
         continue
       fi
       lastline="$(tail -1 "$f")"
+      # 🔴 末行未变的内容变更 ⇒ 降级(2026-08-23 方案窗口第二十三任规格;dispatch 57 02:47/03:49 两次「假交付事件」实撞):
+      #   验收方会往交付报告里追加修订结论,内容哈希一变就被当新交付重投,dispatch 花好几轮核 mtime/diff 才判出是假事件。
+      #   末行=契约(标记+commit):它没变就不是新交付,只投一条轻量「更新」指针(⛔ 进 M1 ⛔ 提 verify-from);
+      #   它变了(整改重交=新 commit / 回执落盘)照旧全量投。首投(无登记)照旧。
+      _llh="$(printf '%s' "$lastline" | shasum -a 256 2>/dev/null | cut -c1-16)"; _prev="$(ev_last_get "$f")"
+      if [ -n "$_prev" ] && [ "$_prev" = "$_llh" ]; then
+        ev_deliver "更新" "【事件】报告文本更新(末行未变,非新交付):$f
+末行:$lastline
+下一步:这是同一交付/回执的正文更新(多为验收方追加修订结论或开发方补节)——⛔ 重起 verify-from ⛔ 重核 hash;若该片正在验收,验收方读得到;有疑再读一次全文即可。"
+        continue
+      fi
+      ev_last_set "$f" "$_llh"
       # #60①:按末行分流两种事实形态——交付报告(下一步=起验收)与验收回执(下一步=核数字+合并);
       # 扫描/基线/心跳截止线全共用,只有投递文案与 M1 登记不同(回执 ⛔ 进 M1,见 ev_deliver 注)。
       case "$lastline" in
@@ -3372,7 +3396,10 @@ lane_busy() {
   # ⚠️ 只补本函数(在飞判据)。**⛔ 顺手改 send_swallow_check(#40) 的同名词表**——那条裁定逐字
   #    「⛔ 放宽判据 ⛔ 提高阈值」,它对 `Waiting` 的正确处置是**附状态说明而不动判据**,两者
   #    目的相反:这里要「别把在飞当空闲」,那里要「别把送达当被吞」。(11B 当轮误改并撤回一次)
-  local _pat="Working|Explored|Reading|Search|Thinking|Applying|Running|Waiting"
+  # 🔴 裸词 `Waiting` 会被被测应用日志击中(2026-08-23 首发级,dispatch 58/方案窗口第二十三任:uvicorn 起服务打印
+  #   「INFO: Waiting for application startup.」⇒ 空闲轨被读成在飞 ⇒ 看门狗静默掩盖空闲——不可见且贵)⇒ 只认 codex 自己那句
+  #   「Waiting for background terminal」(2026-08-19 双样本的原文)。其余裸词同族风险留待实撞再收(Flask 的「Running on」等,本仓用 uvicorn)。
+  local _pat="Working|Explored|Reading|Search|Thinking|Applying|Running|Waiting for background terminal"
   [ "$(lane_engine "$1")" = "kimi" ] && _pat="$(kimi_act_pat)"   # 单点源(2026-08-22;0.38 盲文转轮+小写 thinking 见该函数注)
   tmux capture-pane -p -t "$SESSION:lane-$1" -S -30 2>/dev/null \
     | grep -qE "$_pat"

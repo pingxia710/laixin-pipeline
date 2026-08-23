@@ -2980,6 +2980,20 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
     printf '%s' "$cell" | head -c 200 | grep -q '在班' || continue
     name="$(printf '%s' "$cell" | grep -oE '`[a-z0-9-]+`' | head -1 | tr -d '\`')"
     [ -n "$name" ] || continue
+    # 🔴 tmux 内但非看门狗托管的应召席(2026-08-23 监测窗实撞,dispatch-11c 首例):分窗后 laixin-11c
+    #   会话里的机务窗两局之间合法待命 >45 分钟,心跳启发式必误报(19:16 实发一条假阳性,dispatch 61
+    #   人工核后判假)。名下窗口机器可见时**直接测窗口 ⛔ 推断**:窗在且 pane 不是登录 shell ⇒ 活;
+    #   pane 掉回 shell 不在此短路(=claude 已死,落回既有 sessions/socket 判定如实报)。
+    #   射程=SESSION(laixin)与 laixin-11c 两会话;LAIXIN_SEATLIVE_TMUX_SESSIONS 可覆盖(测试用)。
+    local _tsess _tpc _talive=""
+    for _tsess in ${LAIXIN_SEATLIVE_TMUX_SESSIONS:-"$SESSION" "laixin-11c"}; do
+      if tmux list-windows -t "$_tsess" -F '#{window_name}' 2>/dev/null | grep -qx "$name"; then
+        _tpc="$(tmux display-message -p -t "$_tsess:$name" '#{pane_current_command}' 2>/dev/null || true)"
+        if [ -n "$_tpc" ] && [ "$_tpc" != "$(basename "${SHELL:-/bin/zsh}")" ]; then _talive=1; fi
+        break
+      fi
+    done
+    [ "$_talive" = 1 ] && continue
     local hit=0 j pid upd now
     now="$(date +%s)"
     local _sd

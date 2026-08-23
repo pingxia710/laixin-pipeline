@@ -574,8 +574,10 @@ cmd_log() {
   fi
   # #107:正文疑含占位时刻(22:4x 形态)只警不拦——拦截会在窗口死前丢内容(失效方向与竖线转义同裁定);
   #   规则「先 date」已立仍三窗口 6 例复发 ⇒ 检查点绑到产物上。
-  local _pht; _pht="$(printf '%s' "$*" | ph_time_hits 2>/dev/null | head -3 | tr '\n' ' ')" || true
+  local _pht _phq; _pht="$(printf '%s' "$*" | ph_time_two_forms 2>/dev/null | grep '^SELF' | cut -f2- | head -1)" || true
+  _phq="$(printf '%s' "$*" | ph_time_two_forms 2>/dev/null | grep '^QUOTED' | cut -f2- | head -1)" || true
   [ -n "${_pht:-}" ] && echo "⚠️ 正文疑含占位时刻(${_pht}):先跑 date 取实测值再写(#107;已照常记录,不打断)。" >&2
+  [ -n "${_phq:-}" ] && echo "ℹ️ 占位时刻(${_phq})同行带来源锚 ⇒ 按**转录**放行(#160);若其实是你自己的登记时刻,仍须 date 实测。" >&2
   board "$src" "$*"
   echo "已记录到看板"
 }
@@ -1731,9 +1733,15 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
     for _pf in "${args[@]}"; do
       # 按 diff 判 ⛔ 按行判(2026-08-23 方案窗口第二十三任规格):改一个含历史占位(如 22:4x)的长行,旧占位会被当新增命中 ⇒ 误导人去改历史文本
       #   (那正是 #107 自己禁止的)。改法=新增行命中 − 对应删除行命中,只报**本次新引入**的占位;纯新增行照旧全报。
-      _ph="$(comm -23 <(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | ph_time_hits 2>/dev/null | sort -u) \
-                    <(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^-' | grep -v '^---' | ph_time_hits 2>/dev/null | sort -u) 2>/dev/null | head -3 | tr '\n' ' ')" || true
+      # #160:新增行按两形态分报——SELF(自编)照旧 ⚠️,QUOTED(同行带来源锚的转录)降为 ℹ️ 提示级。
+      #   ⛔ 用两形态去做「新增−删除」差集:形态是**行属性**,删除行的形态与新增行无关;差集仍按占位值本身(#149 口径不动)。
+      local _phnew _phold _phq2
+      _phnew="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' | ph_time_two_forms 2>/dev/null | grep '^SELF' | cut -f2- | tr ' ' '\n' | sort -u)" || true
+      _phold="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^-' | grep -v '^---' | ph_time_hits 2>/dev/null | sort -u)" || true
+      _ph="$(comm -23 <(printf '%s\n' "${_phnew:-}" | grep . | sort -u) <(printf '%s\n' "${_phold:-}" | grep . | sort -u) 2>/dev/null | head -3 | tr '\n' ' ')" || true
+      _phq2="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' | ph_time_two_forms 2>/dev/null | grep '^QUOTED' | cut -f2- | head -1)" || true
       [ -n "${_ph:-}" ] && echo "⚠️ #107 占位时刻:$(basename "$_pf") 本次新增行含 ${_ph}——先 date 取实测值,改完再 kb-commit 一次(提交已落库 ⛔ 回滚)"
+      [ -n "${_phq2:-}" ] && echo "ℹ️ #160:$(basename "$_pf") 新增行的占位(${_phq2})同行带来源锚 ⇒ 按**转录**放行;若其实是自编登记时刻,仍须 date 实测。"
     done
   fi
   if [ "$committed" -eq 1 ]; then
@@ -2544,6 +2552,52 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
 # ── #105/#106/#107/#108(复盘页 §十六,方案窗口第十四任收班盘点;创始人 2026-08-20 07:0x 直令实现)──
 # 四条共同的形状:把「靠人记得」的搬运/自查换成机器可见——判据函数全部纯化(stdin→stdout),绊线直测。
 PH_TIME_RE='[0-9]{1,2}:([0-9]x|xx?)([^0-9A-Za-z]|$)'   # 22:4x / 23:x / 23:xx;不碰 22:45 与 0x1f(无冒号)
+PH_SRC_ANCHOR_RE='转录|转记|照录|逐字|原文|引自|来源=|据[^ ]{0,6}(档|页|表|录|纲)|见[^ ]{0,6}(档|页|快照)'   # #160 锚词半边
+PH_SRC_WHERE_RE='\[\[|《|\.md|看板|注册表|复盘页|快照|记忆档|台账|总表|协作流程|交接包|原话档'                  # #160 出处半边
+ph_time_two_forms(){  # stdin=文本 → stdout 至多两行:「SELF<TAB>命中…」「QUOTED<TAB>命中…」;零命中零输出退 1(#160)
+  # #160(2026-08-23 方案窗口第二十三任裁「升条」;来源=第二十二任候选条「#107 不分辨转录既有档记载 vs 自编占位」):
+  #   两形态在告警输出上此前同形 ⇒ 判读靠人。判据免语义=**同一行**内既有锚词(转录/照录/逐字/原文/来源=…)
+  #   又有出处(*[[…]] / 《…》 / *.md / 看板|注册表|复盘页|快照|记忆档…)⇒ 记 QUOTED(提示级放行),否则 SELF(照旧警)。
+  # 🔴 **按小句判 ⛔ 按行/按全文判**(2026-08-23 真环境首火当场改):跨行匹配会让文中任何一处「转录」变成整篇的
+  #   免死金牌。首版按行——**单测多行全绿,真环境立刻露馅**:`laixin-lane log` 的正文**永远是一行**,于是
+  #   「据复盘页原文 00:4x;我这轮 23:1x 起」整条被判 QUOTED,自编那个也跟着放行 ⇒ 行级=给 log 开万能免死金牌。
+  #   ⇒ 切到小句(分隔符 `;;。!!??,,`):**锚必须贴着它所标注的那个占位写**。切不开(整句一片)时
+  #   仍需锚+出处同片,方向是更难放行 ⛔ 更易放行。
+  # 🔴 **失效必须降级 ⛔ 反向**(三约束②):放行是危险方向 ⇒ python3 缺失/异常一律**全部记 SELF**(回到现行严格态),
+  #   ⛔ 静默放行。零命中时退 1,与 ph_time_hits 同约定。
+  local _in; _in="$(cat)"
+  local _out
+  _out="$(PH_TIME_RE="$PH_TIME_RE" PH_A="$PH_SRC_ANCHOR_RE" PH_W="$PH_SRC_WHERE_RE" python3 -c '
+import os,re,sys
+rt=re.compile(os.environ["PH_TIME_RE"]); ra=re.compile(os.environ["PH_A"]); rw=re.compile(os.environ["PH_W"])
+self_h, quot_h = [], []
+SPLIT=re.compile(r"[;;。!!??,,]")
+for raw in sys.stdin.read().splitlines():
+  for line in SPLIT.split(raw):
+    hits=[]
+    for m in rt.finditer(line):
+        g=m.group(0)
+        while g and not (g[-1].isdigit() or g[-1]=="x"): g=g[:-1]
+        if g: hits.append(g)
+    if not hits: continue
+    sourced = bool(ra.search(line)) and bool(rw.search(line))
+    (quot_h if sourced else self_h).extend(hits)
+def uniq(x):
+    out=[]
+    for i in x:
+        if i not in out: out.append(i)
+    return out
+if self_h: sys.stdout.write("SELF\t"+" ".join(uniq(self_h))+"\n")
+if quot_h: sys.stdout.write("QUOTED\t"+" ".join(uniq(quot_h))+"\n")
+' <<< "$_in" 2>/dev/null)" || _out=""
+  if [ -z "${_out:-}" ]; then
+    # python3 不可用/异常:回落严格态——只要 ph_time_hits 命中就全记 SELF(⛔ 因判定失效而放行)
+    local _fb; _fb="$(printf '%s' "$_in" | ph_time_hits 2>/dev/null | tr '\n' ' ')" || true
+    [ -n "${_fb:-}" ] && { printf 'SELF\t%s\n' "${_fb% }"; return 0; }
+    return 1
+  fi
+  printf '%s\n' "$_out"
+}
 ph_time_hits(){  # stdin=文本 → stdout=命中的占位时刻;零命中退 1(#107:「x 占位看着像已标不精确,其实是没测」)
   # ⚠️ 元文本必然命中(讨论占位时刻的记录自带占位形态)——属预期,⛔ 因误报收窄判据:只警不拦已把误报代价压到
   #   一行 stderr,而收窄(行首/排除引号)会漏掉句中的真占位——relay 十四任 07:20 双样本(真命中漂 40 分钟 + 元文本)。

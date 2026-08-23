@@ -2366,6 +2366,24 @@ t "#107 占位时刻:22:4x 命中" bash -c 'source "'"$V16F"'"; printf "%s" "创
 t "#107 占位时刻:23:xx 命中" bash -c 'source "'"$V16F"'"; printf "%s" "大约 23:xx 起" | ph_time_hits >/dev/null'
 t "#107 占位时刻:真时刻 22:45 不命中" bash -c 'source "'"$V16F"'"; ! printf "%s" "22:45:03 实测" | ph_time_hits >/dev/null'
 t "#107 占位时刻:十六进制 0x1f 不命中(无冒号)" bash -c 'source "'"$V16F"'"; ! printf "%s" "地址 0x1f 与 hex" | ph_time_hits >/dev/null'
+# ── #160 两形态(2026-08-23 方案窗口第二十三任裁「升条」;转录带来源锚 ⇒ 提示级放行,自编占位照旧警)──
+# 🔴 病灶级绊线:本组必须能区分「判定真的生效」与「python 侧炸了走 fallback」——**两者对自编样本输出完全同形**
+#   (实撞:首版 try 缺 except 语法错,自编样本照样出 SELF,只有 QUOTED 样本露馅)⇒ 至少一条断言必须要求 QUOTED 出现。
+V160="$(mktemp -d)"; V160F="$V160/fn.sh"
+grep -E '^PH_TIME_RE=|^PH_SRC_ANCHOR_RE=|^PH_SRC_WHERE_RE=' "$LANE" > "$V160F"
+for fn in ph_time_hits ph_time_two_forms; do sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$V160F"; done
+t "#160 自编占位 ⇒ SELF" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "创始人确认复工(22:4x)" | ph_time_two_forms)"; grep -q "^SELF	22:4x" <<< "$out"'
+t "#160 转录带锚(锚词+出处同行)⇒ QUOTED〔判定生效的唯一证据,⛔ 删〕" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "创始人 00:4x 授权(此处系转录记忆档 [[11b-monitoring-recipe]] 原文)" | ph_time_two_forms)"; grep -q "^QUOTED	00:4x" <<< "$out"'
+t "#160 只有锚词无出处 ⇒ 仍 SELF" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "转录一下 22:4x 的事" | ph_time_two_forms)"; grep -q "^SELF" <<< "$out"'
+t "#160 只有出处无锚词 ⇒ 仍 SELF" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "看板 22:4x 那条" | ph_time_two_forms)"; grep -q "^SELF" <<< "$out"'
+t "#160 跨行 ⛔ 免死金牌:他行有锚不救本行自编" bash -c 'source "'"$V160F"'"; out="$(printf "%s\n%s" "本节逐字转录自 [[某档]] 原文" "另一行自编 23:1x" | ph_time_two_forms)"; grep -q "^SELF	23:1x" <<< "$out" && ! grep -q "^QUOTED" <<< "$out"'
+t "#160 单行内两态(真环境首火病灶:log 正文永远单行)⇒ 锚只救同小句 ⛔ 救整行" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "据复盘页原文 00:4x;我这轮 23:1x 起" | ph_time_two_forms)"; grep -q "^SELF	23:1x" <<< "$out" && grep -q "^QUOTED	00:4x" <<< "$out"'
+t "#160 小句级:锚与占位跨逗号分离 ⇒ 从严记 SELF" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "本条逐字转录自 [[某档]],时刻 22:4x" | ph_time_two_forms)"; grep -q "^SELF" <<< "$out" && ! grep -q "^QUOTED" <<< "$out"'
+t "#160 两态同现 ⇒ 两行各报" bash -c 'source "'"$V160F"'"; out="$(printf "%s\n%s" "据复盘页原文 00:4x" "我这里 23:1x" | ph_time_two_forms)"; grep -q "^SELF	23:1x" <<< "$out" && grep -q "^QUOTED	00:4x" <<< "$out"'
+t "#160 零命中退 1(与 ph_time_hits 同约定)" bash -c 'source "'"$V160F"'"; ! printf "%s" "22:45:03 实测" | ph_time_two_forms >/dev/null'
+t "#160 失效降级 ⛔ 反向:python3 不可用 ⇒ 转录样本也记 SELF(严格态)" bash -c 'source "'"$V160F"'"; python3(){ return 127; }; out="$(printf "%s" "转录 [[档]] 原文 00:4x" | ph_time_two_forms)"; grep -q "^SELF	00:4x" <<< "$out"'
+t "#160 接线:cmd_log 与 kb-commit 各挂一处 ph_time_two_forms" bash -c '[ "$(grep -c "ph_time_two_forms 2>/dev/null" "'"$LANE"'")" -ge 4 ]'
+rm -rf "$V160"
 t "#106 直令过滤:方案窗口+创始人直令 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:00 | 方案窗口 | 创始人直令两条(date):原话逐字… |" | ev_directive_filter | grep -q 直令'
 t "#106 直令过滤:在飞口径变更 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:01 | 方案窗口 | ⚠️ 在飞口径变更:推翻 X |" | ev_directive_filter >/dev/null'
 t "#106 直令过滤:派工窗口来源不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:02 | 派工窗口 | 转述创始人直令… |" | ev_directive_filter >/dev/null'

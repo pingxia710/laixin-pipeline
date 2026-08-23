@@ -3563,6 +3563,40 @@ t "#162 pickcheck 读不到 ⛔ 读成不吻合(rc=2 与 rc=1 必须分辨)" bas
   "'"$SEATB"'" pickcheck "'"$S162"'/不存在.txt" "甲" >/dev/null 2>&1; [ "$?" -eq 2 ]'
 rm -rf "$S162"
 
+
+# ── #163 注入落地校验(2026-08-23 11C 主持给单;dispatch 59 实撞 seat-thirdview 注入成功而内容未落地)──
+echo "== #163 注入落地校验 =="
+V163="$(mktemp -d)"; V163F="$V163/fn.sh"
+grep -E '^INJECT_SCROLLBACK=' "$LANE" > "$V163F"
+for fn in inject_feature inject_count inject_verify; do sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$V163F"; done
+t "#163 特征串:取首非空行前 40 字符,太短则并次行" bash -c 'source "'"$V163F"'"; out="$(printf "%s\n%s" "短" "第二行内容够长了吧" | inject_feature)"; [ "${#out}" -ge 8 ]'
+t "#163 特征串提取零 stderr 噪声(⛔ tr -d 处理多字节:中文 locale 下 Illegal byte sequence,tr 失败会吞掉整串 ⇒ 校验静默失效)" bash -c '
+  source "'"$V163F"'"; err="$(printf "%s" "落地校验探针 中文正文" | inject_feature 2>&1 >/dev/null)"; [ -z "$err" ]'
+t "#163 计数:同一行内两次出现要计 2〔病灶——grep -c 计行数,同行两次算 1 ⇒ 假报未落地 ⇒ 触发重复投递,比不校验更糟〕" bash -c '
+  source "'"$V163F"'"; tmux(){ printf "%s\n" "前缀 AAA 中间 AAA 后缀"; return 0; }; [ "$(inject_count t AAA)" = "2" ]'
+t "#163 空屏 ⇒ 计数 0 而非「读不到」〔病灶——按输出是否为空判会让新窗口基线缺失,整条校验退化成判不了〕" bash -c '
+  source "'"$V163F"'"; tmux(){ printf ""; return 0; }; out="$(inject_count t AAA)"; rc=$?; [ "$rc" -eq 0 ] && [ "$out" = "0" ]'
+t "#163 capture 失败 ⇒ 退 1(读不到 ⛔ 读成 0)" bash -c '
+  source "'"$V163F"'"; tmux(){ return 1; }; ! inject_count t AAA >/dev/null 2>&1'
+t "#163 判增量 ⛔ 判绝对:历史已有 1 次、投递后 2 次 ⇒ 已落地" bash -c '
+  source "'"$V163F"'"; tmux(){ printf "%s\n" "X" "X"; return 0; }; inject_verify t X 1 | grep -q "已落地"'
+t "#163 判增量 ⛔ 判绝对:历史已有 1 次、投递后仍 1 次 ⇒ 未落地(绝对计数在此永远命中,失去分辨力)" bash -c '
+  source "'"$V163F"'"; tmux(){ printf "%s\n" "X"; return 0; }; out="$(inject_verify t X 1)"; rc=$?; [ "$rc" -eq 1 ] && grep -q "未落地" <<< "$out"'
+t "#163 基线缺失 ⇒ rc=2 判不了(⛔ 读成未落地 ⇒ ⛔ 触发重投)" bash -c '
+  source "'"$V163F"'"; tmux(){ printf "%s\n" "X"; return 0; }; out="$(inject_verify t X "")"; rc=$?; [ "$rc" -eq 2 ] && grep -q "判不了" <<< "$out"'
+t "#163 抓屏必须带 scrollback〔dispatch 实测陷阱:不带 -S 时「没送达」与「已滚出屏幕」同形 ⇒ 校验器自身假阳性 ⇒ 重复投递〕" bash -c '
+  sed -n "/^inject_count()/,/^}/p" "'"$LANE"'" | sed "s/#.*//" | grep -q -- "-S .\$INJECT_SCROLLBACK"'
+t "#163 增量 4(codex TUI 一次投递渲染多行)⇒ 仍判已落地〔病灶:写成 == 1 会在该类席位永远判失败 ⇒ 重投 ⇒ 计数又增 ⇒ 重投循环〕" bash -c '
+  source "'"$V163F"'"; tmux(){ printf "%s\\n" "› X" "  ↳ X" "  ↳ X" "› X"; return 0; }; out="$(inject_verify t X 0)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q "+4" <<< "$out"'
+t "#163 判据用 -ge ⛔ -eq;实现里零「倍数」常量(不同 TUI 渲染倍数不同,同引擎两窗实测 +1 与 +4)" bash -c '
+  seg="$(sed -n "/^inject_verify()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"; grep -q -- "-ge 1" <<< "$seg" && ! grep -q -- "-eq 1" <<< "$seg"'
+t "#163 cmd_send 接线:投递前取基线(⛔ 事后拿绝对计数)" bash -c '
+  seg="$(sed -n "/^cmd_send()/,/^}/p" "'"$LANE"'")"; grep -q "inject_count" <<< "$seg" && grep -q "inject_verify" <<< "$seg"'
+t "#163 开发轨只报 ⛔ 自动重投(既有裁定:重发有搞乱 Codex 上下文风险;主持「失败即重投」射程=席位/中继类)" bash -c '
+  seg="$(sed -n "/^cmd_send()/,/^}/p" "'"$LANE"'")"; grep -q "⛔ 盲目重发" <<< "$seg"'
+rm -rf "$V163"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

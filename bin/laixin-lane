@@ -496,6 +496,48 @@ cmd_fresh() {
 # 正确改法=把导致误报的**状态**一并读出附上:lane 跑后台长任务时,新消息到达不产生任何活动迹象,
 # 「界面无变化」在该状态下≠「消息没到」(08-19 三十三任实撞:消息完整在屏,lane 正跑后台全量)。
 # 通则:误报的解药常常不是调阈值,是把「导致误报的那个状态」一起显示出来。
+# ── #163 注入落地校验(2026-08-23 11C 主持给单;dispatch 59 实撞 seat-thirdview:paste-buffer+send-keys
+#    执行成功、回显正常,而内容根本没进去;三席对照 0/1/1 + 重投后 1 且 token 436k→460k 确认)───────────
+# 🔴 **必须带 scrollback**(dispatch 实测的探针陷阱,写进本注释防后任删):`capture-pane -p` **不带 -S**
+#    只抓当前可见屏 ⇒ 「没送达」与「已处理并滚出屏幕」**完全同形**,0 命中不能下结论。若校验器本身假阳性
+#    报「未送达」再重投,造成**重复投递,比不校验更糟**。
+# 🔴 **比增量 ⛔ 比绝对计数**(同上实测):同一特征串历史里可能已出现 N 次(重投场景必然)⇒ 绝对计数
+#    永远命中,失去分辨力。⇒ 投递**前**取基线,投递**后**取计数,判 delta ≥ 1。
+INJECT_SCROLLBACK="${LAIXIN_INJECT_SCROLLBACK:--400}"
+inject_feature(){  # stdin=投递正文 → stdout=特征串(⛔ 正则:调用方一律 grep -F)
+  # 取首个非空行的前 40 字符;太短(<8)则并入次行——特征串太短会被无关输出偶然命中(假阳性 ⇒ 漏报未落地)
+  # ⛔ `| tr -d '\r'`:中文 locale 下 tr 对多字节输入报 `Illegal byte sequence`(隔离首火实见)——
+  #   本次它只是 stderr 噪声,但 tr 失败时可能吞掉整个特征串 ⇒ 校验静默失效。CR 在 awk 内剥。
+  awk '{ sub(/\r$/,"") } NF{ if(length(acc)>=8) exit; acc=(acc=="")?$0:acc" "$0 } END{ print substr(acc,1,40) }'
+}
+inject_count(){  # <tmux target> <特征串> → stdout=计数(读不到/无窗 ⇒ 空 + 退 1,⛔ 落 0——0 是「没落地」的结论值)
+  local tgt="${1:-}" feat="${2:-}"
+  [ -n "$tgt" ] && [ -n "$feat" ] || return 1
+  # 🔴 判「读不到」用 **capture-pane 的退出码** ⛔ 用「输出是否为空」(隔离首火实撞:新窗口空屏合法、
+  #   计数就该是 0,而按空判会返「读不到」⇒ 基线缺失 ⇒ 整条校验退化成「判不了」)。
+  local shot rc
+  shot="$(tmux capture-pane -p -S "$INJECT_SCROLLBACK" -t "$tgt" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  # 🔴 计**出现次数** ⛔ `grep -c`(它计的是**命中行数**)——隔离首火实撞:paste 不带换行时两次投递落在
+  #   同一行,`grep -c` 仍返 1 ⇒ 判「未落地」= **假阴性**,而假阴性正是会触发重复投递的那个方向
+  #   (dispatch 59 警告的「比不校验更糟」)。
+  local n; n="$(grep -o -F -- "$feat" <<< "$shot" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  printf '%s' "${n:-0}"
+}
+inject_verify(){  # <tmux target> <特征串> <投递前基线> → 0=已落地(delta≥1);1=未落地;2=判不了(读不到)
+  local tgt="${1:-}" feat="${2:-}" base="${3:-}"
+  local now; now="$(inject_count "$tgt" "$feat")" || { printf '判不了:抓不到 %s 的屏(⛔ 读成未落地——读不到与没落地必须分辨)\n' "$tgt"; return 2; }
+  case "$base" in ''|*[!0-9]*) printf '判不了:基线缺失或非数(%s)——投递前必须先取基线,⛔ 拿绝对计数当判据\n' "${base:-空}"; return 2 ;; esac
+  local d=$(( now - base ))
+  # 🔴 **判据 `-ge 1` ⛔ `-eq 1`,且 ⛔ 任何「倍数」常量**(2026-08-23 dispatch 59 补测,一次投递实测增量 **4**):
+  #   codex TUI 对同一次投递渲染多行(`›` 用户输入行 ×2 + `↳` 引用/摘要行 ×2);同为 codex 的另一个席位窗
+  #   同轮却 +1 ⇒ **倍数不是引擎的函数**(疑与消息长度/折行/是否被摘要有关,未取证)。写成 `== 1` 会在这类席位上
+  #   **永远判失败并触发重投,而重投又增加计数 ⇒ 重投循环**——比不校验更糟。
+  # 📌 它带这个假设进来的原因值得记:提规格时手上 3 个样本恰好**全返 1**,于是「1」成了自然值;第 4 个样本
+  #   (不同 TUI)一测就是 4 ⇒ **「正面样本同样需要枚举 ⛔ 抽样」**的又一形态——**它们一致,恰恰因为它们同类**。
+  if [ "$d" -ge 1 ]; then printf '已落地(基线 %s → 现 %s,+%s;scrollback %s;⛔ 拿 +N 的 N 当常量——不同 TUI 渲染倍数不同)\n' "$base" "$now" "$d" "$INJECT_SCROLLBACK"; return 0; fi
+  printf '未落地(基线 %s → 现 %s,+0;scrollback %s)——注入命令执行成功 ⛔ 等于内容进去了\n' "$base" "$now" "$INJECT_SCROLLBACK"; return 1
+}
 send_swallow_check() {  # <轨道名>;由 cmd_send 的 8s 延时后台块调用
   local lane="$1" _shot _bg="" _pat='Working|Explored|Read |Thinking|Ran '
   # #60②:kimi(C 轨)的活动迹象词表与 codex 不同(2026-08-19 临时 tmux 会话实测 0.37.2):
@@ -520,6 +562,10 @@ cmd_send() {
   local text
   if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
   [ -n "$text" ] || die "没有要发送的内容"
+  # #163 落地校验:投递**前**取基线(⛔ 事后拿绝对计数——同串历史可能已有 N 次,重投场景必然)
+  local _feat _base
+  _feat="$(printf '%s' "$text" | inject_feature)"
+  _base="$(inject_count "$(target "$lane")" "$_feat" || true)"
   printf '%s' "$text" | tmux load-buffer -b laixin-msg -
   tmux paste-buffer -p -b laixin-msg -t "$(target "$lane")"
   tmux delete-buffer -b laixin-msg
@@ -529,6 +575,18 @@ cmd_send() {
   local head1; head1="$(echo "$text" | head -1 | cut -c1-80)"
   board "lane-$lane" "← 收到:${head1}"
   echo "已发送到 $(win "$lane")(${head1}…)"
+  # #163:注入落地校验(与 8s 活动迹象复核**互补 ⛔ 替代**——那条问「它动了没」,这条问「东西进去了没」)
+  # 🔴 **本路径只报 ⛔ 自动重投**:开发轨的重发早有裁定「有搞乱 Codex 上下文的风险」(见下方注释),
+  #   而 11C 主持的「失败即重投」规格来自**席位/中继类窗口**的样本 ⇒ 两条裁定射程不同,各按各的。
+  if [ -n "${_feat:-}" ] && [ -n "${_base:-}" ]; then
+    local _iv; _iv="$(inject_verify "$(target "$lane")" "$_feat" "$_base")"; local _ivrc=$?
+    case "$_ivrc" in
+      0) echo "✅ 落地校验:${_iv}" ;;
+      1) echo "⛔ 落地校验:${_iv}" >&2
+         board "lane-$lane" "⛔ 注入未落地(#163:特征串投递前后计数零增量,scrollback ${INJECT_SCROLLBACK})——⛔ 盲目重发(开发轨重发有搞乱上下文风险),先 peek ${lane} 30 人工核" ;;
+      *) echo "ℹ️ 落地校验:${_iv}" >&2 ;;
+    esac
+  fi
   echo "(8s 送达复核已挂后台:届时零告警=复核跑过且见活动迹象,#50——检查存在要可见)"
   # send 被吞机器检测(2026-08-18 生产级 P1-1):MCP 启动刷屏曾吞掉 send,peek 复核此前靠自觉。
   # 8 秒后抓屏找活动迹象;未见=大声警告+记看板。⛔ 不自动重发(重发曾被裁定有搞乱 Codex 上下文风险)。

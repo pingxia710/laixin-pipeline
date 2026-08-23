@@ -55,6 +55,9 @@ PICK_DIR="${LAIXIN_11C_PICK_DIR:-$HOME/.laixin-11c-pick}"
 #   仅改名为 取号-deadbeef.txt 立刻报 ❌ —— **只差一个名字,绿与红**,正是「成功与失败同形」族。
 # ⇒ 判据 ⛔ 各处各写一遍中文前缀;新增命名一律加进本数组,三处自动同步(#162)。
 PICK_NAME_GLOBS=( '取号-*' 'pick-*' 'pick_*' 'PICK-*' )
+# 取号文件**内容规则**:唯一真相源(2026-08-23 11C 主持裁并同轮钉进 11C 总纲 §一 R1①;派题令模板同句
+# 「文件内容整串即你的代号,原样用于文件名与末行契约」)。`lastchar` 保留**只作诊断输出 ⛔ 作吻合依据**。
+PICK_RULE="${LAIXIN_11C_PICK_RULE:-whole}"
 pick_find_expr(){  # → stdout=可直接嵌进 find 的 \( -name A -o -name B … \) 片段(⛔ 调用方自己拼)
   local out="\\(" g first=1
   for g in "${PICK_NAME_GLOBS[@]}"; do
@@ -427,7 +430,7 @@ cmd_pickcheck(){  # <取号文件> <回卷标识> → 报**两侧形态差**与�
   local pf="${1:-}" ret="${2:-}"
   [ -n "$pf" ] && [ -n "$ret" ] || { printf '⛔ 用法:laixin-11c-seat pickcheck <取号文件> <回卷标识(文件名或末行契约里的那个串)>\n'; return 2; }
   [ -f "$pf" ] || { printf '⛔ 取号文件不存在:%s(⛔ 读成「不吻合」——读不到与不吻合必须分辨)\n' "$pf"; return 2; }
-  PICK_F="$pf" RET_S="$ret" python3 - <<'PY2'
+  PICK_F="$pf" RET_S="$ret" PICK_RULE="$PICK_RULE" python3 - <<'PY2'
 import os,sys,io
 raw=io.open(os.environ["PICK_F"],encoding="utf-8",errors="replace").read()
 pick=raw.strip(); ret=os.environ["RET_S"].strip()
@@ -437,14 +440,21 @@ last  = bool(pick) and bool(ret) and (pick[-1]==ret[-1]) and rc==1
 lastin= bool(pick) and bool(ret) and (pick[-1] in ret)
 print("  取号文件形态:%d 字符 / %d 字节(⛔ 回显内容)" % (pc,pb))
 print("  回卷标识形态:%d 字符 / %d 字节(⛔ 回显内容)" % (rc,rb))
-print("  逐规则判定(两种解释含义相反 ⇒ 都算都报,规则归 11C 总纲):")
-print("    whole   整串即代号       : %s" % ("✅ 吻合" if whole else "❌ 不吻合"))
-print("    lastchar 末字即代号(回卷恰 1 字符): %s" % ("✅ 吻合" if last else "❌ 不吻合"))
-print("    末字包含于回卷            : %s" % ("✅ 是" if lastin else "❌ 否"))
-if whole or last or lastin:
-    print("  ⇒ 至少一种规则吻合 —— **⛔ 据此自动收卷**:先按 11C 总纲认定规则,再判。")
+rule=os.environ.get("PICK_RULE","whole")
+print("  生效规则:%s(单点源 PICK_RULE;11C 总纲 §一 R1① 钉死=whole 整串即代号)" % rule)
+ok = whole if rule=="whole" else last
+print("    %-8s ← **吻合依据**            : %s" % (rule, "✅ 吻合" if ok else "❌ 不吻合"))
+print("  诊断输出(⛔ 作吻合依据,只用于查错):")
+print("    whole    整串即代号                : %s" % ("吻合" if whole else "不吻合"))
+print("    lastchar 末字即代号(回卷恰 1 字符) : %s" % ("吻合" if last else "不吻合"))
+print("    末字包含于回卷                     : %s" % ("是" if lastin else "否"))
+if ok:
+    print("  ⇒ 按生效规则吻合。")
     sys.exit(0)
-print("  ⇒ 两种规则均不吻合。形态差就在上面两行(%d 字符 vs %d 字符)——" % (pc,rc))
+if last or lastin:
+    print("  ⚠️ 生效规则不吻合,但诊断显示末字相关吻合 —— **⛔ 据此收卷**:规则已钉死为 %s;" % rule)
+    print("     这种形态通常意味着**生成方或席位仍按旧口径**,处置归书记员/主持(⛔ 工具放行)。")
+print("  ⇒ 不吻合。形态差就在上面两行(%d 字符 vs %d 字符)——" % (pc,rc))
 print("     若字符数本就不同,先查**生成规则与提取口径是否同一处**;若字符数相同仍不吻合,再查比对命令本身")
 print("     (本单的真根因即**手工比对命令的正则未正确引用**,而当时只报了 label_match=no ⇒ 人只能去猜)。")
 sys.exit(1)

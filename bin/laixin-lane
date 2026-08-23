@@ -4676,7 +4676,11 @@ TOOL_REPO="${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}"   # 与 rele
 #   与 relay-once 的「claude 默认 / codex 第二」**主次相反但形态同款**:两条路线都落到位,按件可选。
 TOOL_ENGINE_SW="${LAIXIN_TOOL_ENGINE:-$(cat "$HOME/.laixin-lane-switch/tool-engine" 2>/dev/null || echo codex)}"
 # claude 路线的模型(codex 路线 ⛔ 钉模型,吃全局默认=与开发轨同源)
-TOOL_CLAUDE_MODEL="${LAIXIN_TOOL_CLAUDE_MODEL:-$(cat "$HOME/.laixin-lane-switch/tool-claude-model" 2>/dev/null || echo claude-fable-5[1m])}"
+# 🔴 创始人 2026-08-23 定:**钉 opus-5 ⛔ Fable 5**(与派工窗口同档;本线是工程活,取 agentic 主力档)。
+# ⚠️ 起动串里的引号**仍然保留** ⛔ 因为 opus-5 没有方括号就删——那道引号防的是「模型串含 glob 字符」这一类
+#   (首火实撞 `claude-fable-5[1m]` 的 `[1m]` 被 zsh 当字符类 ⇒ 整条命令没执行,外部只看到启动超时);
+#   开关随时可换回带方括号的取值,**判据不该跟着当前取值走**。
+TOOL_CLAUDE_MODEL="${LAIXIN_TOOL_CLAUDE_MODEL:-$(cat "$HOME/.laixin-lane-switch/tool-claude-model" 2>/dev/null || echo claude-opus-5)}"
 # claude 路线的工具层禁令(codex 无此能力 ⇒ 那条路线靠点名指令写死红线)。
 # ⚠️ **release ⛔ 入列也 ⛔ 放行**:本线两条路线都**开分支 ⛔ 提交 main**,release 归合并方 ⇒ 禁。
 TOOL_DENY=(

@@ -3637,6 +3637,40 @@ t "#164 11c-seat 认 sol 引擎且显式带档(⛔ 依赖默认——luna 那次
 t "#164 11c-seat 引擎枚举含 sol(⛔ 只改帮助文本不改校验)" bash -c '
   grep -q "fable|k3|terra|luna|sol) : ;;" "$(dirname "'"$LANE"'")/laixin-11c-seat"'
 
+
+# ── #165 11B/11C 开发维护窗(2026-08-23 创始人当面定形态,三次补正:tmux 托管应召 → codex → 只维护 11B/11C)──
+echo "== #165 11B/11C 开发维护窗 =="
+W165="$(mktemp -d)"; mkdir -p "$W165/kb/4-开发层/记录"; printf '# p\n探针\n' > "$W165/p.md"
+t "#165 窗名转义与 rowin/vwin 同款(tmux 目标字符)" bash -c '
+  T="$(mktemp -d)"; sed -n "/^toolwin()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
+  out="$(toolwin "件 名/带.特:殊")"; rm -rf "$T"; [ "$out" = "tool-件-名-带-特-殊" ]'
+t "#165 tool_running 零命中恒返 0〔病灶:pipefail 下 grep 退 1 ⇒ 调用方 set -e 当场退出 ⇒ tool-up --dry 静默 rc=1,而「零个在跑」正是最常见的正常态〕" bash -c '
+  T="$(mktemp -d)"; sed -n "/^tool_running()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
+  SESSION=绝不存在的会话-zzz; tool_running >/dev/null; rc=$?; rm -rf "$T"; [ "$rc" -eq 0 ]'
+tfail "#165 --prompt 必填(创始人:也需要派工窗口写 prompt;⛔ 把任务塞进命令行)" "必须 --prompt" "$LANE" tool-up t165 --dir "$W165"
+tfail "#165 --dir 必填且必须是工具仓 worktree" "必须 --dir" "$LANE" tool-up t165 --prompt "$W165/p.md"
+tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M 件 ⛔ 落 A 轨主树同族)" "不得落工具仓主树" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$(cd "$(dirname "$LANE")/.." && pwd)"
+tfail "#165 ⛔ 拿产品仓 worktree 起工具件(本线只维护 11B/11C)" "不是\*\*工具仓\*\*的 worktree" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$HOME/来信平台"
+t "#165 起动串与开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd(那条钉 luna/sol,是验收窗与中继件的射程)" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "agent_launch_cmd .* \"codex " <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
+t "#165 点名指令里零反引号〔病灶:反引号在 \$(cat <<EOF) 里被求值,首火实撞 run.sh: command not found + grep usage〕" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"; ! grep -q "\\\`" <<< "$seg"'
+t "#165 指令写死开分支纪律(⛔ 直接提交 main;与开发轨 AGENTS ③ 同款)" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"; grep -q "开分支开发" <<< "$seg" && grep -q "⛔ 直接提交 main" <<< "$seg"'
+t "#165 指令写死射程:只维护 11B/11C ⛔ 产品代码" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"; grep -q "本线只维护 11B/11C" <<< "$seg"'
+t "#165 events 认【工具件完成】末行标记" bash -c '
+  seg="$(sed -n "/^ev_scan_deliveries/,/^}/p" "'"$LANE"'")"; grep -q "工具件完成" <<< "$seg"'
+t "#165 ev_loop 分流:工具件 ⛔ verify-from ⛔ 进 M1" bash -c '
+  seg="$(sed -n "/^ev_loop/,/^}/p" "'"$LANE"'")"; grep -q "工具件完成" <<< "$seg" && grep -q "⛔ 起验收窗 ⛔ 进 M1 台账" <<< "$seg"'
+t "#165 wd_fuel 认工具窗为燃料(有工具件在跑 ⇒ 看门狗 ⛔ 按静默重起派工窗)" bash -c '
+  seg="$(sed -n "/^wd_fuel()/,/^}/p" "'"$LANE"'")"; grep -q "verify|relay|m|tool" <<< "$seg"'
+t "#165 doctor 报在跑工具窗 ⛔ 单例(worktree 隔离 ⇒ 可并发)" bash -c '
+  seg="$(sed -n "/^cmd_doctor/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "开发维护窗" <<< "$seg" && ! grep -q "单例被破" <<< "$seg"'
+rm -rf "$W165"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

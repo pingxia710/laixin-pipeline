@@ -3843,6 +3843,37 @@ try: print(int((json.load(sys.stdin).get("current") or {}).get("total") or 0) or
 except Exception: print("")' 2>/dev/null
   return 0
 }
+ctx_seat_tokens(){  # <席位名(sessions/*.json 的 name)> → stdout=该席位会话当前上下文 token 绝对值;读不到=空退 1
+  # #158-bis(2026-08-23 11B 归口):abs-min 的语义是「**一个窗口接班后还剩多少余量才够干活**」,基准应当是
+  #   **新任自己凭库重建耗掉了多少**;而首版采样落的是 `usage_total_now` 的**机器总增量(含同期其他窗口)**——
+  #   实测首条=15 分钟 2925 万,拿它 ×1.5 会得出**超过上下文窗口本身**的荒谬阈值 ⇒ ⛔ 用它写硬阈。
+  #   本函数按 sessions/*.json 的 name 找 sessionId,再读该 transcript 末条 usage(与 cmd_ctx 同口径)。
+  # 失效降级:找不到席位/找不到 transcript/无 usage ⇒ **空 + 退 1**(采样方据此「本次不采」⛔ 填 0)。
+  local nm="${1:-}"; [ -n "$nm" ] || return 1
+  python3 - "$nm" <<'PY2'
+import json,os,sys,glob
+nm=sys.argv[1]; sid=""
+for f in glob.glob(os.path.expanduser("~/.claude*/sessions/*.json")):
+    try: d=json.load(open(f))
+    except Exception: continue
+    if d.get("name")==nm and d.get("sessionId"):
+        sid=str(d["sessionId"]); break
+if not sid: sys.exit(1)
+files=[]
+for p in glob.glob(os.path.expanduser("~/.claude*/projects/-Users-pingxia")):
+    files += glob.glob(os.path.join(p,"*.jsonl"))
+m=[f for f in files if sid[:8] in os.path.basename(f)]
+if not m: sys.exit(1)
+last=None
+for line in open(sorted(m,key=os.path.getmtime)[-1],encoding="utf-8",errors="ignore"):
+    try: d=json.loads(line)
+    except Exception: continue
+    u=(d.get("message") or {}).get("usage")
+    if u: last=u
+if not last: sys.exit(1)
+print(last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("cache_creation_input_tokens",0))
+PY2
+}
 ctx_sample_scan(){  # stdin=看板新增行:见 dispatch 交班条 ⇒ 记起点;见接班条 ⇒ 算区间 token 增量,上看板+落 EV_DIR/ctx-samples.log(只记 ⛔ 催人)
   local l k tot pend
   while IFS= read -r l; do
@@ -3854,8 +3885,9 @@ ctx_sample_scan(){  # stdin=看板新增行:见 dispatch 交班条 ⇒ 记起点
                 tot="$(usage_total_now)"; [ -n "$tot" ] || { ev_log "ctx 采样:见接班条但仪表盘读不到,本次作废"; rm -f "$pend"; continue; }
                 local t0 tot0 when0; IFS='|' read -r t0 tot0 when0 < "$pend"; rm -f "$pend"
                 local delta=$(( tot - tot0 )) mins=$(( ( $(date +%s) - t0 ) / 60 ))
-                printf '%s|%s|%s|%s\n' "$(date '+%F %T')" "$when0" "$delta" "$mins" >> "$EV_DIR/ctx-samples.log"
-                board "事件总线" "ctx 采样(#157 双阈校准):dispatch 交班条(${when0})→接班条区间 ${mins} 分钟,机器总 token 增量 ${delta}(含同期其他窗口,属上界;落 ~/.laixin-events.d/ctx-samples.log)——首次实测到手即按「实测 × 1.5」置 ~/.laixin-lane-switch/ctx-abs-min(硬阈),在此之前绝对余量下限为提示态" ;;
+                local seat; seat="$(ctx_seat_tokens dispatch 2>/dev/null || true)"
+                printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$when0" "$delta" "$mins" "${seat:-?}" >> "$EV_DIR/ctx-samples.log"
+                board "事件总线" "ctx 采样(#157 双阈校准):dispatch 交班条(${when0})→接班条区间 ${mins} 分钟,机器总 token 增量 ${delta}(含同期其他窗口=**上界 ⛔ 用于写 abs-min**);🔴 **继任自身重建耗量 ${seat:-读不到} tokens ← 这一列才是 abs-min 的基准**(#158-bis;落 ~/.laixin-events.d/ctx-samples.log 第 5 列)——首次实测到手即按「实测 × 1.5」置 ~/.laixin-lane-switch/ctx-abs-min(硬阈),在此之前绝对余量下限为提示态" ;;
     esac
   done
   return 0

@@ -3508,6 +3508,18 @@ t "ctx_sample_scan:交班条记起点(仪表盘 current.total)→接班条算增
   printf "| 08-23 02:15 | 派工窗口 | 接管 dispatch 第五十七任 |\n" | ctx_sample_scan
   grep -q "token 增量 250" "$EV_DIR/board.out" && [ "$(cut -d"|" -f3 "$EV_DIR/ctx-samples.log")" = 250 ] && [ ! -f "$EV_DIR/ctx-sample.pending" ] || { cat "$EV_DIR/board.out"; exit 2; }
   export LAIXIN_USAGE_RAW="$1/没有.json"; printf "| 08-23 03:00 | 派工窗口 | 收班 dispatch 第五十七任 |\n" | ctx_sample_scan; [ ! -f "$EV_DIR/ctx-sample.pending" ] && grep -q "读不到" "$EV_DIR/ev.log"' _ "$TCX"
+
+# ── #158-bis:采样补「席位自身重建耗量」列(2026-08-23;首版落的是机器总增量=上界,拿它写 abs-min 会得出荒谬值)──
+t "#158-bis ctx_seat_tokens:未知席位 ⇒ 空且退 1(失效降级 ⛔ 填 0)" bash -c '
+  T="$(mktemp -d)"; sed -n "/^ctx_seat_tokens()/,/^}$/p" "'"$LANE"'" > "$T/f.sh"
+  source "$T/f.sh"; out="$(ctx_seat_tokens "绝不存在的席位名-zzz" 2>/dev/null)"; rc=$?
+  rm -rf "$T"; [ "$rc" -ne 0 ] && [ -z "$out" ]'
+t "#158-bis ctx_seat_tokens:空参数即退 1" bash -c '
+  T="$(mktemp -d)"; sed -n "/^ctx_seat_tokens()/,/^}$/p" "'"$LANE"'" > "$T/f.sh"
+  source "$T/f.sh"; ! ctx_seat_tokens "" >/dev/null 2>&1; rc=$?; rm -rf "$T"; [ "$rc" -eq 0 ]'
+t "#158-bis 采样行第 5 列=席位自身耗量(读不到落 ?,⛔ 落 0)" bash -c '
+  seg="$(sed -n "/^ctx_sample_scan()/,/^}$/p" "'"$LANE"'")"
+  grep -q "ctx_seat_tokens dispatch" <<< "$seg" && grep -q "\${seat:-?}" <<< "$seg"'
 t "cmd_ctx 传 CTX_ABS_MIN 并分三态报(硬阈/准备区/提示态待校准);statusline 同读单点源 ctx-abs-min;ev_loop 新增行扫描接了 ctx_sample_scan" bash -c '
   x="$(sed -n "/^cmd_ctx()/,/^}$/p" "$1")"; grep -q "CTX_ABS_MIN=\"\$(ctx_abs_min)\" python3" <<< "$x" && grep -q "下限\*\*待实测校准,当前仅提示\*\*" <<< "$x" && grep -q "绝对余量 {rem:,} < 下限" <<< "$x" &&
   grep -q "ctx-abs-min" "$2" && grep -q "LAIXIN_CTX_ABS_MIN" "$2" &&

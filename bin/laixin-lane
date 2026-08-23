@@ -2206,6 +2206,14 @@ cmd_doctor() {
     [ "${ros:-0}" -gt 0 ] && ok "在跑的一次性中继窗:$ros 个(件毕即收 ⛔ 常驻;回收:laixin-lane rdown <件名>)" || ok "无在跑的一次性中继窗(应召形态,不跑是常态)"
     local mws; mws="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^m-' || true)"
     [ "${mws:-0}" -gt 0 ] && ok "在跑的机动窗:$mws 个(M 轨一次性应召;件毕即收,回收:laixin-lane m-down <件名>;清单:laixin-lane mlist)" || ok "无在跑的机动窗(应召形态,不跑是常态)"
+    # #168(2026-08-23 方案窗口第二十四任批):11C 机务在跑时提示——**条文靠人记,提示靠机器**(同族判据)。
+    #   射程=只报事实 ⛔ 下令:插队律本身是 pipeline 卡的条文(维护方是派工/验收侧),本项只让「现在有机务在跑」可见。
+    local _11c_seats _11c_disp
+    _11c_seats="$(tmux list-windows -t "${LAIXIN_11C_SESSION:-laixin-11c}" -F '#{window_name}' 2>/dev/null | grep -cE '^seat-' || true)"
+    _11c_disp="$(tmux list-windows -t "${LAIXIN_11C_SESSION:-laixin-11c}" -F '#{window_name}' 2>/dev/null | grep -cE '^dispatch-11c$' || true)"
+    if [ "${_11c_seats:-0}" -gt 0 ] || [ "${_11c_disp:-0}" -gt 0 ]; then
+      ok "11C 在局:席位 ${_11c_seats:-0} 个$([ "${_11c_disp:-0}" -gt 0 ] && echo " · 机务窗 dispatch-11c 在班")——⚠️ 11C 机务(起收席/搬运/门铃)是**秒级**活,优先于写 prompt/验收长活(插队律,条文见 pipeline 卡);⛔ 据本行下令,它只报事实"
+    fi
     # #165(2026-08-23 创始人定形态):11B/11C 开发维护窗——第四条开发轨(codex+worktree+prompt),⛔ 单例
     local tws; tws="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^tool-' || true)"
     [ "${tws:-0}" -gt 0 ] && ok "在跑的 11B/11C 开发维护窗:${tws} 个(各件独立 worktree ⇒ 可并发;看清单 laixin-lane toollist,回收 laixin-lane tool-down <件名>)" || ok "无在跑的 11B/11C 开发维护窗(应召形态,不跑是常态;派工窗口遇工具问题 laixin-lane tool-up <件名> --prompt <prompt> --dir <worktree>)"

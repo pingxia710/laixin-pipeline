@@ -3706,6 +3706,44 @@ t "#165-2 起手式与红线按引擎分叉(claude 说工具层已禁 / codex �
   grep -q "工具层已禁" <<< "$seg" && grep -q "没有 claude 的工具层禁令" <<< "$seg" && grep -q "opener=" <<< "$seg"'
 rm -rf "$W165"
 
+
+# ── #166 stats 油表两列同权 + table-lint 前导竖线(2026-08-23 dispatch 60 报,三条全属实)──
+echo "== #166 stats/_blocked 两列同权 · table-lint 前导竖线 =="
+V166="$(mktemp -d)"
+cat > "$V166/t.md" <<'MD'
+## 排队
+
+| 片 | 轨 | 内容 | 发车状态 |
+|---|---|---|---|
+| A片 | A | 射程说明(此列刻意不写依赖:本条要验的正是「依赖只写在状态列」) | 🔴 prompt 已 ready 但不可立即发车——候 P1 交付落盘 |
+| B片 | A | 零前置 | prompt ready |
+
+## 进行中
+
+| 片 | 轨 | 内容 | 发车状态 |
+|---|---|---|---|
+MD
+# ⚠️ 夹具措辞也要过判据:首版内容列写「射程说明**无前置**词」,被解除词族 `无前置` 命中 ⇒ 整行判不阻塞,
+#    红的原因在夹具不在被测代码。⭐ 造反例夹具时,先确认它没有意外命中**另一条**判据。
+# 🔴 真跑 stats 对沙盒总表(⛔ 用占位命令假装跑过——本条首版正是那样写的,红了才发现)
+tout "#166① 依赖写在**状态列**也要算阻塞〔病灶:两条正则原本只作用在内容列 ⇒ 夜间会据虚高油表发一个发不出去的片〕" "前置未解 1 行" env LAIXIN_TABLE="$V166/t.md" "$LANE" stats
+tout "#166① 同表里无前置的行仍进 ✅ 桶(⛔ 一刀切判阻塞)" "可立即发车(prompt ready 且未发): 1" env LAIXIN_TABLE="$V166/t.md" "$LANE" stats
+# ⚠️ 提取范围要到**函数末**:`return False` 在 _blocked 里出现两次(解除词那条先),
+#    首版 sed 写 /return False/ 被第一个截断 ⇒ seg 里看不到后面的判据(红的原因与被测行为无关)
+t "#166① _blocked 两列同权(both=pre+st)⛔ 只读内容列" bash -c '
+  seg="$(sed -n "/def _blocked/,/^    return False$/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "both=pre" <<< "$seg" && [ "$(grep -c ",both)" <<< "$seg")" -ge 3 ]'
+t "#166② 补中文否定词族(台账第 7 律禁表格行用 ⛔ ⇒ 守纪律的人写的阻塞标记此前永远命不中)" bash -c '
+  seg="$(sed -n "/def _blocked/,/^    return False$/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "不可立即发车" <<< "$seg"'
+t "#166① ⛔ 宽词族/⛔ 阻塞挂起停车(真库实测:宽词族状态列命中 22%、阻塞族 22 行全是历史记录)" bash -c '
+  seg="$(sed -n "/def _blocked/,/^    return False$/p" "'"$LANE"'" | sed "s/#.*//")"
+  ! grep -qE "阻塞\\|挂起\\|停车" <<< "$seg"'
+printf '| 名 | b | c | d |\n|---|---|---|---|\n| ⛔ 甲行 | x | y | z |\n' > "$V166/m.md"
+tout "#166③ --match 带前导竖线应命中〔真根因=前导竖线 ⛔ 报告方归因的「含 ⛔」;三态实测:带竖线不含⛔ 同样零命中〕" "唯一命中" "$LANE" table-lint "$V166/m.md" --match "| ⛔ 甲行"
+tout "#166③ --match 不带前导竖线等价命中" "唯一命中" "$LANE" table-lint "$V166/m.md" --match "⛔ 甲行"
+rm -rf "$V166"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

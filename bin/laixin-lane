@@ -635,7 +635,7 @@ cmd_ctx() {
     for _d in "$HOME"/.claude*/projects/-Users-pingxia; do [ -d "$_d" ] && proj="${proj:+$proj:}$_d"; done
   fi
   [ -n "$proj" ] || { echo "⛔ ctx 不可用:找不到任何 claude transcript 目录(~/.claude*/projects/-Users-pingxia)"; return 2; }
-  python3 - "$proj" "$want" <<'PY'
+  CTX_ABS_MIN="$(ctx_abs_min)" python3 - "$proj" "$want" <<'PY'
 import json,os,sys,glob
 proj,want=sys.argv[1],(sys.argv[2] if len(sys.argv)>2 else "")
 win=int(os.environ.get("LAIXIN_CTX_WINDOW","1000000"))   # 分母可配:换模型必须改,写死会让闸门静默失效
@@ -687,6 +687,15 @@ print(f"会话 {os.path.basename(f)[:8]}… [{chan(f)}]  {bar}  {pct:.1f}%   ({c
 if   pct>=75: print("🔴 ≥75% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
 elif pct>=65: print("🟡 65-75%:进入交班准备区,别再开新调查;手上这片收尾就交班")
 else:         print("🟢 <65%:正常工作区间")
+# 2026-08-23 双阈(方案窗口第二十三任裁):占比仍是主判据;绝对余量下限叠加——有值(env LAIXIN_CTX_ABS_MIN > 开关文件 ctx-abs-min)即硬阈,无值=提示态
+rem=win-cur; absmin=(os.environ.get("CTX_ABS_MIN") or "").strip()
+if absmin.isdigit() and int(absmin)>0:
+    a=int(absmin)
+    if rem<a: print(f"🔴 绝对余量 {rem:,} < 下限 {a:,}(实测交接包成本×1.5)——与占比并列的硬闸门:交班")
+    elif rem<2*a: print(f"🟡 绝对余量 {rem:,} 已不足下限的两倍({a:,}×2)——进入交班准备区")
+    else: print(f"ℹ️ 绝对余量 {rem:,} tokens(下限 {a:,})")
+else:
+    print(f"ℹ️ 绝对余量 {rem:,} tokens——下限**待实测校准,当前仅提示**(ev-loop 在 dispatch 交班→接班区间自动采样上看板;首次实测×1.5 写 ~/.laixin-lane-switch/ctx-abs-min 即成硬阈)")
 print("注:判据是**占比**不是 token 绝对数——同样 500k,1M 模型是半程、200k 模型早已溢出。分母用 LAIXIN_CTX_WINDOW 覆盖。")
 PY
   return 0
@@ -2990,6 +2999,7 @@ $(echo "$_ovd" | sed 's/^/  /')
       if [ "$_bl_now" -lt "$_bl_pos" ] 2>/dev/null; then
         ev_log "⚠️ #106 看板行数回退(${_bl_pos}→${_bl_now}):违反只追加纪律的信号;基线重置不补投"
       elif [ "$_bl_now" -gt "$_bl_pos" ] 2>/dev/null; then
+        sed -n "$((_bl_pos+1)),${_bl_now}p" "$BOARD" 2>/dev/null | ctx_sample_scan || true   # ctx 双阈自动采样(2026-08-23)
         sed -n "$((_bl_pos+1)),${_bl_now}p" "$BOARD" 2>/dev/null | ev_directive_filter | while IFS= read -r _dl; do
           [ -n "$_dl" ] || continue
           # 来源级别按被搬运原文取值 ⛔ 模板断言(2026-08-23 待定轨件;2026-08-22 实撞:方案窗口 12:32 裁定被固定标成「创始人直令」,dispatch 广播来源级别错标)
@@ -3722,6 +3732,46 @@ channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行�
 #   (2026-08-22 实测两通道均有此字段),⛔ 靠 Keychain 后缀反推(要授权,无人值守下会挂)。
 # 🔴 失效必须降级 ⛔ 反向(三约束②):仪表盘没起/取不到/字段缺 ⇒ 一律显示「读不到」,
 #   ⛔ 显示 0% 也 ⛔ 静默跳过 —— 「额度充裕」与「没测到」在屏幕上必须长得不一样。
+# ── ctx 换班双阈(2026-08-23 方案窗口第二十三任裁:占比主判据不动;叠加「绝对余量下限」——初值**提示态 ⛔ 硬触发**,
+#   值待实测一份交接包实耗(交班条→接班条区间 token 增量,ev-loop 自动采样上看板)后按「实测 × 1.5」置硬阈(系数=方案窗口定,只拍系数 ⛔ 拍值);
+#   与 contrib-statusline.py 同读一个单点源文件 ⛔ 各抄一份)
+CTX_ABS_MIN_FILE="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}/ctx-abs-min"
+ctx_abs_min(){ if [ -n "${LAIXIN_CTX_ABS_MIN:-}" ]; then printf '%s' "$LAIXIN_CTX_ABS_MIN"; elif [ -s "$CTX_ABS_MIN_FILE" ]; then head -1 "$CTX_ABS_MIN_FILE" | tr -d '[:space:]'; fi; return 0; }
+ctx_sample_mark(){  # <看板行> → stdout=handoff|takeover|none(dispatch 交班条 / 接班条识别,与 #108 配对正则同源)
+  case "$1" in
+    *"| 派工窗口 |"*) ;; *) echo none; return 0 ;;
+  esac
+  if grep -qE '\| 派工窗口 \| ?[^|]{0,10}(收班|交班|换班) dispatch 第[一二三四五六七八九十]+任' <<< "$1"; then echo handoff
+  elif grep -qE '\| 派工窗口 \| ?[^|]{0,10}(接管|接班) dispatch 第[一二三四五六七八九十]+任' <<< "$1"; then echo takeover
+  else echo none; fi
+  return 0
+}
+usage_total_now(){  # → stdout=仪表盘 current.total(机器总 token,含所有窗口);读不到空
+  local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}" raw
+  if [ -n "${LAIXIN_USAGE_RAW:-}" ]; then raw="$(cat "$LAIXIN_USAGE_RAW" 2>/dev/null || true)"; else raw="$(curl -s -m "${LAIXIN_USAGE_TIMEOUT:-15}" "$url" 2>/dev/null || true)"; fi
+  [ -n "$raw" ] || return 0
+  printf '%s' "$raw" | python3 -c 'import json,sys
+try: print(int((json.load(sys.stdin).get("current") or {}).get("total") or 0) or "")
+except Exception: print("")' 2>/dev/null
+  return 0
+}
+ctx_sample_scan(){  # stdin=看板新增行:见 dispatch 交班条 ⇒ 记起点;见接班条 ⇒ 算区间 token 增量,上看板+落 EV_DIR/ctx-samples.log(只记 ⛔ 催人)
+  local l k tot pend
+  while IFS= read -r l; do
+    k="$(ctx_sample_mark "$l")"
+    case "$k" in
+      handoff) tot="$(usage_total_now)"; [ -n "$tot" ] || { ev_log "ctx 采样:见 dispatch 交班条但仪表盘读不到,本次不采(⛔ 填 0)"; continue; }
+               printf '%s|%s|%s\n' "$(date +%s)" "$tot" "$(printf '%s' "$l" | cut -d'|' -f2 | sed -E 's/^ +//; s/ +$//')" > "$EV_DIR/ctx-sample.pending"; ev_log "ctx 采样:交班条已见,起点 total=$tot" ;;
+      takeover) pend="$EV_DIR/ctx-sample.pending"; [ -s "$pend" ] || continue
+                tot="$(usage_total_now)"; [ -n "$tot" ] || { ev_log "ctx 采样:见接班条但仪表盘读不到,本次作废"; rm -f "$pend"; continue; }
+                local t0 tot0 when0; IFS='|' read -r t0 tot0 when0 < "$pend"; rm -f "$pend"
+                local delta=$(( tot - tot0 )) mins=$(( ( $(date +%s) - t0 ) / 60 ))
+                printf '%s|%s|%s|%s\n' "$(date '+%F %T')" "$when0" "$delta" "$mins" >> "$EV_DIR/ctx-samples.log"
+                board "事件总线" "ctx 采样(#157 双阈校准):dispatch 交班条(${when0})→接班条区间 ${mins} 分钟,机器总 token 增量 ${delta}(含同期其他窗口,属上界;落 ~/.laixin-events.d/ctx-samples.log)——首次实测到手即按「实测 × 1.5」置 ~/.laixin-lane-switch/ctx-abs-min(硬阈),在此之前绝对余量下限为提示态" ;;
+    esac
+  done
+  return 0
+}
 # ── 额度哨兵 + 账号切换机器化(2026-08-23;创始人「先把这个机制做好,再把这个机制留下来后面复用」)──────────────
 #   剧本(创始人 08-22 10:11 议定 + 08-23 00:3x/00:5x 定线与顺序):切换点=派工席所在账号周额度到 LAIXIN_QUOTA_SWITCH(默认 98%=剩 2%)
 #   ①方案窗口先切(人操作:新账号空白窗接新包,老窗不关只收存量,按包划分裁定权)②再拉新 dispatch(机器:收班令→等收班条→dispatch --fresh)

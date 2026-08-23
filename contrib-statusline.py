@@ -70,6 +70,16 @@ def main():
             color, tail = YELLOW, "  ⚠ 进入交接准备区"
         else:
             color, tail = GREEN, ""
+        # 2026-08-23 双阈(与 bin/laixin-lane ctx_abs_min 同读单点源:env LAIXIN_CTX_ABS_MIN > ~/.laixin-lane-switch/ctx-abs-min;无值=提示态,这里不加噪)
+        try:
+            _am = (os.environ.get("LAIXIN_CTX_ABS_MIN") or "").strip()
+            if not _am:
+                _p = os.path.expanduser("~/.laixin-lane-switch/ctx-abs-min")
+                if os.path.isfile(_p): _am = open(_p).read().strip()
+            if _am.isdigit() and int(_am) > 0 and isinstance(used, (int, float)) and isinstance(size, (int, float)) and size - used < int(_am):
+                color, tail = RED, f"  ⛔ 绝对余量 {int(size-used):,} < 下限 {int(_am):,}:交班"
+        except Exception:
+            pass
         detail = f" ({human(used)}/{human(size)})" if used and size else ""
         parts.append(f"{color}{bar} {pct:.0f}%{R}{DIM}{detail}{R}{color}{tail}{R}")
     else:

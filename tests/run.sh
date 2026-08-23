@@ -3446,6 +3446,31 @@ t "doctor §4 报无主 tmux 托管 Chrome;宪法头第 12 条含 chrome-up 句(
   m="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/prompt/来信平台-prompt宪法头模板.md"; { [ ! -f "$m" ] || grep -q "一律用 \`laixin-lane chrome-up <轨>\`" "$m"; }' _ "$LANE"
 rm -rf "$TCH"
 
+# ── ctx 换班双阈(2026-08-23 方案窗口第二十三任裁:提示态下限 + 交班→接班区间自动采样)────────────────────────
+TCX="$(mktemp -d)"; { sed -n "/^ctx_abs_min()/,/^}/p" "$LANE" | head -1; grep -E '^ctx_abs_min\(\)' "$LANE"; sed -n "/^ctx_sample_mark()/,/^}/p" "$LANE"; sed -n "/^usage_total_now()/,/^}/p" "$LANE"; sed -n "/^ctx_sample_scan()/,/^}/p" "$LANE"; } > "$TCX/f.sh"
+t "ctx_abs_min:env > 开关文件 ctx-abs-min > 空(提示态)" bash -c '
+  source "$1/f.sh"; CTX_ABS_MIN_FILE="$1/ctx-abs-min"
+  [ -z "$(ctx_abs_min)" ] || exit 1; echo 90000 > "$1/ctx-abs-min"; [ "$(ctx_abs_min)" = 90000 ] || exit 2; [ "$(LAIXIN_CTX_ABS_MIN=5 ctx_abs_min)" = 5 ]' _ "$TCX"
+t "ctx_sample_mark:dispatch 交班/收班/换班条=handoff;接管/接班条=takeover;方案窗口交班条与普通派工条=none" bash -c '
+  source "$1/f.sh"
+  [ "$(ctx_sample_mark "| 08-23 01:58 | 派工窗口 | 收班 dispatch 第五十六任(交班前三轨全空) |")" = handoff ] || exit 1
+  [ "$(ctx_sample_mark "| 08-23 02:15 | 派工窗口 | 接管 dispatch 第五十七任(02:10,ctx 实测 24.7%) |")" = takeover ] || exit 2
+  [ "$(ctx_sample_mark "| 08-23 07:05 | 方案窗口 | 接班 方案窗口 第二十三任 |")" = none ] || exit 3
+  [ "$(ctx_sample_mark "| 08-23 06:50 | 派工窗口 | B1C4 停车已解 |")" = none ]' _ "$TCX"
+t "ctx_sample_scan:交班条记起点(仪表盘 current.total)→接班条算增量上看板+落 ctx-samples.log;仪表盘读不到 ⛔ 填 0" bash -c '
+  source "$1/f.sh"; EV_DIR="$1/ev"; mkdir -p "$EV_DIR"; board(){ printf "%s\n" "$2" >> "$EV_DIR/board.out"; }; ev_log(){ printf "%s\n" "$*" >> "$EV_DIR/ev.log"; }
+  printf "{\"current\":{\"total\":1000}}" > "$1/u.json"; export LAIXIN_USAGE_RAW="$1/u.json"
+  printf "| 08-23 01:58 | 派工窗口 | 收班 dispatch 第五十六任 |\n" | ctx_sample_scan; [ -s "$EV_DIR/ctx-sample.pending" ] || exit 1
+  printf "{\"current\":{\"total\":1250}}" > "$1/u.json"
+  printf "| 08-23 02:15 | 派工窗口 | 接管 dispatch 第五十七任 |\n" | ctx_sample_scan
+  grep -q "token 增量 250" "$EV_DIR/board.out" && [ "$(cut -d"|" -f3 "$EV_DIR/ctx-samples.log")" = 250 ] && [ ! -f "$EV_DIR/ctx-sample.pending" ] || { cat "$EV_DIR/board.out"; exit 2; }
+  export LAIXIN_USAGE_RAW="$1/没有.json"; printf "| 08-23 03:00 | 派工窗口 | 收班 dispatch 第五十七任 |\n" | ctx_sample_scan; [ ! -f "$EV_DIR/ctx-sample.pending" ] && grep -q "读不到" "$EV_DIR/ev.log"' _ "$TCX"
+t "cmd_ctx 传 CTX_ABS_MIN 并分三态报(硬阈/准备区/提示态待校准);statusline 同读单点源 ctx-abs-min;ev_loop 新增行扫描接了 ctx_sample_scan" bash -c '
+  x="$(sed -n "/^cmd_ctx()/,/^}$/p" "$1")"; grep -q "CTX_ABS_MIN=\"\$(ctx_abs_min)\" python3" <<< "$x" && grep -q "下限\*\*待实测校准,当前仅提示\*\*" <<< "$x" && grep -q "绝对余量 {rem:,} < 下限" <<< "$x" &&
+  grep -q "ctx-abs-min" "$2" && grep -q "LAIXIN_CTX_ABS_MIN" "$2" &&
+  e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"; grep -q "ctx_sample_scan" <<< "$e"' _ "$LANE" "$(cd "$(dirname "$0")/.." && pwd)/contrib-statusline.py"
+rm -rf "$TCX"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

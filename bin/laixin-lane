@@ -1069,6 +1069,16 @@ if "【交付完成】" in txt:
                        ("单列「文案口径」节", "宪法第 9 条下缺 2026-08-23 文案口径节硬项——重抄模板宪法头(⛔ 自拟措辞)")):
         if need not in txt: errs.append(f"宪法头缺句: {need} —— {hint}")
         else: oks += 1
+# 2026-08-23 分支命名闸(待定轨「kickoff 卡补片分支命名闸」+「prompt-lint 增片分支名校验」;判据单点源=版本流卡 A-4 `v0y-<域>-<slug>`):
+#   prompt 里声明的分支名(「分支」字样后首个反引号串)必须匹配 ^v0[0-9]+-[a-z0-9]+-[a-z0-9-]+$;带 worktree/verify 前缀或旧式短名即红。
+#   起分支由开发方按 prompt 执行 ⇒ prompt-lint 在发车前核声明值=派工闸本体;未声明分支名只提示(有的 prompt 让开发方按卡自取)。
+_br = re.search(r'分支[^\n`]{0,12}`([^`\n]{1,80})`', txt)
+if _br:
+    _bn = _br.group(1).strip()
+    if re.fullmatch(r'v0[0-9]+-[a-z0-9]+-[a-z0-9-]+', _bn): oks += 1
+    else: errs.append(f"分支名不合规: `{_bn}`(版本流卡 A-4 要求 v0y-<域>-<slug>,如 v02-frontend-nickname-guard;⛔ worktree/verify 前缀 ⛔ 旧式短名 ⛔ 大写/下划线)")
+elif "【交付完成】" in txt:
+    warns.append("prompt 未见「分支」+反引号形式的分支名声明——kickoff 卡要求 prompt 必含分支名(v0y-<域>-<slug>,版本流卡 A-4)")
 pool = read(os.path.join(kb, "索引/wiki-裁定池总表.md"))
 redl = read(os.path.join(kb, "索引/wiki-红线清单.md"))
 if not pool: errs.append("裁定池总表读不到(核对 LAIXIN_KB)")

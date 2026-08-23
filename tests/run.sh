@@ -3373,6 +3373,21 @@ t "prompt-rescan --all:扫 prompt/ 目录近 N 天全部(含 nofp ⇒ 2 份失�
   out="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-rescan --all --days 1 2>&1)"; grep -q "扫 3 份 prompt,2 份有引用失准" <<< "$out"' _ "$TRS" "$LANE"
 rm -rf "$TRS"
 
+# ── 分支命名闸(2026-08-23;版本流卡 A-4 单点源):prompt-lint 分支名校验 + kickoff 卡第 7 条 ───────────────
+TBN="$(mktemp -d)"; mkdir -p "$TBN/kb/索引" "$TBN/repo"; printf '裁定池\n' > "$TBN/kb/索引/wiki-裁定池总表.md"; printf '红线\n' > "$TBN/kb/索引/wiki-红线清单.md"
+printf '分支:`v02-frontend-nickname-guard`\n' > "$TBN/good.md"
+printf '**分支名**:`verify-v02-x-y`\n' > "$TBN/bad1.md"
+printf '分支：`advisor-next-milestone`\n' > "$TBN/bad2.md"
+printf '分支:`V02-Frontend_x`\n' > "$TBN/bad3.md"
+printf '没有分支声明的宪法头 prompt\n【交付完成】x y\n' > "$TBN/nodecl.md"
+t "prompt-lint 分支名:v02-<域>-<slug> 过;verify 前缀/旧式短名/大写下划线 ⇒ ❌ 分支名不合规;宪法头 prompt 未声明只 ⚠️" bash -c '
+  e="env LAIXIN_KB=$1/kb LAIXIN_REPO=$1/repo"
+  a="$($e "$2" prompt-lint "$1/good.md" 2>&1)"; ! grep -q "分支名不合规" <<< "$a" || { echo "$a"; exit 1; }
+  for f in bad1 bad2 bad3; do b="$($e "$2" prompt-lint "$1/$f.md" 2>&1)"; grep -q "❌ 分支名不合规" <<< "$b" || { echo "$f: $b"; exit 2; }; done
+  c="$($e "$2" prompt-lint "$1/nodecl.md" 2>&1)"; grep -q "⚠️ prompt 未见「分支」" <<< "$c" && ! grep -q "❌ 分支名不合规" <<< "$c"' _ "$TBN" "$LANE"
+t "kickoff 卡:发车闸门第 7 条分支命名闸在,指向版本流卡 A-4 单点源" bash -c 'grep -q "^7\. \*\*分支命名闸" "$1/skills/laixin-kickoff/SKILL.md" && grep -q "版本流卡 A-4 为单点源" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
+rm -rf "$TBN"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

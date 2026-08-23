@@ -1311,7 +1311,7 @@ cmd_report_lint() {  # #18b(2026-08-19):交付报告举证 lint——举证毛�
   [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane report-lint <交付报告路径>"
   local errs=0 warns=0
   # ① 完成信号契约:末非空行是【交付完成】或含停车字样(#21 同款取行)
-  local last; last="$(grep -v '^[[:space:]]*$' "$f" | tail -1)"
+  local last; last="$(last_contract_line "$f")"   # #171:与事件总线同一取法(单点源)
   if ! grep -qE '^【交付完成】|停车' <<< "$last"; then
     echo "  ❌ 末行既非【交付完成】契约也非停车报告:$last"; errs=$((errs+1))
   fi
@@ -2646,6 +2646,16 @@ relay_ack_id(){  # <中转回执末行> <outbox 文件> → stdout=末行各字�
   done
   return 0
 }
+last_contract_line(){  # <文件> → stdout=**末非空行**(契约行的唯一取法);空文件出空
+  # 🔴 #171(2026-08-23 dispatch 61 实撞,有真实损失):同一份报告,**两套「末行」定义**——
+  #   `ev_scan_deliveries` 用 `tail -1`(物理最后一行)· `report-lint`/`verify-from` 用「末非空行」(#21)。
+  #   热修片 `付款确认接短信` 的契约行后**有两个空行** ⇒ **事件总线读到空行、交付事件根本没投**,
+  #   而 verify-from 四道校验全过 ⇒ **一个说没交付、一个说交付合规**。报的人靠「lane 6 分钟无变化」
+  #   告警去 peek 才发现早已交付,**白等约 6 分钟**;而在它眼里「轨道空闲告警」与「真的空闲」完全同形。
+  # ⇒ 判据下沉成**唯一一处**:凡取契约行一律调本函数 ⛔ 各写各的 `tail -1`。
+  local f="${1:-}"; [ -f "$f" ] || return 1
+  grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -1
+}
 ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能再触发;验收方追加结论后自然退出集合)
   # #67③:再扩两个末行标记,仍是**同一套**扫描/基线/心跳截止/spool(⛔ 平行实现):
   #   【中转回执】=relay 已把某条转办发出去了(销 outbox 那条账);
@@ -2668,7 +2678,7 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
     #   去全文复读确认「提交与报告内容不变」。⇒ 改哈希后:**整改重交(内容真变了)照旧触发**,
     #   而 touch / 备份工具改 mtime / 编辑器保存同内容,一律不再制造假交付事件。
     #   ⚠️ mtime 仍要用于「陈旧报告」判据,但那是在消费处按需现取,⛔ 塞进去重键。
-    if tail -1 "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】|^【工具件完成】'; then printf '%s|%s\n' "$f" "$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)"; fi
+    if last_contract_line "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】|^【工具件完成】'; then printf '%s|%s\n' "$f" "$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)"; fi
   done | sort
   return 0
 }

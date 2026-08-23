@@ -341,7 +341,9 @@ tout "ev-loop 重启保留交付基线(死亡期间落盘不丢)" '\-s "\$EV_SEE
 
 echo "== 7. 事件总线执行级绊线(真跑;静态 grep 抓不到展开顺序/管道返值类崩溃——2026-08-13 两次实撞后由 dispatch 建议加) =="
 TMPE="$(mktemp -d)"
-{ sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^ev_next_ready/,/^}/p" "$LANE"; } > "$TMPE/fns.sh"
+# ⚠️ #171 起 ev_scan_deliveries 依赖 last_contract_line(契约行取法单点源)⇒ 夹具抽取必须带上它,否则「函数不存在」
+#   的症状与「扫描逻辑写错」完全同形(本轮 5 条既有测试同时红,红因是依赖缺失不是被测行为)。
+{ sed -n "/^last_contract_line/,/^}/p" "$LANE"; sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^ev_next_ready/,/^}/p" "$LANE"; } > "$TMPE/fns.sh"
 mkdir -p "$TMPE/kb/4-开发层/记录"
 printf 'x\n【交付完成】b z\n' > "$TMPE/kb/4-开发层/记录/a验收记录.md"
 printf 'y\n没有标记\n' > "$TMPE/kb/4-开发层/记录/b验收记录.md"
@@ -1227,7 +1229,7 @@ tout "#67② 收方半边:信封不全即拒收(⛔ 据内容像谁就当谁)" "
 
 # ── 回程与销账:复用既有扫描/投递/spool ⛔ 平行实现 ──────────────────────────────
 TMPR="$(mktemp -d)"; mkdir -p "$TMPR/kb/4-开发层/记录"
-{ sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^relay_outbox_overdue/,/^}/p" "$LANE"; } > "$TMPR/fn.sh"
+{ sed -n "/^last_contract_line/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^relay_outbox_overdue/,/^}/p" "$LANE"; } > "$TMPR/fn.sh"
 KB="$TMPR/kb"; source "$TMPR/fn.sh"
 printf '正文\n【交付完成】main abc1234\n' > "$TMPR/kb/4-开发层/记录/甲-交付报告.md"
 printf '正文\n【验收回执】通过 v-x abc1234 def5678\n' > "$TMPR/kb/4-开发层/记录/乙-验收回执.md"
@@ -2290,7 +2292,7 @@ V60K="$V60/kb/4-开发层/记录"; mkdir -p "$V60K"
 printf 'x\n【交付完成】b z\n' > "$V60K/甲片-交付报告.md"
 printf 'y\n【验收回执】通过 verify/b abc1234 def5678\n' > "$V60K/甲片-验收回执.md"
 printf 'z\n没有标记\n' > "$V60K/乙片笔记.md"
-V60S="$V60/scan.sh"; sed -n "/^ev_scan_deliveries()/,/^}/p" "$LANE" > "$V60S"
+V60S="$V60/scan.sh"; { sed -n "/^last_contract_line()/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries()/,/^}/p" "$LANE"; } > "$V60S"
 t "#60①:ev 扫描认【验收回执】末行(与【交付完成】同机制,⛔ 另起一套)" bash -c '
   set -eo pipefail; KB="'"$V60"'/kb"; source "'"$V60S"'"; out="$(ev_scan_deliveries)"
   grep -q "甲片-验收回执" <<< "$out" && grep -q "甲片-交付报告" <<< "$out" && ! grep -q "乙片笔记" <<< "$out"'
@@ -2711,7 +2713,7 @@ rm -f "$RO_ITEM"
 # dispatch 做空跑验证时 touch 过首片交付报告,事件总线 12:05 投一次、12:23 又投一次,
 # dispatch 被迫花一整轮全文复读确认「提交与报告内容不变」。同族还有备份工具改 mtime、
 # 编辑器保存同内容。⇒ 改哈希后:整改重交(内容真变)照旧触发,touch 不再制造假事件。
-EVSF="$(mktemp)"; sed -n '/^ev_scan_deliveries()/,/^}/p' "$LANE" > "$EVSF"
+EVSF="$(mktemp)"; { sed -n '/^last_contract_line()/,/^}/p' "$LANE"; sed -n '/^ev_scan_deliveries()/,/^}/p' "$LANE"; } > "$EVSF"
 EVT="$(mktemp -d)"; mkdir -p "$EVT/4-开发层/记录"
 printf 'x\n【交付完成】br abc123\n' > "$EVT/4-开发层/记录/probe.md"
 t "交付去重:touch 后键不变(⛔ 假交付事件把 dispatch 一整轮花在复读上)" bash -c '
@@ -3809,6 +3811,29 @@ t "#169-2 --pane 超限降到 3 行 ⛔ 照给" bash -c '
 t "#169-2 会话名可覆盖〔缺口:原为硬编码 laixin-11c ⇒ 本脚本自己测不了隔离会话,把自己排除在「真环境首火在隔离会话做」那条纪律之外〕" bash -c '
   grep -q "SESSION=\"\${LAIXIN_11C_SESSION:-laixin-11c}\"" "'"$SEATB2"'"'
 tmux kill-session -t "$S169" 2>/dev/null || true
+
+
+# ── #171 「末行」判据下沉为单点源(2026-08-23 dispatch 61 实撞,有真实损失:白等 6 分钟)──
+echo "== #171 契约行取法单点源 =="
+T171="$(mktemp -d)"
+printf '# 报告\n正文\n【交付完成】测试片 abc1234\n\n\n' > "$T171/tail_blank.md"
+printf '# 报告\n【交付完成】测试片 abc1234\n' > "$T171/tail_clean.md"
+printf '' > "$T171/empty.md"
+sed -n "/^last_contract_line()/,/^}/p" "$LANE" > "$T171/f.sh"
+t "#171 契约行后有空行仍取得到〔病灶:ev_scan 用 tail -1 读到空行 ⇒ 交付事件根本没投,而 verify-from 四道校验全过 ⇒ 一个说没交付一个说合规〕" bash -c '
+  source "'"$T171"'/f.sh"; [ "$(last_contract_line "'"$T171"'/tail_blank.md")" = "【交付完成】测试片 abc1234" ]'
+t "#171 无尾随空行时结果不变(⛔ 回归)" bash -c '
+  source "'"$T171"'/f.sh"; [ "$(last_contract_line "'"$T171"'/tail_clean.md")" = "【交付完成】测试片 abc1234" ]'
+t "#171 空文件出空 ⛔ 报错" bash -c '
+  source "'"$T171"'/f.sh"; [ -z "$(last_contract_line "'"$T171"'/empty.md")" ]'
+t "#171 文件不存在退非零(读不到 ⛔ 读成无契约)" bash -c '
+  source "'"$T171"'/f.sh"; ! last_contract_line "'"$T171"'/nope.md" >/dev/null 2>&1'
+t "#171 单点源:ev_scan_deliveries 与 report-lint 都调它,全仓零残留裸 tail -1 取契约行" bash -c '
+  seg1="$(sed -n "/^ev_scan_deliveries()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  seg2="$(sed -n "/^cmd_report_lint()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "last_contract_line" <<< "$seg1" && grep -q "last_contract_line" <<< "$seg2" &&
+  ! grep -q "tail -1 \"\$f\" | grep -qE" <<< "$seg1"'
+rm -rf "$T171"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

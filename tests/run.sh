@@ -3425,6 +3425,27 @@ t "rival_relay_sessions/check_rival_relay:tmux 外名为 relay 的会话=候选(
   check_rival_relay 2>"$1/err" || exit 4; grep -q "放行" "$1/err"' _ "$TRR"
 rm -rf "$TRR"
 
+# ── #42 走查 Chrome 起停 chrome-up/down/list(2026-08-23 方案窗口第二十三任裁 A)──────────────────────────
+TCH="$(mktemp -d)"
+t "chrome-up --dry:目标 a/b/dispatch/verify-窗/m-窗 各解析到固定端口(与 BU_CDP_URL 同源);--port 覆盖;未知目标拒" bash -c '
+  e="env LAIXIN_SESSION=lx-nowin-$$"
+  a="$($e "$1" chrome-up a --dry 2>&1)"; grep -q "端口=9231" <<< "$a" && grep -q "窗=lane-a" <<< "$a" || { echo "$a"; exit 1; }
+  b="$($e "$1" chrome-up b --dry 2>&1)"; grep -q "端口=9232" <<< "$b" || exit 2
+  d="$($e "$1" chrome-up dispatch --dry 2>&1)"; grep -q "端口=9230" <<< "$d" || exit 3
+  v="$($e "$1" chrome-up verify-x-y --dry 2>&1)"; grep -qE "端口=9[3-9][0-9][0-9]" <<< "$v" && grep -q "tmux窗=chrome-" <<< "$v" || exit 4
+  m="$($e "$1" chrome-up m-z --dry 2>&1)"; grep -qE "端口=9[3-9][0-9][0-9]" <<< "$m" || exit 5
+  p="$($e "$1" chrome-up a --port 9555 --dry 2>&1)"; grep -q "端口=9555" <<< "$p" || exit 6
+  x="$($e "$1" chrome-up "" --dry 2>&1)"; [ $? -ne 0 ]' _ "$LANE"
+t "chrome-up 实体:tmux 服务端托管(new-window chrome-<端口>)⛔ nohup/裸 &;就绪判据=/json/version;url 写回 EV_DIR/cdp;chrome-down 杀窗+cdp_sweep+清 url" bash -c '
+  u="$(sed -n "/^cmd_chrome_up()/,/^}$/p" "$1")"; d="$(sed -n "/^cmd_chrome_down()/,/^}$/p" "$1")"
+  grep -q "tmux new-window -d -t \"\$SESSION\" -n \"\$cw\"" <<< "$u" && ! grep -q "nohup" <<< "$u" && grep -q "/json/version" <<< "$u" && grep -q "EV_DIR/cdp" <<< "$u" &&
+  grep -q "tmux kill-window -t \"\$SESSION:\$cw\"" <<< "$d" && grep -q "cdp_sweep \"\$p\"" <<< "$d" && grep -q "rm -f \"\$EV_DIR/cdp/" <<< "$d"' _ "$LANE"
+tout "chrome-down:目标无窗时幂等(端口 sweep 照跑不报错)" "已关" env LAIXIN_SESSION=lx-nowin-$$ "$LANE" chrome-down a --port 9599
+t "doctor §4 报无主 tmux 托管 Chrome;宪法头第 12 条含 chrome-up 句(方案窗口给句);帮助与分发齐" bash -c '
+  grep -q "tmux 托管 headless Chrome 有 \${_orph} 个无主" "$1" && grep -q "^#   laixin-lane chrome-up" "$1" && grep -qE "^  chrome-(up|down|list)\)" "$1" &&
+  m="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/prompt/来信平台-prompt宪法头模板.md"; { [ ! -f "$m" ] || grep -q "一律用 \`laixin-lane chrome-up <轨>\`" "$m"; }' _ "$LANE"
+rm -rf "$TCH"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

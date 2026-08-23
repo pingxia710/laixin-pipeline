@@ -41,6 +41,12 @@
 #   laixin-lane m-down <件名>        回收机动窗(+清其 CDP 通道;件毕即收 ⛔ 常驻)
 #   laixin-lane peek-m <件名> [N]    看机动窗最近 N 行
 #   laixin-lane mlist                在跑机动窗清单(BU/端口/worktree,自证② 可核)
+#   laixin-lane chrome-up <a|b|c|dispatch|verify名|片名|m名> [--port N] [--dry]
+#                                    #42(2026-08-23 方案窗口裁 A):走查用 headless Chrome 由 **tmux 服务端托管**(窗 chrome-<端口>)⇒ 跨命令边界存活,
+#                                    ⛔ 在 shell 工具里裸起/nohup &(命令结束即被回收);端口按目标固定(与 BU_CDP_URL 同源),url 写回 ~/.laixin-events.d/cdp/<窗名>.url;
+#                                    使用方仍是起与关的责任方:用毕 chrome-down <目标>(fresh/down/vdown/m-down 的 cdp_sweep 仍兜底)
+#   laixin-lane chrome-down <目标> [--port N]   关该目标的 headless Chrome(杀 tmux 窗 + 按端口 sweep + 清 url 文件)
+#   laixin-lane chrome-list          在跑 chrome-<端口> 窗及归属(无主=轨/窗已收而 Chrome 还活着)
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
 #   laixin-lane channel-of <会话名>  它在哪个 CC 通道(配置目录)与账号;查不到即说查不到 ⛔ 猜
@@ -2027,6 +2033,10 @@ cmd_doctor() {
     [ "${ros:-0}" -gt 0 ] && ok "在跑的一次性中继窗:$ros 个(件毕即收 ⛔ 常驻;回收:laixin-lane rdown <件名>)" || ok "无在跑的一次性中继窗(应召形态,不跑是常态)"
     local mws; mws="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -c '^m-' || true)"
     [ "${mws:-0}" -gt 0 ] && ok "在跑的机动窗:$mws 个(M 轨一次性应召;件毕即收,回收:laixin-lane m-down <件名>;清单:laixin-lane mlist)" || ok "无在跑的机动窗(应召形态,不跑是常态)"
+    # #42(2026-08-23):tmux 托管的 headless Chrome——无主(轨/窗已收而 Chrome 还活着)即警,「用完要关」机器半边
+    local _cl _orph; _cl="$(cmd_chrome_list 2>/dev/null || true)"; _orph="$(grep -c '无主' <<< "$_cl" || true)"
+    if [ "${_orph:-0}" -gt 0 ]; then wrn "tmux 托管 headless Chrome 有 ${_orph} 个无主(轨/窗已收而浏览器还活着,#42「用完要关」):laixin-lane chrome-list 看端口 → chrome-down --port <端口>"
+    else ok "tmux 托管 headless Chrome 无无主实例($(grep -c '^chrome-' <<< "$_cl" || true) 个在跑,#42)"; fi
     # 🔴 非 claude 派工席(kimi 顶班)出站靠 relay-msg 注入**常驻**中继代发——常驻中继不在班 ⇒ 它的请裁/上报整条断掉,
     #    而「注入失败」只在它跑 relay-msg 那一刻才暴露。体检当面报 ⛔ 等它撞上。
     if [ "$DISPATCH_ENGINE" != "claude" ] && ! relay_alive; then
@@ -4618,6 +4628,87 @@ cmd_peekm() {
   [ -n "$item" ] || die "peek-m 需要件名"
   tmux capture-pane -p -t "$SESSION:$(mwin "$item")" -S "-$n"
 }
+# ══ #42 走查 Chrome 起停:chrome-up / chrome-down / chrome-list(2026-08-23 方案窗口第二十三任裁 A:使用方仍是起与关的责任方,
+#   工具只换掉「在 shell 工具里裸起 / nohup & 被命令边界回收」这个坏写法)═══════════════════════════════════════
+#   机理:lane/验收窗的 shell 工具每条命令是独立会话,裸起与 nohup+disown 的 Chrome 都随命令边界被回收(#42 实测);本命令让 **tmux 服务端**
+#   托管 Chrome 进程(独立窗口 chrome-<端口>),与任何客户端的命令边界无关 ⇒ 跨命令边界存活;`chrome-down` 杀窗+按端口 cdp_sweep,
+#   fresh/down/vdown/m-down/rdown 既有 cdp_sweep 仍是兜底。端口按轨/窗固定(与 BU_CDP_URL 同源),并把 URL 写回 EV_DIR/cdp/<窗名>.url
+#   (与 #57「窗内 Bash 读不到 BU_*」复现共用同一条注入路径,⛔ 两件各造一条)。
+CHROME_BIN="${LAIXIN_CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+cdp_target_resolve(){  # <a|b|c|dispatch|verify名|片名|m名|件名> → stdout="<窗名> <端口>";解析不了退 1
+  local t="$1" w p
+  case "$t" in
+    a|b|c) w="lane-$t"; p="$(cdp_port_lane "$t")" ;;
+    dispatch) w="dispatch"; p="$DISPATCH_CDP_PORT" ;;
+    verify-*) w="$t"; p="$(cdp_port_verify "$t")" ;;
+    m-*|relay-*) w="$t"; p="$(cdp_port_verify "$t")" ;;
+    *) # 片名/件名:先按在跑窗口名匹配(verify/m),否则按 vwin 派生
+       if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$(vwin "$t" 2>/dev/null || echo -)"; then w="$(vwin "$t")"; p="$(cdp_port_verify "$w")"
+       elif tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$(mwin "$t" 2>/dev/null || echo -)"; then w="$(mwin "$t")"; p="$(cdp_port_verify "$w")"
+       else w="$(vwin "$t" 2>/dev/null || true)"; [ -n "$w" ] || return 1; p="$(cdp_port_verify "$w")"; fi ;;
+  esac
+  [ -n "$w" ] && [ -n "$p" ] || return 1
+  printf '%s %s' "$w" "$p"
+}
+cmd_chrome_up(){  # <目标> [--port N] [--dry]
+  local t="${1:-}"; shift || true; local port_opt="" dry=""
+  while [ $# -gt 0 ]; do case "$1" in --port) port_opt="${2:?--port 需要端口}"; shift 2 ;; --dry) dry=1; shift ;; *) die "未知参数:$1(用法:laixin-lane chrome-up <a|b|c|dispatch|verify名|片名|m名> [--port N] [--dry])" ;; esac; done
+  [ -n "$t" ] || die "chrome-up 需要目标:a|b|c|dispatch|verify名|片名|m名(端口按目标固定派生,与该窗 BU_CDP_URL 同源;或 --port N)"
+  local w p; read -r w p <<< "$(cdp_target_resolve "$t" 2>/dev/null || true)"
+  [ -n "$port_opt" ] && p="$port_opt"
+  [ -n "$p" ] || die "解析不出目标「${t}」的端口——目标写法:a|b|c|dispatch|verify-<片>|<片名>|m-<件>|<件名>,或显式 --port N"
+  local cw="chrome-${p}" url="http://127.0.0.1:${p}" uf="$EV_DIR/cdp/${w:-port-$p}.url"
+  if [ -n "$dry" ]; then echo "[dry] 目标=${t} 窗=${w:-?} 端口=${p} tmux窗=${cw} url文件=${uf} chrome=${CHROME_BIN}"; return 0; fi
+  [ -x "$CHROME_BIN" ] || die "Chrome 不在 ${CHROME_BIN}(LAIXIN_CHROME_BIN 可覆盖)"
+  ensure_session
+  if curl -s -m 2 "$url/json/version" >/dev/null 2>&1; then
+    echo "端口 ${p} 已有 CDP 在听(已起过或别人的)——直接用 ⛔ 重起 ⛔ pkill;url=${url}"
+  else
+    local ud; ud="$(mktemp -d "${TMPDIR:-/tmp}/laixin-chrome-${p}.XXXXXX")"
+    tmux kill-window -t "$SESSION:$cw" 2>/dev/null || true
+    tmux new-window -d -t "$SESSION" -n "$cw" "exec \"$CHROME_BIN\" --headless=new --remote-debugging-port=${p} --user-data-dir=\"${ud}\" --no-first-run about:blank >/dev/null 2>&1"
+    local i=0; until curl -s -m 1 "$url/json/version" >/dev/null 2>&1 || [ "$i" -ge 10 ]; do sleep 1; i=$((i+1)); done
+    if ! curl -s -m 2 "$url/json/version" >/dev/null 2>&1; then
+      board "$(caller_src)" "⛔ chrome-up ${t} 端口 ${p} 10s 未就绪(tmux 窗 ${cw})——peek: tmux capture-pane -p -t $SESSION:$cw"
+      die "端口 ${p} 10s 内未见 /json/version——Chrome 未起来;看现场:tmux capture-pane -p -t $SESSION:$cw"
+    fi
+  fi
+  mkdir -p "$EV_DIR/cdp"; printf '%s\n' "$url" > "$uf"
+  board "$(caller_src)" "chrome-up ${t}:headless Chrome 由 tmux 托管于窗 ${cw}(端口 ${p},跨命令边界存活;url 写回 ${uf});用毕 laixin-lane chrome-down ${t}"
+  echo "✅ CDP 就绪:${url}(tmux 窗 ${cw};url 文件 ${uf})"
+  echo "   自证❶ 另起一条命令读:curl -s ${url}/json/version | head -1;用毕:laixin-lane chrome-down ${t}"
+  return 0
+}
+cmd_chrome_down(){  # <目标> [--port N]
+  local t="${1:-}"; shift || true; local port_opt=""
+  while [ $# -gt 0 ]; do case "$1" in --port) port_opt="${2:?--port 需要端口}"; shift 2 ;; *) die "未知参数:$1" ;; esac; done
+  [ -n "$t" ] || die "chrome-down 需要目标(同 chrome-up)"
+  local w p; read -r w p <<< "$(cdp_target_resolve "$t" 2>/dev/null || true)"; [ -n "$port_opt" ] && p="$port_opt"
+  [ -n "$p" ] || die "解析不出目标「${t}」的端口(或 --port N)"
+  local cw="chrome-${p}"
+  tmux kill-window -t "$SESSION:$cw" 2>/dev/null && echo "已关 tmux 窗 ${cw}" || true
+  cdp_sweep "$p"
+  rm -f "$EV_DIR/cdp/${w:-port-$p}.url" 2>/dev/null || true
+  board "$(caller_src)" "chrome-down ${t}:端口 ${p} 的 headless Chrome 已关(tmux 窗 ${cw} 已收;url 文件已清)"
+  echo "✅ 端口 ${p} 已关(自证❷:curl -s -m 1 http://127.0.0.1:${p}/json/version 应连不上)"
+  return 0
+}
+cmd_chrome_list(){  # 在跑的 chrome-<端口> 窗 + 该端口归谁(a/b/c/dispatch/verify/m 窗派生反查);归不出=无主
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }
+  local cw p owner n=0 w
+  while read -r cw; do
+    [ -n "$cw" ] || continue; n=$((n+1)); p="${cw#chrome-}"; owner=""
+    for w in a b c; do [ "$(cdp_port_lane "$w")" = "$p" ] && owner="lane-$w"; done
+    [ "$DISPATCH_CDP_PORT" = "$p" ] && owner="dispatch"
+    if [ -z "$owner" ]; then
+      while read -r w; do [ -n "$w" ] && [ "$(cdp_port_verify "$w")" = "$p" ] && owner="$w"; done < <(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -E '^(verify|m|relay)-' || true)
+    fi
+    printf '%s  端口=%s  归属=%s\n' "$cw" "$p" "${owner:-⚠️ 无主(对应轨/窗已收而 Chrome 还活着 ⇒ laixin-lane chrome-down --port $p)}"
+  done < <(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep '^chrome-' || true)
+  [ "$n" -gt 0 ] || echo "当前没有 tmux 托管的 headless Chrome(chrome-up 起的才在此列)"
+  return 0
+}
+
 cmd_mlist() {  # 在跑机动窗清单(自证② 可核:各窗 BU/端口/worktree 一目了然)
   tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }
   local w pc path n=0
@@ -5901,6 +5992,9 @@ case "${1:-}" in
   m-down)     shift; cmd_mdown "$@" ;;
   peek-m)     shift; cmd_peekm "$@" ;;
   mlist)      shift; cmd_mlist "$@" ;;
+  chrome-up)   shift; cmd_chrome_up "$@" ;;    # #42:tmux 托管起 headless Chrome(跨命令边界存活)
+  chrome-down) shift; cmd_chrome_down "$@" ;;
+  chrome-list) shift; cmd_chrome_list "$@" ;;
   watchdog) shift; cmd_watchdog "$@" ;;
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)

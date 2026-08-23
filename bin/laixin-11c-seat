@@ -411,13 +411,34 @@ cmd_stop(){
   tmux kill-window -t "$SESSION:$seat" 2>/dev/null && printf '已收席：%s\n' "$seat" || die "席位不存在：$seat"
 }
 
-cmd_status(){
-  local seat="${1:-}"; [ -n "$seat" ] || usage
-  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$seat"; then
-    printf '%s：窗口在\n--- 画面末 8 行 ---\n' "$seat"
-    tmux capture-pane -t "$SESSION:$seat" -p -S -8 2>/dev/null
-  else
-    printf '%s：窗口不存在\n' "$seat"; return 1
+cmd_status(){  # <席位名> [--pane N]
+  # 🔴 #169(2026-08-23 dispatch-11c 首任报,当轮修):**默认零画面**。
+  #   原实现固定打印「画面末 8 行」⇒ 判个死活就把**席位作答正文**带上屏(实撞:17:43:10 判三席死活时
+  #   带出某席 R2 作答正文片段)。而 11C 总纲**收卷禁深读条**规定 dispatch 在收卷/开牌阶段的判据
+  #   **只许**「status 的 Working 与否 + 暂存区文件数」——⇒ **条文点名的那个判据,其工具实现本身就越限**,
+  #   不是调用方多加了参数。⭐ 这一族的通则:**默认行为要安全,越限要显式**(构造保证 > 事后断言 > 记性)。
+  # 活性判据=**无内容活性探针**(dispatch-11c 提供,当轮采纳):同窗两次 capture 只比对 SHA 是否变化,
+  #   输出仅「Working/静止」,**零正文出屏** ⛔ 靠词表匹配画面(那要把画面读进来)。
+  local seat="" pane_n=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pane) pane_n="${2:?--pane 需要行数}"; shift 2 ;;
+      *) seat="$1"; shift ;;
+    esac
+  done
+  [ -n "$seat" ] || usage
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$seat" || { printf '%s：窗口不存在\n' "$seat"; return 1; }
+  local h1 h2 act
+  h1="$(tmux capture-pane -t "$SESSION:$seat" -p 2>/dev/null | shasum -a 256 2>/dev/null | cut -c1-16)"
+  sleep 1.2
+  h2="$(tmux capture-pane -t "$SESSION:$seat" -p 2>/dev/null | shasum -a 256 2>/dev/null | cut -c1-16)"
+  if [ -n "$h1" ] && [ "$h1" != "$h2" ]; then act="Working(画面在变)"; else act="静止(⛔ 读成「已完卷」——静止也可能是在思考或已卡住)"; fi
+  printf '%s：窗口在 · %s\n' "$seat" "$act"
+  if [ "$pane_n" -gt 0 ] 2>/dev/null; then
+    # 显式要画面才给,且**硬上限 3 行**(总纲禁深读条:必须看现场时 ≤3 行且 ⛔ 含正文区)
+    [ "$pane_n" -le 3 ] || { printf '  ⛔ --pane 上限 3 行(11C 总纲收卷禁深读条);你要的 %s 行被拒 ⇒ 按 3 行给\n' "$pane_n"; pane_n=3; }
+    printf -- '--- 画面末 %s 行(⚠️ 可能含作答正文:看到即止 ⛔ 记录 ⛔ 转述 ⛔ 写入任何公开面)---\n' "$pane_n"
+    tmux capture-pane -t "$SESSION:$seat" -p -S -"$pane_n" 2>/dev/null
   fi
 }
 

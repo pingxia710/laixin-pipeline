@@ -3916,16 +3916,34 @@ rival_holds_dispatch() {
 }
 
 cmd_claim() {
-  local h; h="$(lock_holder)"
-  if [ -n "$h" ] && [ "$h" != "$(whoami_window)" ] && [ "$(lock_age)" -lt "$LOCK_FRESH" ]; then
+  local h me; h="$(lock_holder)"; me="$(whoami_window)"
+  # 🔴 #170 身份闸(2026-08-23 分窗后加,方案窗口第二十四任点头;**纵深那层**):
+  #   原判据只在「锁被别人持有**且新鲜**」时要 --force ⇒ **锁过期或无人持有时,任何窗口都能直接拿走派工权**。
+  #   2026-08-23 创始人分窗令起,机器上同时存在两个「像派工窗口」的窗(`laixin:dispatch` 与 `laixin-11c:dispatch-11c`)
+  #   ⇒ 这正是最容易撞的时候。`laixin-11c-dispatch` 的 settings 里虽已禁 `claim`,但**settings 是每次起窗注入的配置,
+  #   而 lane 内闸是不随起窗方式变的结构** ⇒ 两层都要有(方案窗口原话:纵深)。
+  #   判据=**窗口名必须是 $DISPATCH_WIN**;不是的一律要 --force,且夺锁**上看板点名两窗**(⛔ 静默易主)。
+  if [ "$me" != "$DISPATCH_WIN" ] && [ "${1:-}" != "--force" ]; then
+    echo "⛔ 派工权只归 tmux 窗口 [$DISPATCH_WIN];当前调用方是 [$me]。" >&2
+    echo "   派工权唯一是硬律——11C 机务窗/工具窗/手开窗都**不该**持有它(你要的多半是别的命令)。" >&2
+    echo "   确实要接管(如 dispatch 已死而你在代班):laixin-lane claim --force,它会上看板点名两窗。" >&2
+    return 1
+  fi
+  if [ -n "$h" ] && [ "$h" != "$me" ] && [ "$(lock_age)" -lt "$LOCK_FRESH" ]; then
     echo "⚠️ 派工权当前由 [$h] 持有(心跳 $(lock_age) 秒前)。"
     echo "   绝不允许两个派工窗口同时活着——先确认它已收工,再 laixin-lane claim --force"
     [ "${1:-}" = "--force" ] || return 1
     echo "   (--force:强行接管)"
   fi
   lock_write
-  board "$(caller_src)" "认领派工权:$(whoami_window)"   # #57:claim 是「想成为派工」的动作,来源写角色名=用结论当证据;真实身份已在消息里
-  echo "已认领派工权:$(whoami_window)"
+  # #57:claim 是「想成为派工」的动作,来源写角色名=用结论当证据;真实身份已在消息里
+  # #170:**夺锁必须点名两窗**——原来只记新持有者,被夺方在看板上无痕 ⇒ 事后查不出「谁把谁顶了」
+  if [ -n "$h" ] && [ "$h" != "$me" ]; then
+    board "$(caller_src)" "🔴 派工权易主:[$h] → [$me]$([ "${1:-}" = "--force" ] && echo "(--force 强行接管)")——**⛔ 两个派工窗口同时活着**,请确认前者已收工"
+  else
+    board "$(caller_src)" "认领派工权:$me"
+  fi
+  echo "已认领派工权:$me"
   return 0
 }
 

@@ -3771,6 +3771,26 @@ t "#168 零在局时不出这行(⛔ 常驻噪声)" bash -c '
   seg="$(sed -n "/#168(2026-08-23 方案窗口第二十四任批)/,/^    fi$/p" "'"$LANE"'")"
   grep -q "gt 0 \] || \[ " <<< "$seg"'
 
+
+# ── #169/#170 双盲 status 默认零画面 · claim 身份闸(2026-08-23 分窗后)──
+echo "== #169 status 零画面 · #170 claim 身份闸 =="
+SEATB2="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-11c-seat"
+t "#169 status 默认**零画面**〔病灶:原实现固定打印末 8 行 ⇒ 判个死活就把席位作答正文带上屏,而总纲收卷禁深读条点名的正是这个判据〕" bash -c '
+  seg="$(sed -n "/^cmd_status()/,/^}/p" "'"$SEATB2"'" | sed "s/#.*//")"
+  grep -q "pane_n" <<< "$seg" && ! grep -q "S -8" <<< "$seg"'
+t "#169 活性判据=两次 capture 比 SHA(零正文出屏)⛔ 词表匹配画面" bash -c '
+  seg="$(sed -n "/^cmd_status()/,/^}/p" "'"$SEATB2"'" | sed "s/#.*//")"
+  [ "$(grep -c "capture-pane" <<< "$seg")" -ge 2 ] && grep -q "shasum" <<< "$seg"'
+t "#169 --pane 硬上限 3 行(总纲禁深读条)" bash -c '
+  seg="$(sed -n "/^cmd_status()/,/^}/p" "'"$SEATB2"'")"; grep -q "le 3 \]" <<< "$seg"'
+t "#169 静止 ⛔ 读成已完卷(输出自带这句)" bash -c '
+  grep -q "静止也可能是在思考或已卡住" "'"$SEATB2"'"'
+t "#170 claim 身份闸:窗口名 ≠ \$DISPATCH_WIN 一律要 --force〔缺口:原判据只在「锁被别人持有且新鲜」时拦 ⇒ 锁过期/无人持有时任何窗口都能拿走派工权〕" bash -c '
+  seg="$(sed -n "/^cmd_claim()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "me\" != \"\$DISPATCH_WIN\" \] && \[ \"\${1:-}\" != \"--force\"" <<< "$seg"'
+t "#170 夺锁必须点名两窗(⛔ 静默易主:原来只记新持有者,被夺方无痕)" bash -c '
+  seg="$(sed -n "/^cmd_claim()/,/^}/p" "'"$LANE"'")"; grep -q "派工权易主" <<< "$seg"'
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

@@ -498,6 +498,9 @@ tout "改读法片缺消费点清单 → ⚠️ 提示(#18a)" "消费点清单" 
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-read.md"
 printf '收敛 payload 序列化面,消费点清单如下。引用 索引/wiki-消费者词汇表.md:2「好话术」 与 转单-9。\n' > "$TMPP/ph-read2.md"
 t "带消费点清单不提示(#18a)" bash -c 'out="$(env LAIXIN_KB="'"$TMPP"'/kb" LAIXIN_REPO="'"$TMPP"'/repo" "'"$LANE"'" prompt-lint "'"$TMPP"'/ph-read2.md" 2>&1)"; ! grep -q "消费点清单——" <<< "$out"' 
+printf '| 聚单-9 | x |\n| 商会-10 | x |\n' >> "$TMPP/kb/索引/wiki-裁定池总表.md"
+printf '规格单-真人实测环境最小集-20260823.md; 照聚单-9; 转单-9; 资金3-1; 商会-10。\n' > "$TMPP/date-seg.md"
+t "prompt-lint: 日期段不作裁定号，四种真编号仍可解析" bash -c 'out="$(env LAIXIN_KB="'"$TMPP"'/kb" LAIXIN_REPO="'"$TMPP"'/repo" "'"$LANE"'" prompt-lint "'"$TMPP"'/date-seg.md" 2>&1)"; grep -q "4 项引用可解析,0 项查无" <<< "$out" && ! grep -q "最小集-202" <<< "$out"'
 # #18b report-lint:举证形态半边机器化(实质归验收)
 RPT="$(mktemp -d)"
 printf '报告\n```\n输出\n```\ncommit 数 1,任务数 1,达标\n【交付完成】b test123\n' > "$RPT/好报告.md"
@@ -3708,7 +3711,7 @@ t "#165-2 默认引擎=codex(⛔ 开关缺失时静默变别的)" bash -c '
   T="$(mktemp -d)"; echo x > "$T/p.md"
   # 用真工具仓自身当 --dir:它会被 ⛔主树 那条拦下,但**引擎解析在更前面**,所以 dry 头行仍能验默认引擎;
   # ⛔ 拿 mktemp 目录当 --dir(它连 git 工作树都不是,会先被那条拦掉,验不到引擎)
-  out="$(LAIXIN_TOOL_ENGINE= "'"$LANE"'" tool-up t1652 --prompt "$T/p.md" --dir "$(cd "$(dirname "'"$LANE"'")/.." && pwd)/../laixin-pipeline" --dry 2>&1 || true)"
+  out="$(LAIXIN_TOOL_ENGINE= "'"$LANE"'" tool-up t1652 --prompt "$T/p.md" --dir "$(cd "$(dirname "'"$LANE"'")/.." && pwd)" --dry 2>&1 || true)"
   rm -rf "$T"
   # 默认路线的证据:要么 dry 打出「引擎=codex(默认)」,要么被主树那条拦下(说明走到了引擎之后的校验)
   grep -qE "引擎=codex\(默认\)|不得落工具仓主树" <<< "$out"' 

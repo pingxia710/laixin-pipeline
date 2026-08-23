@@ -3783,13 +3783,32 @@ t "#169 活性判据=两次 capture 比 SHA(零正文出屏)⛔ 词表匹配画�
   [ "$(grep -c "capture-pane" <<< "$seg")" -ge 2 ] && grep -q "shasum" <<< "$seg"'
 t "#169 --pane 硬上限 3 行(总纲禁深读条)" bash -c '
   seg="$(sed -n "/^cmd_status()/,/^}/p" "'"$SEATB2"'")"; grep -q "le 3 \]" <<< "$seg"'
-t "#169 静止 ⛔ 读成已完卷(输出自带这句)" bash -c '
-  grep -q "静止也可能是在思考或已卡住" "'"$SEATB2"'"'
+# 🔁 沿革(#169-2):文案由「静止也可能是在思考或已卡住」升级为**点明三个真值 + 指向真判据**
+#   ⇒ 断言随文案更新 ⛔ 删(它钉的意图=静止态必须自带「⛔ 读成已完卷」的警告,意图不变)。
+t "#169 静止态必须自带「⛔ 读成已完卷」警告" bash -c '
+  grep -q "三个真值" "'"$SEATB2"'"'
 t "#170 claim 身份闸:窗口名 ≠ \$DISPATCH_WIN 一律要 --force〔缺口:原判据只在「锁被别人持有且新鲜」时拦 ⇒ 锁过期/无人持有时任何窗口都能拿走派工权〕" bash -c '
   seg="$(sed -n "/^cmd_claim()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
   grep -q "me\" != \"\$DISPATCH_WIN\" \] && \[ \"\${1:-}\" != \"--force\"" <<< "$seg"'
 t "#170 夺锁必须点名两窗(⛔ 静默易主:原来只记新持有者,被夺方无痕)" bash -c '
   seg="$(sed -n "/^cmd_claim()/,/^}/p" "'"$LANE"'")"; grep -q "派工权易主" <<< "$seg"'
+
+
+# ── #169-2 status 三态说明 + 会话名可覆盖(2026-08-23;补验 dispatch-11c 未覆盖的 Working 分支)──
+echo "== #169-2 status Working 分支 · 会话名可覆盖 =="
+S169="lx-t169-$$"
+tmux kill-session -t "$S169" 2>/dev/null || true
+tmux new-session -d -s "$S169" -n seat-probe 'while true; do date +%s.%N; sleep 0.3; done' 2>/dev/null && sleep 1
+tout "#169-2 Working 分支(画面在变)〔dispatch-11c 真环境只覆盖到静止分支,这条是本仓自造的另一半〕" "Working(画面在变)" env LAIXIN_11C_SESSION="$S169" "$SEATB2" status seat-probe
+tmux new-window -d -t "$S169" -n seat-idle 'sleep 600' 2>/dev/null && sleep 1
+tout "#169-2 静止分支点明**三个真值**并指向真判据(⛔ 只写「⛔ 读成已完卷」)" "三个真值" env LAIXIN_11C_SESSION="$S169" "$SEATB2" status seat-idle
+tout "#169-2 静止行指向真判据=带末行契约的文件数 ⛔ 用本行" "带末行契约的文件数" env LAIXIN_11C_SESSION="$S169" "$SEATB2" status seat-idle
+t "#169-2 --pane 超限降到 3 行 ⛔ 照给" bash -c '
+  out="$(LAIXIN_11C_SESSION="'"$S169"'" "'"$SEATB2"'" status seat-idle --pane 8 2>&1)"
+  grep -q "上限 3 行" <<< "$out" && grep -q "画面末 3 行" <<< "$out"'
+t "#169-2 会话名可覆盖〔缺口:原为硬编码 laixin-11c ⇒ 本脚本自己测不了隔离会话,把自己排除在「真环境首火在隔离会话做」那条纪律之外〕" bash -c '
+  grep -q "SESSION=\"\${LAIXIN_11C_SESSION:-laixin-11c}\"" "'"$SEATB2"'"'
+tmux kill-session -t "$S169" 2>/dev/null || true
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

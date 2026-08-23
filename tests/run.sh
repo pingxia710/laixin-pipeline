@@ -2382,6 +2382,9 @@ t "#160 小句级:锚与占位跨逗号分离 ⇒ 从严记 SELF" bash -c 'sourc
 t "#160 两态同现 ⇒ 两行各报" bash -c 'source "'"$V160F"'"; out="$(printf "%s\n%s" "据复盘页原文 00:4x" "我这里 23:1x" | ph_time_two_forms)"; grep -q "^SELF	23:1x" <<< "$out" && grep -q "^QUOTED	00:4x" <<< "$out"'
 t "#160 零命中退 1(与 ph_time_hits 同约定)" bash -c 'source "'"$V160F"'"; ! printf "%s" "22:45:03 实测" | ph_time_two_forms >/dev/null'
 t "#160 失效降级 ⛔ 反向:python3 不可用 ⇒ 转录样本也记 SELF(严格态)" bash -c 'source "'"$V160F"'"; python3(){ return 127; }; out="$(printf "%s" "转录 [[档]] 原文 00:4x" | ph_time_two_forms)"; grep -q "^SELF	00:4x" <<< "$out"'
+t "#160三 样本:占位在行内代码内 ⇒ SAMPLE(元文本 ⛔ 被判据本身罚)" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "我又撞了两次(看板 \`12:2x\` 与注册表 \`12:1x\`)" | ph_time_two_forms)"; grep -q "^SAMPLE	12:2x 12:1x" <<< "$out" && ! grep -q "^SELF" <<< "$out"'
+t "#160三 裸占位不因同行有别的代码块而豁免" bash -c 'source "'"$V160F"'"; out="$(printf "%s" "样本 \`12:2x\`;我这轮 23:1x 起" | ph_time_two_forms)"; grep -q "^SELF	23:1x" <<< "$out" && grep -q "^SAMPLE	12:2x" <<< "$out"'
+t "#160三 反引号 ⛔ 豁免真登记:提示语当场声明" bash -c 'grep -q "反引号 ⛔ 豁免真登记时刻" "'"$LANE"'"'
 t "#160 接线:cmd_log 与 kb-commit 各挂一处 ph_time_two_forms" bash -c '[ "$(grep -c "ph_time_two_forms 2>/dev/null" "'"$LANE"'")" -ge 4 ]'
 rm -rf "$V160"
 

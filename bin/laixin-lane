@@ -577,7 +577,9 @@ cmd_log() {
   local _pht _phq; _pht="$(printf '%s' "$*" | ph_time_two_forms 2>/dev/null | grep '^SELF' | cut -f2- | head -1)" || true
   _phq="$(printf '%s' "$*" | ph_time_two_forms 2>/dev/null | grep '^QUOTED' | cut -f2- | head -1)" || true
   [ -n "${_pht:-}" ] && echo "⚠️ 正文疑含占位时刻(${_pht}):先跑 date 取实测值再写(#107;已照常记录,不打断)。" >&2
-  [ -n "${_phq:-}" ] && echo "ℹ️ 占位时刻(${_phq})同行带来源锚 ⇒ 按**转录**放行(#160);若其实是你自己的登记时刻,仍须 date 实测。" >&2
+  [ -n "${_phq:-}" ] && echo "ℹ️ 占位时刻(${_phq})同小句带来源锚 ⇒ 按**转录**放行(#160);若其实是你自己的登记时刻,仍须 date 实测。" >&2
+  local _phs; _phs="$(printf '%s' "$*" | ph_time_two_forms 2>/dev/null | grep '^SAMPLE' | cut -f2- | head -1)" || true
+  [ -n "${_phs:-}" ] && echo "ℹ️ 占位时刻(${_phs})在行内代码 \`…\` 内 ⇒ 按**样本**放行(#160三形态);⚠️ 反引号 ⛔ 豁免真登记时刻。" >&2
   board "$src" "$*"
   echo "已记录到看板"
 }
@@ -1741,7 +1743,9 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
       _ph="$(comm -23 <(printf '%s\n' "${_phnew:-}" | grep . | sort -u) <(printf '%s\n' "${_phold:-}" | grep . | sort -u) 2>/dev/null | head -3 | tr '\n' ' ')" || true
       _phq2="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' | ph_time_two_forms 2>/dev/null | grep '^QUOTED' | cut -f2- | head -1)" || true
       [ -n "${_ph:-}" ] && echo "⚠️ #107 占位时刻:$(basename "$_pf") 本次新增行含 ${_ph}——先 date 取实测值,改完再 kb-commit 一次(提交已落库 ⛔ 回滚)"
-      [ -n "${_phq2:-}" ] && echo "ℹ️ #160:$(basename "$_pf") 新增行的占位(${_phq2})同行带来源锚 ⇒ 按**转录**放行;若其实是自编登记时刻,仍须 date 实测。"
+      [ -n "${_phq2:-}" ] && echo "ℹ️ #160:$(basename "$_pf") 新增行的占位(${_phq2})同小句带来源锚 ⇒ 按**转录**放行;若其实是自编登记时刻,仍须 date 实测。"
+      local _phs2; _phs2="$(git -C "$vault" show --unified=0 HEAD -- "$_pf" 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' | ph_time_two_forms 2>/dev/null | grep '^SAMPLE' | cut -f2- | head -1)" || true
+      [ -n "${_phs2:-}" ] && echo "ℹ️ #160:$(basename "$_pf") 新增行的占位(${_phs2})在行内代码内 ⇒ 按**样本**放行(讨论判据的文本 ⛔ 被判据本身罚);⚠️ 反引号 ⛔ 豁免真登记时刻。"
     done
   fi
   if [ "$committed" -eq 1 ]; then
@@ -2574,6 +2578,12 @@ ph_time_two_forms(){  # stdin=文本 → stdout 至多两行:「SELF<TAB>命中�
   #   「据复盘页原文 00:4x;我这轮 23:1x 起」整条被判 QUOTED,自编那个也跟着放行 ⇒ 行级=给 log 开万能免死金牌。
   #   ⇒ 切到小句(分隔符 `;;。!!??,,`):**锚必须贴着它所标注的那个占位写**。切不开(整句一片)时
   #   仍需锚+出处同片,方向是更难放行 ⛔ 更易放行。
+  # 🔴 **第三形态 SAMPLE(2026-08-23 真 KB 首火当场加;推翻 dispatch 59「保持从严、改措辞」的倾向——它自标可推翻)**:
+  #   占位落在**行内代码** `…` 内 ⇒ 记 SAMPLE(ℹ️ 提示级)。理由三条:①判据有**语法位置**(反引号),可结构化分辨
+  #   ⇒ 按同日立的方向「能结构化分辨就改工具 ⛔ 让人改措辞」;②放行需作者**主动加反引号**=显式标记动作 ⛔ 默认放行;
+  #   ③八律第 8 律明写「讨论该判据的文本会随规则被记录而持续增长」⇒ 从严的真实成本不是「改一句话」,而是**每次复盘
+  #   这条规则都要绕着措辞走**,即误报随「记录失败样本」这一被鼓励的行为增长(三约束③ 噪声必须与目标行为同向)。
+  #   ⚠️ 反引号**不豁免**真登记时刻——提示语当场说明这一点;真要防的是「没测就写」,而愿意打反引号的人是在标样本。
   # 🔴 **失效必须降级 ⛔ 反向**(三约束②):放行是危险方向 ⇒ python3 缺失/异常一律**全部记 SELF**(回到现行严格态),
   #   ⛔ 静默放行。零命中时退 1,与 ph_time_hits 同约定。
   local _in; _in="$(cat)"
@@ -2581,15 +2591,23 @@ ph_time_two_forms(){  # stdin=文本 → stdout 至多两行:「SELF<TAB>命中�
   _out="$(PH_TIME_RE="$PH_TIME_RE" PH_A="$PH_SRC_ANCHOR_RE" PH_W="$PH_SRC_WHERE_RE" python3 -c '
 import os,re,sys
 rt=re.compile(os.environ["PH_TIME_RE"]); ra=re.compile(os.environ["PH_A"]); rw=re.compile(os.environ["PH_W"])
-self_h, quot_h = [], []
+self_h, quot_h, samp_h = [], [], []
 SPLIT=re.compile(r"[;;。!!??,,]")
+CODE=re.compile(r"`[^`]*`")
 for raw in sys.stdin.read().splitlines():
+  spans=[(m.start(),m.end()) for m in CODE.finditer(raw)]   # 行内代码区间(整行坐标)
+  off=0
   for line in SPLIT.split(raw):
-    hits=[]
+    base=off; off += len(line)+1
+    hits=[]; samp=[]
     for m in rt.finditer(line):
         g=m.group(0)
         while g and not (g[-1].isdigit() or g[-1]=="x"): g=g[:-1]
-        if g: hits.append(g)
+        if not g: continue
+        a=base+m.start()
+        if any(x<=a<y for x,y in spans): samp.append(g)   # 落在 `…` 内 ⇒ 样本
+        else: hits.append(g)
+    samp_h.extend(samp)
     if not hits: continue
     sourced = bool(ra.search(line)) and bool(rw.search(line))
     (quot_h if sourced else self_h).extend(hits)
@@ -2600,6 +2618,7 @@ def uniq(x):
     return out
 if self_h: sys.stdout.write("SELF\t"+" ".join(uniq(self_h))+"\n")
 if quot_h: sys.stdout.write("QUOTED\t"+" ".join(uniq(quot_h))+"\n")
+if samp_h: sys.stdout.write("SAMPLE\t"+" ".join(uniq(samp_h))+"\n")
 ' <<< "$_in" 2>/dev/null)" || _out=""
   if [ -z "${_out:-}" ]; then
     # python3 不可用/异常:回落严格态——只要 ph_time_hits 命中就全记 SELF(⛔ 因判定失效而放行)

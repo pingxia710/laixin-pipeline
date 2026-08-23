@@ -2659,7 +2659,11 @@ tout "relay-once --dry 给出回复契约(末行【中转回复】<件名> 来�
   "$LANE" relay-once 测试件 --file "$RO_ITEM" --dry
 t "relay-once:claude 分支钉 RELAY_MODEL + RELAY_ONCE_DENY + vwait_ready(与常驻 relay 同形态)" bash -c \
   'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "\-\-model \$RELAY_MODEL" <<< "$b" && grep -q "RELAY_ONCE_DENY\[@\]" <<< "$b" && grep -q "vwait_ready \"\$w\"" <<< "$b"' _ "$LANE"
-t "relay-once:codex 分支走 codex_launch_cmd + vwait_ready_codex(33d679b 起显式 luna/max,与方案窗口对一次性中继窗的配档拍一致)" bash -c \
+# 🔁 沿革(2026-08-23 #164):本条原断言「codex 分支走 codex_launch_cmd(33d679b 起显式 luna/max)」——创始人当日直令
+#   「书记员的模型差点意思了,后面 11C 的书记员用 5.6-sol」⇒ relay-once 的 codex 配型改为**独立口径**
+#   (⛔ 复用 codex_launch_cmd 的 CODEX_MODEL——那同时是**验收窗**的模型,动它会误伤验收)。
+#   ⇒ 断言随之更新 **⛔ 删**:仍钉「显式配型 + 就绪自证」,只把配型来源换成 RELAY_ONCE_CODEX_MODEL。
+t "relay-once:codex 分支显式配型(独立口径 RELAY_ONCE_CODEX_MODEL)+ vwait_ready_codex 就绪自证" bash -c 'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "RELAY_ONCE_CODEX_MODEL" <<< "$b" && grep -q "vwait_ready_codex" <<< "$b"' _ "$LANE"
   'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "codex_launch_cmd \"\$bu\"" <<< "$b" && grep -q "vwait_ready_codex \"\$w\"" <<< "$b"' _ "$LANE"
 t "relay-once:引擎校验在 ensure_session 之前(#60① 一课)" bash -c \
   'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; c="$(grep -n "未知一次性中继引擎" <<< "$b" | head -1 | cut -d: -f1)"; e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)"; [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ]' _ "$LANE"
@@ -3568,8 +3572,23 @@ rm -rf "$S162"
 echo "== #163 注入落地校验 =="
 V163="$(mktemp -d)"; V163F="$V163/fn.sh"
 grep -E '^INJECT_SCROLLBACK=' "$LANE" > "$V163F"
-for fn in inject_feature inject_count inject_verify; do sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$V163F"; done
+for fn in inject_feature inject_features inject_count inject_count_max inject_verify; do sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$V163F"; done
 t "#163 特征串:取首非空行前 40 字符,太短则并次行" bash -c 'source "'"$V163F"'"; out="$(printf "%s\n%s" "短" "第二行内容够长了吧" | inject_feature)"; [ "${#out}" -ge 8 ]'
+# ── #163 补丁二(dispatch 59 第二次实撞,已产生真实后果:书记员收到两遍门铃)──
+t "#163-2 多串:输出 ≥2 个候选且**每个都短**(≤14 字符;长串会被 TUI 折行拆开 ⇒ grep 假阴性 ⇒ 重复投递)" bash -c '
+  source "'"$V163F"'"
+  out="$(printf "%s\n%s\n%s" "【派工窗口门铃 · dispatch 59 → 书记员席】一条你必须先知道的时序约束" "正文提到 PICK_DIR 与质量五律" "末段说明文字" | inject_features)"
+  n="$(printf "%s\n" "$out" | grep -c .)"; [ "$n" -ge 2 ] || exit 1
+  while IFS= read -r l; do [ "${#l}" -le 14 ] || exit 1; done <<< "$out"'
+t "#163-2 候选串 ⛔ 断字节乱码〔病灶:awk substr 按字节切中文 ⇒ 候选本身是乱码 ⇒ 永远 0 命中 ⇒ 校验静默失效且方向=触发重投〕" bash -c '
+  source "'"$V163F"'"
+  out="$(printf "%s" "【派工窗口门铃 · dispatch 59 → 书记员席】时序约束" | inject_features)"
+  python3 -c "import sys;d=sys.stdin.buffer.read();d.decode(\"utf-8\");sys.exit(0)" <<< "$out"'
+t "#163-2 max 取值:三串计数 0/2/1 ⇒ 取 2" bash -c '
+  source "'"$V163F"'"; tmux(){ printf "%s\n" "BBB 与 BBB" "CCC"; return 0; }
+  [ "$(inject_count_max t "$(printf "%s\n%s\n%s" AAA BBB CCC)")" = "2" ]'
+t "#163-2 全部串都读不到 ⇒ 退 1(⛔ 落 0)" bash -c '
+  source "'"$V163F"'"; tmux(){ return 1; }; ! inject_count_max t "$(printf "%s\n%s" AAA BBB)" >/dev/null 2>&1'
 t "#163 特征串提取零 stderr 噪声(⛔ tr -d 处理多字节:中文 locale 下 Illegal byte sequence,tr 失败会吞掉整串 ⇒ 校验静默失效)" bash -c '
   source "'"$V163F"'"; err="$(printf "%s" "落地校验探针 中文正文" | inject_feature 2>&1 >/dev/null)"; [ -z "$err" ]'
 t "#163 计数:同一行内两次出现要计 2〔病灶——grep -c 计行数,同行两次算 1 ⇒ 假报未落地 ⇒ 触发重复投递,比不校验更糟〕" bash -c '
@@ -3596,6 +3615,27 @@ t "#163 cmd_send 接线:投递前取基线(⛔ 事后拿绝对计数)" bash -c '
 t "#163 开发轨只报 ⛔ 自动重投(既有裁定:重发有搞乱 Codex 上下文风险;主持「失败即重投」射程=席位/中继类)" bash -c '
   seg="$(sed -n "/^cmd_send()/,/^}/p" "'"$LANE"'")"; grep -q "⛔ 盲目重发" <<< "$seg"'
 rm -rf "$V163"
+
+
+# ── #164 relay-once codex 独立配型(2026-08-23 创始人令「11C 书记员用 5.6-sol」)──
+echo "== #164 relay-once codex 独立配型 =="
+t "#164 默认 sol:relay-once codex 配型 ⛔ 复用验收窗的 CODEX_MODEL〔病灶:改全局会误伤验收窗〕" bash -c '
+  T="$(mktemp -d)"; echo x > "$T/f.md"
+  out="$("'"$LANE"'" relay-once "t164" --file "$T/f.md" --engine codex --dry 2>&1)"; rm -rf "$T"
+  grep -q "codex 配型:gpt-5.6-sol xhigh" <<< "$out"'
+t "#164 --codex-model 按件覆盖生效" bash -c '
+  T="$(mktemp -d)"; echo x > "$T/f.md"
+  out="$("'"$LANE"'" relay-once "t164" --file "$T/f.md" --engine codex --codex-model gpt-5.6-terra --dry 2>&1)"; rm -rf "$T"
+  grep -q "codex 配型:gpt-5.6-terra" <<< "$out"'
+t "#164 起窗串用独立口径变量 ⛔ codex_launch_cmd(那条是验收窗射程)" bash -c '
+  seg="$(sed -n "/^cmd_relay_once()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q "RELAY_ONCE_CODEX_MODEL" <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
+t "#164 doctor 显示该配型(⛔ 只能靠起窗横幅事后看)" bash -c '"'"$LANE"'" doctor 2>&1 | grep -q "一次性中继 codex 配型"'
+t "#164 11c-seat 认 sol 引擎且显式带档(⛔ 依赖默认——luna 那次默认 medium 咬人)" bash -c '
+  seg="$(sed -n "/^  *sol)/,/;;/p" "$(dirname "'"$LANE"'")/laixin-11c-seat")"
+  grep -q "gpt-5.6-sol" <<< "$seg" && grep -q "xhigh" <<< "$seg"'
+t "#164 11c-seat 引擎枚举含 sol(⛔ 只改帮助文本不改校验)" bash -c '
+  grep -q "fable|k3|terra|luna|sol) : ;;" "$(dirname "'"$LANE"'")/laixin-11c-seat"'
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

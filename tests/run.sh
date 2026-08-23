@@ -2384,6 +2384,28 @@ t "#160 零命中退 1(与 ph_time_hits 同约定)" bash -c 'source "'"$V160F"'"
 t "#160 失效降级 ⛔ 反向:python3 不可用 ⇒ 转录样本也记 SELF(严格态)" bash -c 'source "'"$V160F"'"; python3(){ return 127; }; out="$(printf "%s" "转录 [[档]] 原文 00:4x" | ph_time_two_forms)"; grep -q "^SELF	00:4x" <<< "$out"'
 t "#160 接线:cmd_log 与 kb-commit 各挂一处 ph_time_two_forms" bash -c '[ "$(grep -c "ph_time_two_forms 2>/dev/null" "'"$LANE"'")" -ge 4 ]'
 rm -rf "$V160"
+
+# ── #161 --dry 射程缺口(2026-08-23 dispatch 59 实撞 relay-once + 11C 主持判「值得成规」;11B 归口枚举全族)──
+# 病灶:dry 在同件硬拦截**之前** return ⇒ 对「这次会不会被拦」零分辨力,且默认叙述偏向「会起窗」=与真实行为相反。
+# 🔴 双向自证按主持规格:**对已存在件跑 dry 应报拦截而非「会起窗」**;对不存在件仍报会起。
+V161="$(mktemp -d)"; V161F="$V161/fn.sh"
+sed -n "/^dry_win_clash()/,/^}/p" "$LANE" > "$V161F"
+t "#161 dry_win_clash:窗已存在 ⇒ 报「会被 die 拦下」" bash -c 'source "'"$V161F"'"; SESSION=x; tmux(){ printf "%s\n" "relay-已存在件" "dispatch"; }; out="$(dry_win_clash "relay-已存在件")"; grep -q "会被 die 拦下" <<< "$out"'
+t "#161 dry_win_clash:窗不存在 ⇒ 报「会新起」" bash -c 'source "'"$V161F"'"; SESSION=x; tmux(){ printf "%s\n" "dispatch"; }; out="$(dry_win_clash "relay-新件")"; grep -q "会新起" <<< "$out"'
+# ⚠️ 本断言必须**剥掉注释行**再扫:首版直扫全段,被函数自己那句「⛔ ensure_session:dry 不许有副作用」的注释命中而假红
+#   ——即八律第 8 律「讨论判据的文本会被判据本身命中」(同日 dispatch 59 在 #107 钩子上撞同族)。
+#   二版又红:命中的是**函数首行的行尾注释**,`grep -v "^#"` 只剥整行注释 ⇒ 判据改为 `sed "s/#.*//"` 剥到行尾。
+#   ⭐ 方向选择:本仓惯例**鼓励**注释里写出互指的函数名(双真相源互指注释),所以该适配的是判据 ⛔ 让人改措辞。
+t "#161 dry_win_clash 只读:代码里 ⛔ 调 ensure_session(dry 不许有副作用;断言剥注释行)" bash -c '! sed -n "/^dry_win_clash()/,/^}/p" "'"$LANE"'" | sed "s/#.*//" | grep -q "ensure_session"'
+t "#161 relay-once dry 段含同件拦截与覆盖范围声明" bash -c 'seg="$(sed -n "/^cmd_relay_once()/,/^}/p" "'"$LANE"'")"; grep -q "dry_win_clash" <<< "$seg" && grep -q "\[dry\] 覆盖范围" <<< "$seg"'
+t "#161 m-up dry 段含同件拦截+端口撞车+覆盖范围" bash -c 'seg="$(sed -n "/^cmd_mup()/,/^}/p" "'"$LANE"'")"; grep -q "dry_win_clash" <<< "$seg" && grep -q "oneshot_port_clash" <<< "$seg" && grep -q "\[dry\] 覆盖范围" <<< "$seg"'
+t "#161 chrome-up dry 段报端口是否已在听" bash -c 'seg="$(sed -n "/^cmd_chrome_up()/,/^}/p" "'"$LANE"'")"; grep -q "已有 CDP 在听" <<< "$seg" && grep -q "\[dry\] 覆盖范围" <<< "$seg"'
+t "#161 verify-from 的 dry〔有意只警告 ⛔ 当缺口修〕:行为不动,只加声明" bash -c 'seg="$(sed -n "/^cmd_verify_from()/,/^}/p" "'"$LANE"'")"; grep -q "有意设计" <<< "$seg" && ! grep -q "dry_win_clash" <<< "$seg"'
+t "#161 全族覆盖:五个带 --dry 的子命令段各有一行「[dry] 覆盖范围」" bash -c '
+  n=0; for fn in cmd_relay_once cmd_mup cmd_chrome_up cmd_account_switch cmd_verify_from; do
+    seg="$(sed -n "/^${fn}()/,/^}/p" "'"$LANE"'")"; grep -q "\[dry\] 覆盖范围" <<< "$seg" && n=$((n+1)); done
+  [ "$n" -eq 5 ]'
+rm -rf "$V161"
 t "#106 直令过滤:方案窗口+创始人直令 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:00 | 方案窗口 | 创始人直令两条(date):原话逐字… |" | ev_directive_filter | grep -q 直令'
 t "#106 直令过滤:在飞口径变更 命中" bash -c 'source "'"$V16F"'"; printf "%s\n" "| 08-20 07:01 | 方案窗口 | ⚠️ 在飞口径变更:推翻 X |" | ev_directive_filter >/dev/null'
 t "#106 直令过滤:派工窗口来源不搬运" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "| 08-20 07:02 | 派工窗口 | 转述创始人直令… |" | ev_directive_filter >/dev/null'

@@ -2554,6 +2554,17 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
 PH_TIME_RE='[0-9]{1,2}:([0-9]x|xx?)([^0-9A-Za-z]|$)'   # 22:4x / 23:x / 23:xx;不碰 22:45 与 0x1f(无冒号)
 PH_SRC_ANCHOR_RE='转录|转记|照录|逐字|原文|引自|来源=|据[^ ]{0,6}(档|页|表|录|纲)|见[^ ]{0,6}(档|页|快照)'   # #160 锚词半边
 PH_SRC_WHERE_RE='\[\[|《|\.md|看板|注册表|复盘页|快照|记忆档|台账|总表|协作流程|交接包|原话档'                  # #160 出处半边
+dry_win_clash(){  # <窗名> → stdout 人话结论;只读(⛔ ensure_session:dry 不许有副作用)。退 0 恒真
+  # #161(2026-08-23 dispatch 59 实撞 + 11C 主持判「值得成规」):`--dry` 的用途就是「先看会发生什么」,
+  #   而它此前在**最需要它拦住人的那个场景**(同件窗已存在)给出的输出与真实行为**相反**——
+  #   「会起窗」与「会被 die 拦下」在 dry 输出里完全同形(都只有那几行)。属「检查器在它要防的风险上失效」族。
+  local w="${1:-}"
+  if [ -n "$w" ] && tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
+    printf '🔴 窗 %s **已存在** ⇒ 真跑会被 die 拦下 ⛔ 起新窗(要换新先按各命令的回收子命令收掉)\n' "$w"
+  else
+    printf '窗 %s 不存在 ⇒ 真跑会新起\n' "${w:-?}"
+  fi
+}
 ph_time_two_forms(){  # stdin=文本 → stdout 至多两行:「SELF<TAB>命中…」「QUOTED<TAB>命中…」;零命中零输出退 1(#160)
   # #160(2026-08-23 方案窗口第二十三任裁「升条」;来源=第二十二任候选条「#107 不分辨转录既有档记载 vs 自编占位」):
   #   两形态在告警输出上此前同形 ⇒ 判读靠人。判据免语义=**同一行**内既有锚词(转录/照录/逐字/原文/来源=…)
@@ -3365,7 +3376,11 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
     echo "⛔ 末行快照已过期:分支 $branch 现指向 ${tip:0:12},报告末行是 ${commit}——交付后分支又动过(常见:开发方自行 rebase 而报告没更新,或 fresh 抢在它更新报告之前)。"
     echo "   验的必须是要合的:请开发方更新报告末行,或核实 ${tip:0:12} 后按它验收。"
   fi
-  if [ -n "$dry" ]; then echo "(--dry:不起窗)"; return 0; fi
+  if [ -n "$dry" ]; then
+    echo "(--dry:不起窗)"
+    echo "[dry] 覆盖范围:末行解析 · 分支/commit 读数 · 上方 ③④ 提示;⛔ 覆盖=同名验收窗冲突(**本命令的 ③④ 在 dry 只警告、真起窗才拒——有意设计,见函数内注释 ⛔ 当缺口修**)"
+    return 0
+  fi
   [ -n "$prompt" ] || die "需要 --prompt <该片prompt绝对路径>"
   if [ -n "$stale" ] && [ -z "$allow_stale" ]; then
     die "⛔ 拒绝按过期快照起验收窗口(分支已前进到 ${tip:0:12})。更新报告末行后重试;确要验旧 commit 加 --allow-stale。"
@@ -4506,6 +4521,8 @@ EOF
     echo "[dry] 引擎=${RELAY_ONCE_ENGINE}(请求=${RELAY_ONCE_ENGINE_REQ}) 窗口=$w cwd=$dir BU_NAME=$bu 端口=$port"
     echo "[dry] 回复契约:$reply 末行【中转回复】${item} 来自 relay-once"
     echo "[dry] 点名指令首行:$(head -1 <<< "$msg" | cut -c1-120)"
+    echo "[dry] 同件拦截:$(dry_win_clash "$w")"
+    echo "[dry] 覆盖范围:参数校验 · 引擎解析 · 契约路径 · **同件窗冲突**;⛔ 覆盖=启动超时/就绪自证(真起窗才知道)"
     return 0
   fi
   ensure_session
@@ -4672,10 +4689,15 @@ EOF
   case "$trc" in 0) tstat="已信任" ;; 1) tstat="未信任" ;; *) tstat="配置不可读" ;; esac
   if [ -n "$dry" ]; then
     echo "[dry] 窗口=$w cwd=$dir BU_NAME=$bu 端口=$port 全局默认=${gdef}"
+    echo "[dry] 同件拦截:$(dry_win_clash "$w")"
     echo "[dry] 起动串:$launch"
     echo "[dry] codex 信任根=$troot(${tstat})"
     echo "[dry] 交付契约:$report 末行【交付完成】M轨-${item} <commit|no-commit>"
     echo "[dry] 点名指令首行:$(head -1 <<< "$msg" | cut -c1-120)"
+    local _dpc; _dpc="$(oneshot_port_clash "$port" 2>/dev/null || true)"
+    if [ -n "${_dpc:-}" ]; then echo "[dry] 端口撞车:🔴 CDP 端口 ${port} 与在跑一次性窗 ${_dpc} 撞车 ⇒ 真跑会被 die 拦下(改件名再起)"
+    else echo "[dry] 端口撞车:端口 ${port} 未与在跑一次性窗撞车"; fi
+    echo "[dry] 覆盖范围:参数校验 · ⛔A轨主树 · 信任根读数 · **同件窗冲突** · **端口撞车**;⛔ 覆盖=启动超时/自证①窗内自报模型(真起窗才知道)"
     return 0
   fi
   if [ "$trc" -eq 1 ]; then
@@ -4762,7 +4784,17 @@ cmd_chrome_up(){  # <目标> [--port N] [--dry]
   [ -n "$port_opt" ] && p="$port_opt"
   [ -n "$p" ] || die "解析不出目标「${t}」的端口——目标写法:a|b|c|dispatch|verify-<片>|<片名>|m-<件>|<件名>,或显式 --port N"
   local cw="chrome-${p}" url="http://127.0.0.1:${p}" uf="$EV_DIR/cdp/${w:-port-$p}.url"
-  if [ -n "$dry" ]; then echo "[dry] 目标=${t} 窗=${w:-?} 端口=${p} tmux窗=${cw} url文件=${uf} chrome=${CHROME_BIN}"; return 0; fi
+  if [ -n "$dry" ]; then
+    echo "[dry] 目标=${t} 窗=${w:-?} 端口=${p} tmux窗=${cw} url文件=${uf} chrome=${CHROME_BIN}"
+    if curl -s -m 2 "$url/json/version" >/dev/null 2>&1; then
+      echo "[dry] 端口占用:🔴 ${p} **已有 CDP 在听** ⇒ 真跑**直接复用 ⛔ 起新的 ⛔ pkill**"
+    else
+      echo "[dry] 端口占用:${p} 无人在听 ⇒ 真跑会新起 tmux 窗 ${cw}"
+    fi
+    [ -x "$CHROME_BIN" ] || echo "[dry] 🔴 Chrome 不在 ${CHROME_BIN} ⇒ 真跑会 die(LAIXIN_CHROME_BIN 可覆盖)"
+    echo "[dry] 覆盖范围:目标/端口解析 · **端口是否已在听** · Chrome 可执行;⛔ 覆盖=10s 就绪等待(真起才知道)"
+    return 0
+  fi
   [ -x "$CHROME_BIN" ] || die "Chrome 不在 ${CHROME_BIN}(LAIXIN_CHROME_BIN 可覆盖)"
   ensure_session
   if curl -s -m 2 "$url/json/version" >/dev/null 2>&1; then
@@ -4933,7 +4965,11 @@ cmd_account_switch(){  # --to <claude|claude-b> [--dry] [--wait-min N] [--no-wai
   echo "  ② 方案窗口(人操作,⛔ 机器):创始人在 ${to} 账号开的空白窗接新包(读交接快照);老窗不关、只收存量、按包划分裁定权"
   echo "  ③ dispatch:dmsg 收班令(在飞做到交接点、写交接包、⛔ 接新活)→ 等看板出现收班条(最多 ${wait_min} 分钟;--no-wait 跳过 / --force 超时仍换)→ dispatch --fresh(新窗起在 ${to})"
   if relay_enabled; then echo "  ④ relay(托管中)整个跟新账号:relay --fresh"; else echo "  ④ relay 托管关闭(应召形态)⇒ 无动作;需要时 laixin-lane relay 即在新账号起"; fi
-  if [ -n "$dry" ]; then echo "[dry] 以上为计划,未动任何东西"; return 0; fi
+  if [ -n "$dry" ]; then
+    echo "[dry] 以上为计划,未动任何东西"
+    echo "[dry] 覆盖范围:目标通道校验(**已在目标通道的 die 在 dry 之前,故 dry 能报它**)· 计划四步;⛔ 覆盖=dispatch 是否肯收班(等收班条是真跑才发生)"
+    return 0
+  fi
   # ① 开关(写文件 + 本进程变量同步:cmd_dispatch/cmd_relay 读的是启动时解析好的 CLAUDE_LAUNCHER,不改变量会用旧入口起新窗)
   mkdir -p "$(dirname "$sw")"; echo "$to" > "$sw"; CLAUDE_LAUNCHER="$to"
   board "$(caller_src)" "账号切换①:开关 claude-launcher → ${to}(${tcfg##*/});在跑席位不动,之后新起窗口走新账号"

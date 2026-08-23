@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# laixin-11c-dispatch —— 11C 圆桌专属派工窗口(机务窗)通道(独立 11C 脚本)
+#
+# 立项依据(创始人 2026-08-23 直令,逐字):
+#   「11B和11C现在共用一个派工窗口,今天证明效果不好,把现在的派工窗口划给11B,
+#    给11C再建一个派工窗口的通道,让方案窗口能拉起来。后面11B和11C就完全独立运行了
+#    (但方案窗口暂时还只用一个)」
+#   当日实证(看板 08-23 16:40~17:04):dispatch 第六十任同窗切换 11B(写 P1/热修 prompt)与
+#   11C(局二搬运)期间,搬运延迟 + 读旧回执险情;方案窗口 M5 六条中四条落在两线交错时段;
+#   创始人 17:03 观察「11B 和 11C 好像不能同时运转起来…上下文和思路跟不上」。
+#   ⚠️ 本令**取代** 11C 总纲 §八「顶班条」(16:58 relay 顶班形态)与其「⛔ 新开第二派工窗」
+#   一句——那句的立意是**派工权唯一律**,本脚本用结构保证它不破(见下),总纲正文更新归方案窗口。
+#
+# ⛔ 并入 laixin-lane:lane 的事件目录与 dispatch 锁均 HOME 级全局单例,11C 工具一律独立成脚本
+#   (创始人常令「11B 不能破坏」)。本脚本零 import laixin-lane;对 laixin-lane 只有两处 CLI 级
+#   使用且都在**被起的窗口里**由角色指令引导(log 记看板 / relay-once 起书记员),⛔ 本脚本自身调用。
+#
+# 派工权唯一律怎么保(结构保证,不靠自觉):
+#   laixin-lane 的派工权定义性行为是 send(谁在动 lane 谁是派工窗口)。本通道起的窗口经
+#   --disallowedTools 在工具层硬禁 laixin-lane send/fresh/claim/dispatch/verify/tool-up/m-up/
+#   halt/watchdog/release 与 git push/merge ⇒ 它**结构上当不成第二个 lane 派工窗口**,
+#   只对 11C 圆桌的机务(起收席/书记员对接/搬运/门铃/收卷)持有编排权。
+#
+# 与 laixin-11c-seat 的已知双真相源(改一处必须同步另一处):
+#   claude_launcher_11c() 通道解析链(env > claude-launcher-11c > claude-launcher > 默认)
+#   在 seat 与本脚本各有一份(独立脚本纪律 ⛔ import 的代价)。两边均有互指注释。
+#
+# 设计要点:
+#   1) 窗口落在 tmux 会话 laixin-11c(11C 自己的会话),窗名=会话名同为 dispatch-11c ⇒
+#      与 laixin:dispatch 在 ListAgents 里天然可分辨,SendMessage 寻址零歧义。
+#   2) 引擎只有 claude(机务要 SendMessage 与主持对话 + 可靠执行,与派工窗口同理由钉
+#      claude-opus-5,可用开关换档)。⛔ codex/kimi:无 SendMessage,机务窗的全部通信都断。
+#   3) 就绪判据=画面出现 claude 输入框特征 ⛔ 窗口存在;启动序列自动应答(MCP 全拒/
+#      trust 确认——cwd=$HOME 已信任目录/Enter to confirm),照 laixin-lane vwait_ready 手法独立实现。
+#   4) 角色指令注入后回读复核(pane 里找注入锚句),⛔「粘了就当到了」。
+#   5) ⛔ eval ⛔ 接受任意命令串:启动命令硬编码,外部输入只有 --brief 文件路径(须存在)。
+#   6) 本窗口无看门狗托管(应召形态:死了主持重新 up 即可,状态全在库零交接债);
+#      对话框冻结的兜底=settings 的 askUserQuestionTimeout(与流水线 headless-settings 同理)。
+
+set -Eeuo pipefail
+
+SESSION="${LAIXIN_11C_SESSION:-laixin-11c}"
+WIN="${LAIXIN_11C_DISPATCH_WIN:-dispatch-11c}"
+SWITCH_DIR="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}"
+ALLOW_ROOT="${LAIXIN_11C_ALLOW_ROOT:-$HOME/.laixin-11c}"
+SETTINGS="${LAIXIN_11C_DISPATCH_SETTINGS:-$ALLOW_ROOT/dispatch-settings.json}"
+READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
+
+# 机器执法:本窗口不碰 lane 编排、不合并、不推送(纪律交给工具层,不靠自觉)。
+# ⚠️ 保持前缀可分辨:⛔ 笼统写 "laixin-lane relay*"——那会连 relay-once(书记员起窗,归本窗口)一起禁掉。
+DENY=(
+  "Bash(git push*)" "Bash(git merge*)" "Bash(git reset --hard*)"
+  "Bash(laixin-lane send*)" "Bash(laixin-lane fresh*)" "Bash(laixin-lane claim*)"
+  "Bash(laixin-lane dispatch*)" "Bash(laixin-lane verify*)" "Bash(laixin-lane tool-up*)"
+  "Bash(laixin-lane m-up*)" "Bash(laixin-lane halt*)" "Bash(laixin-lane watchdog*)"
+  "Bash(laixin-lane release*)" "Bash(laixin-lane account-switch*)"
+)
+
+die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
+note(){ printf '   %s\n' "$*" >&2; }
+
+usage(){
+  cat >&2 <<'USAGE'
+用法:
+  laixin-11c-dispatch up [--fresh] [--brief <文件>] [--dry]   拉起 11C 专属派工窗口(机务窗)
+  laixin-11c-dispatch down                                    收窗
+  laixin-11c-dispatch status                                  窗口状态(在不在 + 画面末 8 行)
+  laixin-11c-dispatch peek [N]                                看画面末 N 行(默认 30)
+
+说明:
+  --fresh   已有窗口先杀再起(换全新上下文)
+  --brief   用指定文件替换内置角色指令——**仅供隔离首火/演练**;正式拉起 ⛔ 带(红线随内置指令走)
+  --dry     只打印解析结果(通道/模型/会话/窗名/工具禁令),不动任何窗口
+
+谁来拉:方案窗口(圆桌主持)。设立依据=创始人 2026-08-23 分窗令:laixin:dispatch 专管 11B,
+11C 机务(起收席/书记员对接/搬运/门铃/收卷)归本窗口,两线完全独立运行。
+USAGE
+  exit 64
+}
+
+# claude 双账号通道解析——与 laixin-11c-seat 的 claude_launcher_11c **同一条链,独立实现**
+# (⛔ import;改一处必须同步另一处,见文件头「已知双真相源」)。
+claude_launcher_11c(){  # → stdout="<入口名> <来源说明>"
+  local v src
+  if [ -n "${LAIXIN_11C_CLAUDE_LAUNCHER:-}" ]; then v="$LAIXIN_11C_CLAUDE_LAUNCHER"; src="env LAIXIN_11C_CLAUDE_LAUNCHER"
+  elif [ -s "$SWITCH_DIR/claude-launcher-11c" ]; then v="$(head -1 "$SWITCH_DIR/claude-launcher-11c" | tr -d '[:space:]')"; src="开关 claude-launcher-11c(11C 专用)"
+  elif [ -s "$SWITCH_DIR/claude-launcher" ]; then v="$(head -1 "$SWITCH_DIR/claude-launcher" | tr -d '[:space:]')"; src="开关 claude-launcher(与流水线共用)"
+  else v="claude"; src="默认"; fi
+  printf '%s %s' "$v" "$src"
+}
+
+dispatch_model_11c(){  # → stdout="<模型串> <来源说明>";默认与派工窗口同档(机务要可靠执行不是极限推理)
+  local v src
+  if [ -n "${LAIXIN_11C_DISPATCH_MODEL:-}" ]; then v="$LAIXIN_11C_DISPATCH_MODEL"; src="env LAIXIN_11C_DISPATCH_MODEL"
+  elif [ -s "$SWITCH_DIR/dispatch-11c-model" ]; then v="$(head -1 "$SWITCH_DIR/dispatch-11c-model" | tr -d '[:space:]')"; src="开关 dispatch-11c-model"
+  else v="claude-opus-5"; src="默认(与派工窗口同档)"; fi
+  printf '%s %s' "$v" "$src"
+}
+
+launcher_cfg_dir(){  # <入口名> → 该包装器的配置目录(只为当面说清走哪个账号;读不到显 未知 ⛔ 猜)
+  local p d=""; p="$(command -v "$1" 2>/dev/null || true)"
+  [ -n "$p" ] && d="$(grep -m1 -oE 'CLAUDE_OFFICIAL_CONFIG_DIR="?[^" \\]+' "$p" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+  printf '%s' "${d:-未知}"
+}
+
+board_log(){  # 记看板:laixin-lane 只当 CLI 用(⛔ 依赖其内部状态);不在 PATH 时大声说,⛔ 静默丢
+  if command -v laixin-lane >/dev/null 2>&1; then
+    LAIXIN_BOARD_SRC="${LAIXIN_BOARD_SRC:-11C派工通道}" laixin-lane log "$*" >/dev/null 2>&1 \
+      || note "⚠️ 看板留条失败(laixin-lane log 非零退出),这条没记上:$*"
+  else
+    note "⚠️ laixin-lane 不在 PATH,看板留条跳过(这条没记上):$*"
+  fi
+}
+
+ensure_settings(){
+  [ -f "$SETTINGS" ] && return 0
+  mkdir -p "$(dirname "$SETTINGS")"
+  # askUserQuestionTimeout:交互对话框有界暂停(本窗口无看门狗 dialog_sweep,这是唯一兜底);
+  # remoteControlAtStartup=false:机务窗不该有 claude.ai 侧访问面(照席位 settings 同理由);
+  # ⛔ 含 permissions(避免触发专线自检的额外面)。
+  printf '{\n  "askUserQuestionTimeout": "60s",\n  "remoteControlAtStartup": false\n}\n' > "$SETTINGS"
+  note "已生成机务窗 settings:$SETTINGS(仅对话框超时+关 RC,⛔ 含 permissions)"
+}
+
+win_exists(){ tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$WIN"; }
+
+# 内置角色指令(接管指令;⛔ 在这里复述机制细节——纪律指针到库,窗口自己去读原文)
+default_brief(){
+  cat <<'BRIEF'
+你是 **11C 圆桌的专属派工窗口(机务窗,dispatch-11c)**,由方案窗口(圆桌主持)拉起。
+设立依据=创始人 2026-08-23 分窗令:11B 与 11C 不再共用派工窗口——laixin 会话的 dispatch 专管 11B(产品流水线与工具轨),**11C 的一切机务归你**;两线完全独立运行,方案窗口暂仍只有一个。
+
+起手式,按序做完再向主持报到:
+1. date 实测时刻(⛔ 写占位);
+2. 通读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/11C-圆桌/11C-圆桌总纲.md(机制权威;重点 §二 席位矩阵、§六 黑板与门铃、§八 与 11B 的接口。⚠️ §八 的机务归属与「顶班条」写于分窗令之前,与本指令冲突处以分窗令及注册表/看板最新记录为准;总纲正文更新归方案窗口,⛔ 你改);
+3. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-窗口角色注册表.md:取当前方案窗口名字;并按表头书写约定补/更新「11C 派工窗口」行(名字列第一个反引号包裹串必须是 `dispatch-11c`);
+4. 读 /Users/pingxia/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md 末 30 行;
+5. SendMessage 向方案窗口自报到位并等派活——**它是你唯一的派活来源**(创始人人工消息优先于一切)。
+
+职责(只此四类,全部是 11C 机务;议题内容/方案/裁定一概不归你):
+- **席位起收**:laixin-11c-seat start|stop|status|list(起席前 audit 双盲自检必过 ⛔ 绕过;引擎只认它的枚举;收席也归你);
+- **书记员对接**:按主持点名起一次性书记员窗(laixin-lane relay-once <件名> --file <正文.md>),件毕 laixin-lane rdown <件名>。⚠️ 书记员落盘的回复/搬运件你**直接读盘核对**——先 stat mtime 与内容锚对齐再用(⛔ 信转述路径;08-23 16:44 险情:转述指的文件停在旧版,真件在别处),⛔ 依赖事件总线投递(那条路投给 laixin:dispatch,不是你);
+- **搬运与门铃**:把书记员封好的搬运件逐席注入(tmux load-buffer/paste-buffer;送达时刻逐席 date 实测;每席取短串自核 capture-pane 命中数=1);到点收卷、未交席按主持定的口径门铃;
+- **台账**:每个动作记看板 laixin-lane log "..."(来源自动按窗口名标),状态随做随写,⛔ 攒在窗口记忆——你随时可被 down 掉再拉起。
+
+红线(一部分已在工具层禁死,其余以本指令为准,越线即整轮作废并报主持):
+- ⛔ laixin-lane send/fresh/claim/dispatch/verify/tool-up/m-up/halt/watchdog/release——那是 11B 侧派工窗口(laixin:dispatch)的编排权;你碰任何一条=两个派工窗口同抢一条 lane;
+- ⛔ 合并分支、⛔ git push、⛔ 改产品代码(~/来信平台)与工具仓(~/Developer/laixin-pipeline)——发现工具问题记看板点名 11B 归口;
+- ⛔ 破双盲:⛔ 打开代号映射全表与取号文件内容、⛔ 深读席位作答现场(peek 只看送达自核所需的行数)、⛔ 在公开面(看板/窗名/消息)写代号与内容;
+- ⛔ 代拍裁定、⛔ 替主持判议题:一切机制与内容问题回方案窗口;⛔ 打扰创始人。
+上下文自查:laixin-lane ctx <你的session前8位>;≥75% 报主持换窗(应召窗零交接债:down 再 up 即全新上下文,状态全在库)。
+BRIEF
+}
+
+cmd_up(){
+  local fresh="" brief_file="" dry=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --fresh) fresh=1; shift ;;
+      --brief) brief_file="${2:?--brief 需要文件路径}"; shift 2 ;;
+      --dry)   dry=1; shift ;;
+      *) die "未知参数:$1(见 laixin-11c-dispatch 无参帮助)" ;;
+    esac
+  done
+  [ -z "$brief_file" ] || [ -f "$brief_file" ] || die "--brief 文件不存在:$brief_file"
+
+  # 通道与模型在一切副作用之前解析+校验(⛔ 起到一半才发现入口不存在)
+  local _cl _clsrc _model _msrc
+  read -r _cl _clsrc <<< "$(claude_launcher_11c)"
+  read -r _model _msrc <<< "$(dispatch_model_11c)"
+  local _in_path="no"; command -v "${_cl}" >/dev/null 2>&1 && _in_path="yes"
+
+  if [ -n "$dry" ]; then
+    printf 'dry-run(不动窗口):\n'
+    printf '  claude 通道 = %s(来源=%s;配置目录=%s;入口在PATH=%s)\n' "${_cl}" "${_clsrc}" "$(launcher_cfg_dir "${_cl}")" "${_in_path}"
+    printf '  模型钉     = %s(来源=%s)\n' "${_model}" "${_msrc}"
+    printf '  tmux       = %s:%s(cwd=%s)\n' "$SESSION" "$WIN" "$HOME"
+    printf '  settings   = %s\n' "$SETTINGS"
+    printf '  工具禁令   = %s\n' "${DENY[*]}"
+    printf '  角色指令   = %s\n' "${brief_file:-内置(11C 机务窗接管指令)}"
+    return 0
+  fi
+
+  [ "${_in_path}" = "yes" ] || die "claude 入口「${_cl}」不在 PATH(来源=${_clsrc})——通道值只认 PATH 上的包装器(claude / claude-b);核:ls ~/.local/bin/claude*;改开关:echo claude > ${SWITCH_DIR}/claude-launcher-11c(11C 专用)或 …/claude-launcher(与流水线共用)"
+  note "claude 通道=${_cl}(来源=${_clsrc};配置目录=$(launcher_cfg_dir "${_cl}"));模型=${_model}(${_msrc})"
+  ensure_settings
+
+  tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n hub
+  if win_exists; then
+    [ -n "$fresh" ] || die "窗口已存在:$SESSION:$WIN(换全新上下文用 --fresh;先看现场:laixin-11c-dispatch peek)"
+    tmux kill-window -t "$SESSION:$WIN"; sleep 0.3
+  fi
+
+  local deny; deny="$(printf '"%s" ' "${DENY[@]}")"
+  tmux new-window -d -t "$SESSION" -n "$WIN" -c "$HOME"
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$WIN" "${_cl} -n \"$WIN\" --model ${_model} --permission-mode auto --settings \"$SETTINGS\" --disallowedTools $deny" C-m
+  note "已起窗 $SESSION:$WIN,等就绪…"
+
+  # 就绪等待:轮询画面按内容分派按键(照 laixin-lane vwait_ready 手法独立实现,⛔ import)
+  local waited=0 pane ready=""
+  while [ "$waited" -lt "$READY_TIMEOUT" ]; do
+    sleep 2; waited=$((waited+2))
+    tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$WIN" \
+      || die "窗口在启动中消失:$WIN(引擎异常退出,⛔ 当作已起)"
+    pane="$(tmux capture-pane -p -t "$SESSION:$WIN" -S -60 2>/dev/null || true)"
+    # 专线自检拦截=claude 拒启,秒级报原因 ⛔ 哑等(fail-closed 保护,⛔ 绕过)
+    if grep -qE '结果：[1-9][0-9]* fail' <<< "$pane"; then
+      board_log "⛔ $WIN 起窗被专线自检拦截:$(grep -E '^\[FAIL\]' <<< "$pane" | head -1)"
+      die "$WIN 被专线自检(readiness)拦截,claude 拒绝启动。FAIL 项:
+$(grep -E '^\[FAIL\]' <<< "$pane" | head -5)
+处置:修专线问题(us-status / bash dns-guard.sh)后重试。自检拦截是 fail-closed 保护(封号风险>停摆),⛔ 绕过。"
+    fi
+    case "$pane" in
+      *"mode on"*|*"for agents"*|*"? for shortcuts"*) ready=1; break ;;
+      *"MCP servers"*)      tmux send-keys -t "$SESSION:$WIN" Escape; note "MCP 提示 → 全部拒绝(Escape)" ;;
+      *"trust this folder"*|*"Do you trust the files"*) tmux send-keys -t "$SESSION:$WIN" C-m; note "trust 提示 → 确认(cwd=\$HOME 自有目录)" ;;
+      *"Enter to confirm"*) tmux send-keys -t "$SESSION:$WIN" C-m ;;
+    esac
+  done
+  if [ -z "$ready" ]; then
+    board_log "⛔ $WIN 启动超时(${READY_TIMEOUT}s),pane 末行:$(tmux capture-pane -p -t "$SESSION:$WIN" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-120)"
+    die "$WIN ${READY_TIMEOUT}s 未就绪——窗口保留供人工深读(⛔ 自动收窗,现场即证据):laixin-11c-dispatch peek 40"
+  fi
+
+  # 注入角色指令(load-buffer/paste-buffer 走整段粘贴 ⛔ send-keys 逐字敲长文)
+  sleep 1
+  { [ -n "$brief_file" ] && cat "$brief_file" || default_brief; } | tmux load-buffer -b laixin-11c-brief -
+  tmux paste-buffer -p -b laixin-11c-brief -t "$SESSION:$WIN"
+  tmux delete-buffer -b laixin-11c-brief
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$WIN" C-m
+  # 回读复核:注入锚句要能在 pane 里找到(粘贴成功≠提交成功,补一次 Enter 再核;仍无则大声报)
+  local anchor="机务窗" ok=""
+  [ -n "$brief_file" ] && anchor="$(head -1 "$brief_file" | cut -c1-24)"
+  local t2=0
+  while [ "$t2" -lt 20 ]; do
+    sleep 2; t2=$((t2+2))
+    pane="$(tmux capture-pane -p -t "$SESSION:$WIN" -S -80 2>/dev/null || true)"
+    if grep -qF "$anchor" <<< "$pane"; then ok=1; break; fi
+  done
+  if [ -z "$ok" ]; then
+    tmux send-keys -t "$SESSION:$WIN" C-m
+    board_log "⚠️ $WIN 角色指令注入后 20s 回读未见锚句——已补一次 Enter,人工核:laixin-11c-dispatch peek 40"
+  fi
+
+  # 起窗验尸:15s 后核 pane 里跑的真是 claude,掉回 shell 即大声上看板 ⛔ 自动重试(非瞬时因,人工看现场)
+  ( sleep 15
+    _pc="$(tmux display-message -p -t "$SESSION:$WIN" '#{pane_current_command}' 2>/dev/null || echo 无窗口)"
+    if [ "$_pc" = "$(basename "${SHELL:-/bin/zsh}")" ] || [ "$_pc" = "无窗口" ]; then
+      board_log "⚠️ $WIN 起窗验尸失败(15s 后 pane=${_pc},已掉回 shell)——脚本报过已起,现场没起"
+    fi
+  ) >/dev/null 2>&1 &
+
+  board_log "起 11C 专属派工窗口 $SESSION:$WIN(通道=${_cl} 模型=${_model};已注入机务窗接管指令;创始人 2026-08-23 分窗令:dispatch 专 11B,11C 机务归本窗口)"
+  printf '✅ %s:%s 已起并注入接管指令(通道=%s 模型=%s,耗时约 %ss)。复核:laixin-11c-dispatch peek 30\n' "$SESSION" "$WIN" "${_cl}" "${_model}" "$waited"
+}
+
+cmd_down(){
+  win_exists || die "窗口不存在:$SESSION:$WIN"
+  tmux kill-window -t "$SESSION:$WIN"
+  board_log "收 11C 专属派工窗口 $SESSION:$WIN"
+  printf '已收窗:%s:%s\n' "$SESSION" "$WIN"
+}
+
+cmd_status(){
+  if win_exists; then
+    printf '%s:%s:窗口在\n--- 画面末 8 行 ---\n' "$SESSION" "$WIN"
+    tmux capture-pane -p -t "$SESSION:$WIN" -S -8 2>/dev/null
+  else
+    printf '%s:%s:窗口不存在\n' "$SESSION" "$WIN"; return 1
+  fi
+}
+
+cmd_peek(){
+  win_exists || die "窗口不存在:$SESSION:$WIN"
+  tmux capture-pane -p -t "$SESSION:$WIN" -S "-${1:-30}"
+}
+
+case "${1:-}" in
+  up)     shift; cmd_up "$@" ;;
+  down)   shift; cmd_down "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  peek)   shift; cmd_peek "$@" ;;
+  *) usage ;;
+esac

@@ -4672,6 +4672,22 @@ rowin() {  # 一次性中继窗名(件名 → relay-<slug>;转义规则与 vwin 
 # 📌 **⛔ 单例锁**(本命令首版有,当日去掉):worktree 隔离已经解决对写,与 B 轨同理;并发安全靠隔离
 #   ⛔ 靠串行——串行是没有隔离时的退而求其次。合并仍由派工窗口串行做。
 TOOL_REPO="${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}"   # 与 release 同一单点源 ⛔ 再写一份字面路径
+# 引擎:**codex 默认 / claude 第二**(创始人 2026-08-23:「这个位置默认 codex,也写个 claude 的版本」)——
+#   与 relay-once 的「claude 默认 / codex 第二」**主次相反但形态同款**:两条路线都落到位,按件可选。
+TOOL_ENGINE_SW="${LAIXIN_TOOL_ENGINE:-$(cat "$HOME/.laixin-lane-switch/tool-engine" 2>/dev/null || echo codex)}"
+# claude 路线的模型(codex 路线 ⛔ 钉模型,吃全局默认=与开发轨同源)
+TOOL_CLAUDE_MODEL="${LAIXIN_TOOL_CLAUDE_MODEL:-$(cat "$HOME/.laixin-lane-switch/tool-claude-model" 2>/dev/null || echo claude-fable-5[1m])}"
+# claude 路线的工具层禁令(codex 无此能力 ⇒ 那条路线靠点名指令写死红线)。
+# ⚠️ **release ⛔ 入列也 ⛔ 放行**:本线两条路线都**开分支 ⛔ 提交 main**,release 归合并方 ⇒ 禁。
+TOOL_DENY=(
+  "Bash(git push*)" "Bash(git merge*)" "Bash(git reset --hard*)"
+  "Bash(laixin-lane send*)" "Bash(laixin-lane fresh*)" "Bash(laixin-lane up*)" "Bash(laixin-lane down*)"
+  "Bash(laixin-lane claim*)" "Bash(laixin-lane dispatch*)" "Bash(laixin-lane dmsg*)"
+  "Bash(laixin-lane halt*)" "Bash(laixin-lane resurrect*)" "Bash(laixin-lane release*)"
+  "Bash(laixin-lane verify*)" "Bash(laixin-lane vdown*)" "Bash(laixin-lane vsend*)"
+  "Bash(laixin-lane relay*)" "Bash(laixin-lane rdown*)" "Bash(laixin-lane m-up*)" "Bash(laixin-lane m-down*)"
+  "Bash(laixin-lane tool-up*)" "Bash(laixin-lane tool-down*)" "Bash(laixin-lane account-switch*)"
+)
 toolwin() {  # 件名 → 窗名 tool-<slug>(转义与 rowin/vwin 逐字同款)
   local slug; slug="$(echo "$1" | tr ' /.:%$@' '-------' | cut -c1-24)"
   [ -n "$slug" ] || die "件名不能为空"
@@ -4686,16 +4702,21 @@ tool_running() {  # → stdout=在跑的工具窗名(零个则空);只读,**恒�
 cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-mcp 名]... [--dry]
   local item="${1:-}"; shift || true
   [ -n "$item" ] || die "tool-up 需要件名:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--dry]"
-  local prompt="" dir="" mcp_keep="" dry=""
+  local prompt="" dir="" mcp_keep="" dry="" eng_opt=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt)   prompt="${2:?--prompt 需要 prompt 路径}"; shift 2 ;;
       --dir)      dir="${2:?--dir 需要 worktree 路径}"; shift 2 ;;
       --with-mcp) mcp_keep="${mcp_keep:+$mcp_keep,}${2:?--with-mcp 需要服务名}"; shift 2 ;;
+      --engine)   eng_opt="${2:?--engine 需要 codex|claude}"; shift 2 ;;
       --dry)      dry=1; shift ;;
-      *) die "未知参数:$1(用法:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--with-mcp 名]... [--dry])" ;;
+      *) die "未知参数:$1(用法:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--engine codex|claude] [--with-mcp 名]... [--dry])" ;;
     esac
   done
+  # 引擎:**最先解析与校验**——它是最便宜的判据(纯字符串),让人先被 worktree/prompt 校验挡住
+  #   才发现引擎名写错,是把最贵的检查放在了最前面。起窗时**实时**读(与 dispatch 同一课)。
+  local TOOL_ENGINE="${eng_opt:-$TOOL_ENGINE_SW}"
+  case "$TOOL_ENGINE" in codex|claude) : ;; *) die "未知引擎:$TOOL_ENGINE(只接受 codex 默认 | claude 第二;开关 ~/.laixin-lane-switch/tool-engine 或 LAIXIN_TOOL_ENGINE)" ;; esac
   # 🔴 **prompt 必填**(创始人:「也需要派工窗口写 prompt」)——与开发片同一形态:prompt 是件的唯一依据,
   #   ⛔ 把任务塞进命令行(一句话描述漏掉复现步骤与判据,而工具件第一步就是「查清现状为什么是这样」)。
   [ -n "$prompt" ] || die "tool-up 必须 --prompt <开发prompt.md>(派工窗口写,与开发片同形;⛔ 把任务塞进命令行)"
@@ -4714,11 +4735,28 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-
   local report="$KB/4-开发层/记录/11B工具件-${item}-报告.md"
   local card="$HOME/Obsidian/项目入口/laixin开发流水线/知识库/wiki/11B-11C开发维护角色卡.md"
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
-  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
-  local gdef; gdef="$(codex_global_default 2>/dev/null || echo '?')"
+  local launch gdef="—"
+  if [ "$TOOL_ENGINE" = "codex" ]; then
+    launch="$(agent_launch_cmd "$bu" "$port" "codex $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
+    gdef="$(codex_global_default 2>/dev/null || echo '?')"
+  else
+    # 🔴 模型串**必须带引号**(2026-08-23 首火实撞,shell 六发第七发):`claude-fable-5[1m]` 的 `[1m]`
+    #   被 zsh 当 glob 字符类 ⇒ `no matches found`,**整条起动命令根本没执行**,而外部只看到「90s 未见输入框」。
+    ensure_headless_settings
+    local _deny; _deny="$(printf '"%s" ' "${TOOL_DENY[@]}")"
+    launch="BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" $CLAUDE_LAUNCHER -n \"$w\" --model \"$TOOL_CLAUDE_MODEL\" --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $_deny"
+  fi
+  local opener redline
+  if [ "$TOOL_ENGINE" = "claude" ]; then
+    opener='调 Skill laixin-pipeline(流水线操作卡)'
+    redline='(**工具层已禁**:git push/merge/reset --hard 与 laixin-lane send/fresh/up/down/claim/dispatch/dmsg/halt/resurrect/release/verify*/relay*/m-*/tool-*/account-switch——工具层拦得住这些,但下面几条它拦不住,靠你)'
+  else
+    opener='用 Read 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源,**绝对路径直读 ⛔ 靠 skill 自动发现**)'
+    redline='——**本引擎没有 claude 的工具层禁令,以下以本指令为准,越线即整件作废**:⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ 提交到 main ⛔ laixin-lane send/fresh/up/down/claim/dispatch/dmsg/halt/resurrect/release/verify*/relay*/m-up/m-down/tool-up/tool-down/account-switch'
+  fi
   local msg
   msg="$(cat <<EOF
-你是 laixin 开发流水线的 **11B/11C 开发维护窗**(tmux 托管、一次性应召;由派工窗口遇到工具/流水线问题时按件拉起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
+你是 laixin 开发流水线的 **11B/11C 开发维护窗**(引擎=${TOOL_ENGINE};tmux 托管、一次性应召;由派工窗口遇到工具/流水线问题时按件拉起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
 **你与 A/B 开发轨同构,唯一差别是仓与射程**:它们维护 ~/来信平台(产品),**你只维护 11B(工具仓)与 11C(圆桌工具侧)**。
 
 件名:${item}
@@ -4727,7 +4765,7 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-
 
 起手式,按序做完再动手(⛔ 跳步 ⛔ 凭印象补):
 1. 跑 date 实测当前时间——⛔ 拿推断的/记忆里的时间写任何登记;
-2. 用 Read 通读 /Users/pingxia/.codex/skills/laixin-pipeline/SKILL.md 全文(流水线操作卡单点源,**绝对路径直读 ⛔ 靠 skill 自动发现**);
+2. ${opener};
 3. **通读角色卡** ${card}(六节=职责/权限边界/起手式/工作循环/交班/工具速查;**纪律条文全部指针到既有档,按指针去读原文 ⛔ 只读卡面转述**);
 4. 读 ${TOOL_REPO}/AGENTS.md **全文**(提交三步纪律 · 显式列文件 · 双真相源 · 检查器三约束 · shell 六发——每条都是撞出来的,⛔ 略读);
 5. 跑 laixin-lane doctor,把当下读数记牢(它是「现在长什么样」的唯一权威)。
@@ -4747,9 +4785,7 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-
 ——事件总线扫到末行后给派工窗口投路径指针;不落盘=件未完成。
 报告必须有:①问题是什么 ②**查清的现状与为什么是这样** ③改了什么(文件+分支名+commit) ④**判据:怎么区分成功与失败** ⑤真环境首火证据(若适用) ⑥仍未解决/待他方裁的。
 
-红线(**本引擎没有 claude 的工具层禁令,以下以本指令为准,越线即整件作废**):
-⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ 提交到 main
-⛔ laixin-lane send/fresh/up/down/claim/dispatch/dmsg/halt/resurrect/release/verify*/relay*/m-up/m-down/tool-up/tool-down/account-switch
+红线 ${redline}
 🔴 ⛔ **对在班席位下令**(推送即指令;⛔ 冒用创始人身份)——发现别处的问题写进报告,由派工窗口分派;
 🔴 ⛔ **碰两条封号实源**:出口 IP 跳变 · 凭据外流(⛔ 装本地 stdio/npx MCP);
 🔴 ⛔ **产品代码**(~/来信平台 业务)——那是 A/B 开发轨的事;**本线只维护 11B/11C**;
@@ -4760,12 +4796,25 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-
 EOF
 )"
   local busy; busy="$(tool_running || true)"
-  # codex 信任前置核(m-up 同款:新目录起 codex 必被「Do you trust…」挡住,而对话框纪律 ⛔ 自动选默认项)
-  local troot trc=0; troot="$(codex_trust_root "$dir_r")"; codex_dir_trusted "$dir_r" || trc=$?
+  # 信任前置核**按引擎分叉**:
+  #   codex —— m-up 同款,`~/.codex/config.toml` 预写(TOML 声明式,库内有先例);未信任必被对话框挡住 ⇒ 起窗前 die。
+  #   claude —— trust 绑 cwd 且**⛔ 手改存储文件**(11c-trust 逐字:格式可观察 ≠ 官方支持预写)⇒ 走 `vwait_ready`
+  #             的既有分支:`vtrusted_dir` 认自有目录才自动确认,否则交人工。#165 已把「工具仓及其 worktree」
+  #             按 **git 结构判据**纳入自有(⛔ 路径通配),所以本线的 worktree 天然被认。
+  local troot="—" trc=0
+  if [ "$TOOL_ENGINE" = "codex" ]; then
+    troot="$(codex_trust_root "$dir_r")"; codex_dir_trusted "$dir_r" || trc=$?
+  else
+    vtrusted_dir "$dir_r" || trc=$?; troot="$dir_r(claude:vtrusted_dir 判据)"
+  fi
   if [ -n "$dry" ]; then
-    echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=codex 全局默认=${gdef}(与开发轨同源 ⛔ 钉模型)"
+    if [ "$TOOL_ENGINE" = "codex" ]; then
+      echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=codex(默认) 全局默认=${gdef}(与开发轨同源 ⛔ 钉模型)"
+    else
+      echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=claude(第二路线) 模型=${TOOL_CLAUDE_MODEL}(开关 ~/.laixin-lane-switch/tool-claude-model)  工具层禁令 ${#TOOL_DENY[@]} 条"
+    fi
     echo "[dry] 起动串:$launch"
-    echo "[dry] codex 信任根=$troot($([ "$trc" -eq 0 ] && echo 已信任 || echo '🔴 未信任 ⇒ 真跑会被 die 拦下'))"
+    echo "[dry] 信任核($TOOL_ENGINE):$troot($([ "$trc" -eq 0 ] && echo 已信任 || echo '🔴 未信任 ⇒ 真跑会被拦下'))"
     echo "[dry] 交付契约:$report 末行【工具件完成】11B-${item} <commit|no-commit>"
     echo "[dry] 点名指令首行:$(head -1 <<< "$msg" | cut -c1-120)"
     echo "[dry] 在跑工具窗:${busy:-无}(worktree 隔离 ⇒ **可并发** ⛔ 单例)"
@@ -4774,7 +4823,13 @@ EOF
     echo "[dry] 覆盖范围:参数校验 · worktree 归属(必须属工具仓)· ⛔ 主树 · 信任根读数 · 契约路径 · 同件窗冲突 · 端口撞车;⛔ 覆盖=启动超时/自证窗内自报模型(真起窗才知道)"
     return 0
   fi
-  [ "$trc" -eq 0 ] || die "⛔ codex 未信任该 worktree 的项目根 ${troot}(~/.codex/config.toml 无 [projects.\"${troot}\"] trust_level=\"trusted\")——起窗必被信任对话框挡住(⛔ 自动选默认项)"
+  if [ "$trc" -ne 0 ]; then
+    if [ "$TOOL_ENGINE" = "codex" ]; then
+      die "⛔ codex 未信任该 worktree 的项目根 ${troot}(~/.codex/config.toml 无对应 [projects.\"…\"] trust_level=\"trusted\")——起窗必被信任对话框挡住(对话框纪律 ⛔ 自动选默认项)"
+    else
+      die "⛔ claude 侧 vtrusted_dir 不认该目录 ${dir_r}——信任对话框需人工确认(⛔ 自动选默认项);本线的 worktree 应当属工具仓,请核 --dir 是否真是 $TOOL_REPO 的 worktree"
+    fi
+  fi
   ensure_session
   if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
     die "$w 已存在——同一件不重复起工具窗(要换新先 laixin-lane tool-down $item)"
@@ -4784,14 +4839,18 @@ EOF
   tmux new-window -t "$SESSION" -n "$w" -c "$dir_r"
   sleep 0.5
   tmux send-keys -t "$SESSION:$w" "$launch" C-m
-  vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-tool $item 40"
+  if [ "$TOOL_ENGINE" = "codex" ]; then
+    vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-tool $item 40"
+  else
+    vwait_ready "$w" "$dir_r" || die "$w 启动超时(90s 未见输入框)。查看:laixin-lane peek-tool $item 40"
+  fi
   printf '%s' "$msg" | tmux load-buffer -b laixin-toolmsg -
   tmux paste-buffer -p -b laixin-toolmsg -t "$SESSION:$w"
   tmux delete-buffer -b laixin-toolmsg
   sleep 0.5
   tmux send-keys -t "$SESSION:$w" C-m
-  board "$(caller_src)" "起 11B/11C 开发维护窗 $w(件=${item};codex 吃全局默认 ${gdef};worktree ${dir_r};prompt ${prompt};交付=${report} 末行【工具件完成】)——**开分支 ⛔ 提交 main**;件毕由起窗方 laixin-lane tool-down ${item} 回收"
-  echo "✅ 已起 11B/11C 开发维护窗 $w(codex,cwd=$dir_r)"
+  board "$(caller_src)" "起 11B/11C 开发维护窗 $w(件=${item};引擎 ${TOOL_ENGINE};配型 $([ "$TOOL_ENGINE" = codex ] && echo "全局默认 ${gdef}" || echo "${TOOL_CLAUDE_MODEL}");worktree ${dir_r};prompt ${prompt};交付=${report} 末行【工具件完成】)——**开分支 ⛔ 提交 main**;件毕由起窗方 laixin-lane tool-down ${item} 回收"
+  echo "✅ 已起 11B/11C 开发维护窗 $w(${TOOL_ENGINE},cwd=$dir_r)"
   echo "   看现场:laixin-lane peek-tool $item 40   回收:laixin-lane tool-down $item"
   echo "   交付契约:$report 末行【工具件完成】11B-${item} <commit|no-commit>(events 会投路径指针给你)"
 }
@@ -5788,8 +5847,20 @@ cmd_watchdog() {
 vtrusted_dir() {  # 只对本机自有目录自动确认信任对话框,其他目录一律交人工
   case "$1" in
     "$HOME"|"$HOME/来信平台"|"$HOME/来信平台-"*) return 0 ;;
-    *) return 1 ;;
   esac
+  # #165(2026-08-23):**工具仓自身与它的 worktree** —— 判据用 **git 结构** ⛔ 路径通配:
+  #   worktree 可以建在任意路径(首火那棵就在 scratchpad 下),写通配要么漏要么放宽;
+  #   而「它的 git 公共目录的父 == 工具仓」是**机器可判且不可伪装**的归属证明,与 cmd_tool_up
+  #   起窗前那道 worktree 归属校验**同一判据**(⛔ 两处各写一套,那就是第二个真相源)。
+  local _tr; _tr="${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}"
+  [ -d "$1" ] || return 1
+  local _rp _cd; _rp="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  [ "$_rp" = "$(cd "$_tr" 2>/dev/null && pwd -P)" ] && return 0
+  _cd="$(cd "$1" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$_cd" ] || return 1
+  _cd="$(cd "$1" && cd "$_cd" 2>/dev/null && pwd -P)" || return 1
+  [ "$(dirname "$_cd")" = "$(cd "$_tr" 2>/dev/null && pwd -P)" ] && return 0
+  return 1
 }
 
 vwait_ready() {  # 轮询画面按内容分派按键,直到 claude 输入框就绪(替代盲等+盲发键)

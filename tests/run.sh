@@ -1305,8 +1305,10 @@ t "#75 起窗入口默认仍是 claude(⛔ 默认换新,切换要显式;理由�
   'grep -qE "LAIXIN_CLAUDE_LAUNCHER:-.*echo claude" "'"$LANE"'"'
 t "#75 起窗入口可被 LAIXIN_CLAUDE_LAUNCHER 覆盖" bash -c \
   'grep -q "LAIXIN_CLAUDE_LAUNCHER" "'"$LANE"'"'
-t "#75 四处起窗调用点全部走变量,零硬编码 claude(漏一处=该窗口静默用旧账号;2026-08-22 relay-once claude 分支加为第 4 处)" bash -c \
-  'n="$(grep -c "\$CLAUDE_LAUNCHER -n " "'"$LANE"'")"; [ "$n" = 4 ] || { echo "变量调用点=$n,应为4"; exit 1; };
+# 🔁 沿革(2026-08-23 #165-2):调用点由 4 处 → **5 处**——创始人「这个位置默认 codex,也写个 claude 的版本」
+#   ⇒ 11B/11C 开发维护窗的 claude 路线是第 5 处。断言随之更新 **⛔ 删**(它钉的是「零硬编码 claude」,不是数字本身)。
+t "#75 五处起窗调用点全部走变量,零硬编码 claude(漏一处=该窗口静默用旧账号;2026-08-22 relay-once claude 分支加为第 4 处;2026-08-23 #165-2 工具窗 claude 路线加为第 5 处)" bash -c \
+  'n="$(grep -c "\$CLAUDE_LAUNCHER -n " "'"$LANE"'")"; [ "$n" = 5 ] || { echo "变量调用点=$n,应为5"; exit 1; };
    h="$(grep -c "\" claude -n " "'"$LANE"'" || true)"; [ "$h" = 0 ] || { echo "仍有 $h 处硬编码 claude -n"; exit 1; }'
 
 
@@ -2867,8 +2869,11 @@ t "dmsg:kind=消息 且 ev_deliver 把它归**暂存**档 ⛔ 丢弃档" bash -c
   sed -n "/^ev_deliver()/,/^}$/p" "'"$LANE"'" | grep -qE "交付\|回执\|消息\)"'
 tout "dmsg:已接入 case 分发(⛔ 只有函数没人调)" "cmd_dmsg" bash -c 'grep "^  dmsg)" "'"$LANE"'"'
 tout "dmsg:回执点明「注入成功⛔等于已读」(#69 同族)" "⛔ 等于已读" sed -n "/^cmd_dmsg()/,/^}$/p" "$LANE"
-t "dmsg:⛔ 进 RELAY_DENY(relay 恰是最需要它的席位)" bash -c '
-  ! grep -q "Bash(laixin-lane dmsg" "'"$LANE"'"'
+# 🔁 沿革(2026-08-23 #165-2):原实现是**全文** grep,而它要钉的只是 RELAY_DENY 这一段 ⇒ **判据比缺陷宽**;
+#   #165 的 TOOL_DENY **有意含 dmsg**(工具窗有交付契约走 events,⛔ 直接注入派工窗格)于是被误命中。
+#   ⇒ 收窄到 RELAY_DENY 段内扫 ⛔ 放宽原意。
+t "dmsg:⛔ 进 RELAY_DENY(relay 恰是最需要它的席位;判据只扫该段 ⛔ 全文)" bash -c '
+  seg="$(sed -n "/^RELAY_DENY=(/,/^)/p" "'"$LANE"'")"; ! grep -q "laixin-lane dmsg" <<< "$seg"' 
 
 # ── 未知子命令必须**大声**(2026-08-19 实撞)────────────────────────────────────────
 # 原行为:只打 help + exit 1。退出码对,但输出看起来像一次正常结果 ⇒ 用 `cmd | grep` 读它
@@ -3647,15 +3652,17 @@ t "#165 窗名转义与 rowin/vwin 同款(tmux 目标字符)" bash -c '
 t "#165 tool_running 零命中恒返 0〔病灶:pipefail 下 grep 退 1 ⇒ 调用方 set -e 当场退出 ⇒ tool-up --dry 静默 rc=1,而「零个在跑」正是最常见的正常态〕" bash -c '
   T="$(mktemp -d)"; sed -n "/^tool_running()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
   SESSION=绝不存在的会话-zzz; tool_running >/dev/null; rc=$?; rm -rf "$T"; [ "$rc" -eq 0 ]'
-tfail "#165 --prompt 必填(创始人:也需要派工窗口写 prompt;⛔ 把任务塞进命令行)" "必须 --prompt" "$LANE" tool-up t165 --dir "$W165"
+tfail "#165 --prompt 必填(创始人:也需要派工窗口写 prompt;⛔ 把任务塞进命令行)" "必须 --prompt" "$LANE" tool-up t165 --dir "'"$W165"'"
 tfail "#165 --dir 必填且必须是工具仓 worktree" "必须 --dir" "$LANE" tool-up t165 --prompt "$W165/p.md"
 tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M 件 ⛔ 落 A 轨主树同族)" "不得落工具仓主树" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$(cd "$(dirname "$LANE")/.." && pwd)"
 tfail "#165 ⛔ 拿产品仓 worktree 起工具件(本线只维护 11B/11C)" "不是\*\*工具仓\*\*的 worktree" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$HOME/来信平台"
 t "#165 起动串与开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd(那条钉 luna/sol,是验收窗与中继件的射程)" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
   grep -q "agent_launch_cmd .* \"codex " <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
-t "#165 点名指令里零反引号〔病灶:反引号在 \$(cat <<EOF) 里被求值,首火实撞 run.sh: command not found + grep usage〕" bash -c '
-  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"; ! grep -q "\\\`" <<< "$seg"'
+# ⚠️ 判据必须**剥注释**再扫:本函数注释里有意写着反引号包的样例(`claude-fable-5[1m]` 等),
+#   而互指注释是本仓惯例 ⇒ 该适配的是判据(今日第二次撞同族,前一次是 dry_win_clash 的 ensure_session)。
+t "#165 点名指令(**代码部分**)零反引号〔病灶:反引号在 $(cat <<EOF) 里被求值,首火实撞 run.sh: command not found + grep usage〕" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"; ! grep -q "\`" <<< "$seg"' 
 t "#165 指令写死开分支纪律(⛔ 直接提交 main;与开发轨 AGENTS ③ 同款)" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"; grep -q "开分支开发" <<< "$seg" && grep -q "⛔ 直接提交 main" <<< "$seg"'
 t "#165 指令写死射程:只维护 11B/11C ⛔ 产品代码" bash -c '
@@ -3669,6 +3676,34 @@ t "#165 wd_fuel 认工具窗为燃料(有工具件在跑 ⇒ 看门狗 ⛔ 按�
 t "#165 doctor 报在跑工具窗 ⛔ 单例(worktree 隔离 ⇒ 可并发)" bash -c '
   seg="$(sed -n "/^cmd_doctor/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
   grep -q "开发维护窗" <<< "$seg" && ! grep -q "单例被破" <<< "$seg"'
+# ── #165-2 两条引擎路线(创始人 2026-08-23:「这个位置默认 codex,也写个 claude 的版本」)──
+t "#165-2 默认引擎=codex(⛔ 开关缺失时静默变别的)" bash -c '
+  T="$(mktemp -d)"; echo x > "$T/p.md"
+  # 用真工具仓自身当 --dir:它会被 ⛔主树 那条拦下,但**引擎解析在更前面**,所以 dry 头行仍能验默认引擎;
+  # ⛔ 拿 mktemp 目录当 --dir(它连 git 工作树都不是,会先被那条拦掉,验不到引擎)
+  out="$(LAIXIN_TOOL_ENGINE= "'"$LANE"'" tool-up t1652 --prompt "$T/p.md" --dir "$(cd "$(dirname "'"$LANE"'")/.." && pwd)/../laixin-pipeline" --dry 2>&1 || true)"
+  rm -rf "$T"
+  # 默认路线的证据:要么 dry 打出「引擎=codex(默认)」,要么被主树那条拦下(说明走到了引擎之后的校验)
+  grep -qE "引擎=codex\(默认\)|不得落工具仓主树" <<< "$out"' 
+t "#165-2 --engine claude 走第二路线且**模型串带引号**〔病灶:claude-fable-5[1m] 的方括号被 zsh 当 glob ⇒ no matches found ⇒ 整条起动命令没执行,而外部只看到「90s 未见输入框」〕" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
+  grep -q -- "--model .\\\"\$TOOL_CLAUDE_MODEL" <<< "$seg"'
+t "#165-2 claude 路线带工具层禁令且含 release(两条路线都开分支 ⛔ 提交 main ⇒ release 归合并方)" bash -c '
+  T="$(mktemp -d)"; sed -n "/^TOOL_DENY=(/,/^)/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
+  n="${#TOOL_DENY[@]}"; has=0; for d in "${TOOL_DENY[@]}"; do case "$d" in *release*) has=1 ;; esac; done
+  rm -rf "$T"; [ "$n" -ge 20 ] && [ "$has" -eq 1 ]'
+t "#165-2 未知引擎即 die(⛔ 静默回落)" bash -c '
+  T="$(mktemp -d)"; echo x > "$T/p.md"
+  out="$("'"$LANE"'" tool-up t1652 --prompt "$T/p.md" --dir "'"$W165"'" --engine gemini --dry 2>&1 || true)"; rm -rf "$T"
+  grep -q "未知引擎" <<< "$out"'
+t "#165-2 vtrusted_dir 按 git 结构认工具仓 worktree(⛔ 路径通配:worktree 可建在任意路径)" bash -c '
+  T="$(mktemp -d)"; sed -n "/^vtrusted_dir()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
+  r=0; vtrusted_dir "$(cd "$(dirname "'"$LANE"'")/.." && pwd)" || r=1
+  vtrusted_dir /tmp && r=2
+  rm -rf "$T"; [ "$r" -eq 0 ]'
+t "#165-2 起手式与红线按引擎分叉(claude 说工具层已禁 / codex 说以本指令为准)" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"
+  grep -q "工具层已禁" <<< "$seg" && grep -q "没有 claude 的工具层禁令" <<< "$seg" && grep -q "opener=" <<< "$seg"'
 rm -rf "$W165"
 
 echo

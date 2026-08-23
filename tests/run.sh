@@ -3533,6 +3533,36 @@ else
   echo "  ℹ️ 套件零副作用:开跑时无真实派工权锁,本断言无对象(不计)"
 fi
 
+
+# ── #162 11C 取号命名族单点源 + 收卷比对报形态(2026-08-23 11C 主持给单;实撞=分居自检对 pick-* 失明 + R1 收卷卡住)──
+echo "== #162 11C 取号命名族 + pickcheck =="
+SEATB="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-11c-seat"
+S162="$(mktemp -d)"; mkdir -p "$S162/seal" "$S162/pick" "$S162/allow"; : > "$S162/seal/局-测试-代号映射.md"
+A162='LAIXIN_11C_SEAL_DIR="$S162/seal" LAIXIN_11C_PICK_DIR="$S162/pick" LAIXIN_11C_ALLOW_ROOT="$S162/allow"'
+a162(){ LAIXIN_11C_SEAL_DIR="$S162/seal" LAIXIN_11C_PICK_DIR="$S162/pick" LAIXIN_11C_ALLOW_ROOT="$S162/allow" "$SEATB" audit 2>&1; }
+: > "$S162/seal/pick-deadbeef.txt"
+tout "#162 造 pick-*.txt 在 SEAL_DIR ⇒ 红〔判据生效的唯一证据:旧判据只认「取号-*」,同一文件改个名就绿,⛔ 删本条〕" "取号族文件出现在 PICK_DIR 之外" a162
+tout "#162 报红必附形态(字节+时刻+正确落点)⛔ 只报布尔" "正确落点=" a162
+rm -f "$S162/seal/pick-deadbeef.txt"
+: > "$S162/seal/取号-x.txt"
+tout "#162 旧命名 取号-* 仍红(⛔ 回归)" "取号族文件出现在 PICK_DIR 之外" a162
+rm -f "$S162/seal/取号-x.txt"
+: > "$S162/seal/无关备件.md"
+t "#162 无关文件 ⇒ 绿(⛔ 误报)" bash -c 'out="$(LAIXIN_11C_SEAL_DIR="'"$S162"'/seal" LAIXIN_11C_PICK_DIR="'"$S162"'/pick" LAIXIN_11C_ALLOW_ROOT="'"$S162"'/allow" "'"$SEATB"'" audit 2>&1)"; ! grep -q "取号族文件出现在" <<< "$out"'
+rm -f "$S162/seal/无关备件.md"
+t "#162 命名族=单点源(判据零内联中文前缀,改一处三处同步)" bash -c '[ "$(grep -c "PICK_NAME_GLOBS" "'"$SEATB"'")" -ge 2 ]'
+printf '前缀ABC甲' > "$S162/pick-1.txt"
+tout "#162 pickcheck 双向自证①:末字回卷 ⇒ lastchar 吻合" "lastchar" "$SEATB" pickcheck "$S162/pick-1.txt" "甲"
+t "#162 pickcheck 双向自证②:错回卷 ⇒ 两规则均不吻合且报**两侧形态差**、rc=1" bash -c '
+  out="$("'"$SEATB"'" pickcheck "'"$S162"'/pick-1.txt" "乙" 2>&1)"; rc=$?
+  [ "$rc" -eq 1 ] && grep -q "6 字符 vs 1 字符" <<< "$out"'
+t "#162 pickcheck ⛔ 回显任何一侧内容(输出零命中取号串——工具输出会进日志=第二条泄露路径)" bash -c '
+  out="$( { "'"$SEATB"'" pickcheck "'"$S162"'/pick-1.txt" "甲"; "'"$SEATB"'" pickcheck "'"$S162"'/pick-1.txt" "乙"; } 2>&1 )"
+  ! grep -q "前缀ABC" <<< "$out"'
+t "#162 pickcheck 读不到 ⛔ 读成不吻合(rc=2 与 rc=1 必须分辨)" bash -c '
+  "'"$SEATB"'" pickcheck "'"$S162"'/不存在.txt" "甲" >/dev/null 2>&1; [ "$?" -eq 2 ]'
+rm -rf "$S162"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

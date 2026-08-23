@@ -48,6 +48,21 @@ SEAT_SETTINGS="${LAIXIN_11C_SEAT_SETTINGS:-$ALLOW_ROOT/seat-settings.json}"
 #   ⇒ 判据**免语义**(纯文件位置)故可机器化;⇒ 起席前硬闸,⛔ 只写进纪律卡。
 SEAL_DIR="${LAIXIN_11C_SEAL_DIR:-$HOME/.laixin-11c-seal}"
 PICK_DIR="${LAIXIN_11C_PICK_DIR:-$HOME/.laixin-11c-pick}"
+# ── 取号文件命名族:**唯一真相源**(生成方 / 分居自检 / 收卷比对 / 派题令模板全部读这里)────────────
+# 🔴 2026-08-23 11B 归口实撞(在飞):本局三份取号文件实际叫 `pick-<32位hex>.txt` 且落在 SEAL_DIR
+#   (= 代号映射全表所在目录 = 下面 (c) 项要防的「实撞二」形态),而 (c) 的判据写死 `-name '取号-*'`
+#   ⇒ **认不出 pick-\*,自检全绿**。沙盒对照:同一文件同一位置,叫 pick-deadbeef.txt 报 ✅、
+#   仅改名为 取号-deadbeef.txt 立刻报 ❌ —— **只差一个名字,绿与红**,正是「成功与失败同形」族。
+# ⇒ 判据 ⛔ 各处各写一遍中文前缀;新增命名一律加进本数组,三处自动同步(#162)。
+PICK_NAME_GLOBS=( '取号-*' 'pick-*' 'pick_*' 'PICK-*' )
+pick_find_expr(){  # → stdout=可直接嵌进 find 的 \( -name A -o -name B … \) 片段(⛔ 调用方自己拼)
+  local out="\\(" g first=1
+  for g in "${PICK_NAME_GLOBS[@]}"; do
+    [ "$first" -eq 1 ] && first=0 || out="$out -o"
+    out="$out -name $g"
+  done
+  printf '%s \\)' "$out"
+}
 READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
 # ── claude 双账号通道(2026-08-23;创始人「11C 有 2 个 claude 账号的通道了吗…现在要换账号了」——此前 fable 席硬编码 claude-b,
 #   流水线切账号时圆桌没通道可换)。解析顺序(起席时实时读 ⛔ 进程启动读一次):
@@ -100,11 +115,24 @@ USAGE
 # ── 参数校验 ──────────────────────────────────────────────────────────────
 valid_seat(){ [[ "$1" =~ ^seat-[a-z0-9][a-z0-9-]{0,30}$ ]]; }
 
+pick_shape(){  # <文件…> → stdout 每行「路径(N 字节,mtime)」;⛔ 回显内容(工具输出会进日志/看板=第二条泄露路径)
+  local f
+  for f in "$@"; do [ -e "$f" ] || continue
+    printf '     %s(%s 字节,%s)\n' "$f" "$(wc -c < "$f" | tr -d ' ')" "$(date -r "$f" '+%m-%d %H:%M' 2>/dev/null || echo '?')"
+  done
+}
 blind_audit(){  # → 0=三类文件分居无误;1=有同居(双盲物理漏)。stdout=逐条结论
   # 🔴 **失效必须降级 ⛔ 反向**:目录不存在 ⇒ 报「不适用」而非「通过」——「没有局在跑」与
   #   「查过了没问题」在屏幕上必须长得不一样,否则这条闸会在最该管用的时候被读成绿灯。
   local bad=0 d n
-  printf '  -- 双盲三类文件分居(代号映射 / 取号 / 席位暂存区)--\n'
+  # 命名族 → find 表达式数组(⛔ 拼字符串再 eval:glob 会被当前目录内容提前展开)
+  local PICK_FIND=( '(' ) _g _first=1
+  for _g in "${PICK_NAME_GLOBS[@]}"; do
+    [ "$_first" -eq 1 ] && _first=0 || PICK_FIND+=( '-o' )
+    PICK_FIND+=( '-name' "$_g" )
+  done
+  PICK_FIND+=( ')' )
+  printf '  -- 双盲三类文件分居(代号映射 / 取号 / 席位暂存区;命名族=%s)--\n' "${PICK_NAME_GLOBS[*]}"
   # (a) 三处目录两两不得互为前缀(同居的极端形态=一个就在另一个里面)
   local A="$SEAL_DIR/" B="$PICK_DIR/" C="$ALLOW_ROOT/"
   local x y xn yn
@@ -115,14 +143,15 @@ blind_audit(){  # → 0=三类文件分居无误;1=有同居(双盲物理漏)。
   done
   # (b) 席位暂存区各局目录里 ⛔ 出现取号文件或代号映射(实撞一的形态)
   if [ -d "$ALLOW_ROOT" ]; then
-    n="$(find "$ALLOW_ROOT" -maxdepth 2 \( -name '取号-*' -o -name '*代号映射*' \) 2>/dev/null | head -20)"
-    if [ -n "$n" ]; then printf '  ❌ 席位暂存区内出现取号/映射文件(任一席 ls 即见):\n'; printf '     %s\n' $n; bad=1
+    n="$( { find "$ALLOW_ROOT" -maxdepth 2 "${PICK_FIND[@]}" 2>/dev/null; find "$ALLOW_ROOT" -maxdepth 2 -name '*代号映射*' 2>/dev/null; } | head -20)"
+    if [ -n "$n" ]; then printf '  ❌ 席位暂存区内出现取号/映射文件(任一席 ls 即见);形态如下(⛔ 回显内容):\n'; pick_shape $n; bad=1
     else printf '  ✅ 席位暂存区内无取号/映射文件\n'; fi
   else printf '  ℹ️ 席位暂存区不存在(%s)⇒ 本项不适用(⛔ 读成通过)\n' "$ALLOW_ROOT"; fi
   # (c) 映射表目录里 ⛔ 出现取号文件(实撞二的形态)
   if [ -d "$SEAL_DIR" ]; then
-    n="$(find "$SEAL_DIR" -maxdepth 2 -name '取号-*' 2>/dev/null | head -20)"
-    if [ -n "$n" ]; then printf '  ❌ 映射表目录内出现取号文件(拿到该目录路径的席位 ls 即见映射表文件名):\n'; printf '     %s\n' $n; bad=1
+    n="$(find "$SEAL_DIR" -maxdepth 2 "${PICK_FIND[@]}" 2>/dev/null | head -20)"
+    if [ -n "$n" ]; then printf '  ❌ 取号族文件出现在 PICK_DIR 之外(此处=映射表目录;拿到该目录路径的席位 ls 即见映射表文件名);形态如下(⛔ 回显内容,⛔ 只报布尔——2026-08-23 11C 主持加):\n'; pick_shape $n
+      printf '     ⇒ 正确落点=%s;处置归书记员/主持(⛔ 工具自行搬动封存物)\n' "$PICK_DIR"; bad=1
     else printf '  ✅ 映射表目录内无取号文件\n'; fi
   else printf '  ℹ️ 映射表目录不存在(%s)⇒ 本项不适用(⛔ 读成通过)\n' "$SEAL_DIR"; fi
   # (d) 取号目录里 ⛔ 出现代号映射全表
@@ -387,11 +416,47 @@ cmd_list(){
   tmux list-windows -t "$SESSION" -F '  #{window_index}: #{window_name}'
 }
 
+
+cmd_pickcheck(){  # <取号文件> <回卷标识> → 报**两侧形态差**与逐规则判定;⛔ 回显任何一侧内容
+  # #162(2026-08-23 11C 主持给单,理由=**手工校验脆弱**——本局 R1 收卷卡住的真根因是书记员手工 zsh
+  #   扫描命令中文正则未正确引用致比对全 no,而取号/提取/回卷三者本来一致)。规格逐字:
+  #   「取号生成+回卷比对**同一规则**;比对失败时**报两侧形态差**(文件 N 字符 / 回卷 M 字符 / 取末字是否吻合)**⛔ 只报 yes/no**」。
+  # 🔴 **⛔ 回显内容**:本命令的输出会进终端/日志/看板,回显任一侧内容=开第二条泄露路径 ⇒ 只出**字符数、字节数、吻合与否**。
+  # 🔴 **规则归主持定 ⛔ 工具钉死**:whole(整串即代号)与 lastchar(末字即代号)两种解释**含义相反**,
+  #   本命令**两种都算并都报**,由主持按 11C 总纲定；工具只保证生成/检查/比对**读同一处**(PICK_NAME_GLOBS 与本函数)。
+  local pf="${1:-}" ret="${2:-}"
+  [ -n "$pf" ] && [ -n "$ret" ] || { printf '⛔ 用法:laixin-11c-seat pickcheck <取号文件> <回卷标识(文件名或末行契约里的那个串)>\n'; return 2; }
+  [ -f "$pf" ] || { printf '⛔ 取号文件不存在:%s(⛔ 读成「不吻合」——读不到与不吻合必须分辨)\n' "$pf"; return 2; }
+  PICK_F="$pf" RET_S="$ret" python3 - <<'PY2'
+import os,sys,io
+raw=io.open(os.environ["PICK_F"],encoding="utf-8",errors="replace").read()
+pick=raw.strip(); ret=os.environ["RET_S"].strip()
+pc,pb=len(pick),len(pick.encode("utf-8")); rc,rb=len(ret),len(ret.encode("utf-8"))
+whole = (pick==ret)
+last  = bool(pick) and bool(ret) and (pick[-1]==ret[-1]) and rc==1
+lastin= bool(pick) and bool(ret) and (pick[-1] in ret)
+print("  取号文件形态:%d 字符 / %d 字节(⛔ 回显内容)" % (pc,pb))
+print("  回卷标识形态:%d 字符 / %d 字节(⛔ 回显内容)" % (rc,rb))
+print("  逐规则判定(两种解释含义相反 ⇒ 都算都报,规则归 11C 总纲):")
+print("    whole   整串即代号       : %s" % ("✅ 吻合" if whole else "❌ 不吻合"))
+print("    lastchar 末字即代号(回卷恰 1 字符): %s" % ("✅ 吻合" if last else "❌ 不吻合"))
+print("    末字包含于回卷            : %s" % ("✅ 是" if lastin else "❌ 否"))
+if whole or last or lastin:
+    print("  ⇒ 至少一种规则吻合 —— **⛔ 据此自动收卷**:先按 11C 总纲认定规则,再判。")
+    sys.exit(0)
+print("  ⇒ 两种规则均不吻合。形态差就在上面两行(%d 字符 vs %d 字符)——" % (pc,rc))
+print("     若字符数本就不同,先查**生成规则与提取口径是否同一处**;若字符数相同仍不吻合,再查比对命令本身")
+print("     (本单的真根因即**手工比对命令的正则未正确引用**,而当时只报了 label_match=no ⇒ 人只能去猜)。")
+sys.exit(1)
+PY2
+}
+
 case "${1:-}" in
   start)  shift; cmd_start "$@" ;;
   stop)   shift; cmd_stop "$@" ;;
   status) shift; cmd_status "$@" ;;
   list)   shift; cmd_list "$@" ;;
   audit)  shift; blind_audit ;;   # 双盲三类文件分居自检(起席前自动跑,也可单独跑)
+  pickcheck) shift; cmd_pickcheck "$@" ;;   # 取号 × 回卷比对:报两侧形态差 ⛔ 只报布尔 ⛔ 回显内容(#162)
   *) usage ;;
 esac

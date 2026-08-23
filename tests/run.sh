@@ -1376,7 +1376,7 @@ t "#44 绊线:relay 死跑 wd_loop 一拍——宿主存活+重生失败大声�
   'out="$(bash "$0" beat "$1")"; grep -q "HOST=alive" <<< "$out" && grep -q "中继重生失败" <<< "$out" && ! grep -q "起窗中止" <<< "$out"' \
   "$WDD" "$LANE"
 # ⭐ 豁免不泄漏:首起路径(人手跑 relay,无豁免旗)守卫必须照旧拦
-t "#44 绊线:首起路径双中继守卫照旧(无豁免旗,常态拓扑必拦且 rc 非零)" bash -c \
+t "#44 绊线:首起路径双中继守卫照旧(无豁免旗;2026-08-23 起判据=tmux 外有会话名 relay* 即真双中继,必拦且 rc 非零)" bash -c \
   'out="$(bash "$0" guard "$1")"; grep -q "GUARD_RC=1" <<< "$out" && grep -q "起窗中止" <<< "$out"' \
   "$WDD" "$LANE"
 # 模式级:wd_loop 里不许再出现裸的 cmd_relay/cmd_dispatch 调用(重生一律命令替换子 shell 收码)
@@ -3408,6 +3408,22 @@ t "ev-loop 回执分支附一致性标注(⛔ 按末行自动转整改),verify �
   e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"; grep -q "receipt_consistency \"\$f\"" <<< "$e" && grep -q "按正文人判 ⛔ 按末行自动转整改" <<< "$e" &&
   v="$(sed -n "/^cmd_verify()/,/^}$/p" "$1")"; grep -q "落盘前自检(2026-08-23)" <<< "$v" && grep -q "末行分类须与正文实质一致" <<< "$v"' _ "$LANE"
 rm -rf "$TRC"
+
+# ── relay 双中继守卫按身份判别(2026-08-23;总表待定轨;旧「按 tmux 外会话数」已成狼来了)──────────────────
+t "双中继守卫:常态拓扑(tmux 外 2 会话,无一名为 relay)放行——死因 ⛔ 起窗中止(wd44 驱动 guard-ok 模式)" bash -c \
+  'out="$(bash "$0" guard-ok "$1")"; ! grep -q "起窗中止" <<< "$out"' "$(cd "$(dirname "$0")/.." && pwd)/tests/wd44-driver.sh" "$LANE"
+TRR="$(mktemp -d)"; mkdir -p "$TRR/c1/sessions" "$TRR/c2/sessions"
+printf '{"name":"relay"}\n' > "$TRR/c1/sessions/111.json"; printf '{"name":"pingxia-a4"}\n' > "$TRR/c2/sessions/222.json"; printf '{"name":"relay-件甲"}\n' > "$TRR/c2/sessions/333.json"
+{ sed -n "/^rival_relay_sessions()/,/^}/p" "$LANE"; sed -n "/^check_rival_relay()/,/^}/p" "$LANE"; } > "$TRR/f.sh"
+t "rival_relay_sessions/check_rival_relay:tmux 外名为 relay 的会话=候选(拦);方案窗口名不算;tmux 内 relay-件窗不算;无候选时多会话只 ℹ️ 放行" bash -c '
+  source "$1/f.sh"; R="$1"; outside_sessions(){ echo 3; }   # 桩内 $1 是桩自己的参数,目录用 $R
+  session_seats(){ printf "111 %s/c1 outside\n222 %s/c2 outside\n333 %s/c2 relay-件甲\n" "$R" "$R" "$R"; }
+  [ "$(rival_relay_sessions)" = "111 relay" ] || { echo "候选=$(rival_relay_sessions)"; exit 1; }
+  check_rival_relay 2>/dev/null && exit 2
+  session_seats(){ printf "222 %s/c2 outside\n333 %s/c2 relay-件甲\n" "$R" "$R"; }
+  [ -z "$(rival_relay_sessions)" ] || exit 3
+  check_rival_relay 2>"$1/err" || exit 4; grep -q "放行" "$1/err"' _ "$TRR"
+rm -rf "$TRR"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then

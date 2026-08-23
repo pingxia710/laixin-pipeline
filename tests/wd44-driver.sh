@@ -47,6 +47,7 @@ outside_sessions() { echo 2; }  # 常态拓扑:tmux 外=创始人窗口+方案�
 CLAUDE_LAUNCHER="${CLAUDE_LAUNCHER:-claude}"   # #75:顶层变量不被 fns.sh 抽取,set -u 下会静默退出 ⇒ 测试侧补齐
 relay_alive() { return 1; }     # fixture:relay 已死(演练=杀掉它的 claude)
 ev_alive()    { return 0; }     # 事件总线活着 ⇒ wd_loop 不会碰 cmd_events(pgrep/pkill 隔离)
+rival_relay_sessions(){ :; }    # 2026-08-23 守卫按身份:沙盒默认无 relay 名会话(guard 模式内另覆盖为有)
 dispatch_alive(){ return 0; }
 dialog_sweep_win(){ return 1; }
 pane_hash()   { echo H; }
@@ -87,12 +88,25 @@ case "$MODE" in
     wait "$WPID" 2>/dev/null || true
     echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
     ;;
-  guard)
+  guard)   # 真双中继:tmux 外有会话名 relay 的 claude 会话 ⇒ 必拦(2026-08-23 守卫改按身份判别;常态拓扑的 outside=2 不再是拦的理由)
     rc=0
     out="$(bash -c '
       set -euo pipefail
       source "'"$TMPD"'/fns.sh"
       source "'"$TMPD"'/stubs.sh"
+      rival_relay_sessions(){ printf "99999 relay\n"; }
+      BOARD_F=/dev/null; HEADLESS_SETTINGS=/dev/null; RELAY_ENABLED=/dev/null; WD_LOG=/dev/null
+      cmd_relay --fresh' 2>&1)" || rc=$?
+    echo "GUARD_RC=$rc"
+    echo "$out"
+    ;;
+  guard-ok)   # 常态拓扑:tmux 外 2 个会话(方案窗口+11B 归口)但无一名为 relay ⇒ 守卫放行,死因只会是沙盒起不了真 claude(启动超时),⛔ 起窗中止
+    rc=0
+    out="$(bash -c '
+      set -euo pipefail
+      source "'"$TMPD"'/fns.sh"
+      source "'"$TMPD"'/stubs.sh"
+      rival_relay_sessions(){ :; }
       BOARD_F=/dev/null; HEADLESS_SETTINGS=/dev/null; RELAY_ENABLED=/dev/null; WD_LOG=/dev/null
       cmd_relay --fresh' 2>&1)" || rc=$?
     echo "GUARD_RC=$rc"

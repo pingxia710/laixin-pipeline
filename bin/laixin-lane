@@ -4139,12 +4139,31 @@ relay_alive() {
 # 改用两个真实可观察的事实:①tmux 内 relay 窗口在不在(cmd_relay 自己查);②tmux 外活跃 claude
 # 会话数 outside_sessions。基线=1(方案窗口常驻 tmux 外)⇒ >1 说明多出手开的窗口,**很可能就是
 # 手开的中继**(2026-08-19 现任 pingxia-1a 正是此形态,实测 outside=2)⇒ 拦下,留 --force-rival 逃生口。
+rival_relay_sessions(){  # → stdout 每行 "<pid> <会话名>":tmux 外、会话名以 relay 开头的 claude 会话=真·第二中继候选(2026-08-23 改按身份判别)
+  # 名字取 <配置目录>/sessions/<pid>.json 的 name(与 channel_of 同源);席位判定与 outside_sessions 同口径(session_seats)。⛔ 读错当 relay。
+  local pid dir seat name
+  while read -r pid dir seat; do
+    [ -n "$pid" ] && [ "$seat" = "outside" ] || continue
+    name="$(python3 -c 'import json,sys
+try: print((json.load(open(sys.argv[1])).get("name") or ""))
+except Exception: print("")' "$dir/sessions/$pid.json" 2>/dev/null)"
+    case "$name" in relay|relay-*|relay_*) printf '%s %s\n' "$pid" "$name" ;; esac
+  done <<< "$(session_seats)"
+  return 0
+}
 check_rival_relay() {
-  local n; n="$(outside_sessions)"
-  if [ "${n:-0}" -le 1 ]; then return 0; fi
-  echo "⚠️ tmux 外有 $n 个活跃 claude 会话(基线 1=方案窗口)——多出来的很可能就是**手开的中继窗口**。" >&2
-  echo "   绝不允许两个中继同时活着:先让手开的中继把班交给本窗口并退场,再重试。" >&2
-  echo "   确认那些会话都不是中继,可加 --force-rival 强行起窗。" >&2
+  # 🔴 2026-08-23 改按**身份**判别 ⛔ 按数量(总表待定轨「relay 双中继守卫改按身份判别」;11B wiki 早记此守卫「已进狼来了」):
+  #   旧判据=tmux 外 claude 会话数 >1 即拦——而方案窗口+11B 归口+创始人手开窗并存是常态,每次起 relay 都被拦、只能 --force-rival,
+  #   守卫形同虚设(真双中继也被当「又是误报」放过)。新判据=tmux 外是否存在**会话名 relay*** 的 claude 会话(手开中继按角色起名的惯例,
+  #   注册表「当前名字」列同源)。数量只作 ℹ️ 提示。前提沿革:常驻 relay 08-22 起托管关闭、一次性 relay-<件> 窗在 tmux 内不入候选集。
+  local rv n; rv="$(rival_relay_sessions)"; n="$(outside_sessions)"
+  if [ -z "$rv" ]; then
+    [ "${n:-0}" -gt 1 ] && echo "ℹ️ tmux 外有 $n 个 claude 会话(方案窗口/11B 归口/创始人手开窗属常态),无一名为 relay* ⇒ 放行(2026-08-23 起按身份判 ⛔ 按数量)" >&2
+    return 0
+  fi
+  echo "⚠️ tmux 外存在会话名为 relay* 的 claude 会话(疑似手开的中继窗口):" >&2
+  sed 's/^/   /' <<< "$rv" >&2
+  echo "   绝不允许两个中继同时活着:先让手开的中继把班交给本窗口并退场,再重试;确认它不是中继可加 --force-rival 强行起窗。" >&2
   return 1
 }
 

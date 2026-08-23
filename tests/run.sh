@@ -2471,7 +2471,7 @@ tfail "vmsg:只发给在跑的窗口(⛔ 静默投空)" "不在跑" \
 # 🔑 vmsg 开了一条能绕过 cmd_verify「交接只传客观信息 ⛔ 任何预期暗示」原则的路,所以防御必须
 #   在抬头里,且**把污染检测交给收方**——⛔ 指望发方自律,发方正是污染源。三条回退即红。
 t "vmsg:抬头把污染检测交给收方(⛔ 只写「请勿暗示」指望发方自律)" \
-  bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -q "忽略并在回执里报一句"'
+  bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -q "忽略,并在回执里"   # 2026-08-23 固定段改形后措辞变、意不变(收方检测)'
 t "vmsg:片名经 vwin 转义(#130:未转义会静默作用到别的窗口)" \
   bash -c 'sed -n "/^cmd_vmsg()/,/^}/p" "'"$LANE"'" | grep -qF "vwin \"\$slice\""'
 t "vmsg:上看板留痕(⛔ 无痕注入验收窗口)" \
@@ -3341,6 +3341,14 @@ t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kicko
 t "version-flow:仓库单点源在(skills/laixin-version-flow/SKILL.md)且 doctor §1 落位清单含它" bash -c '
   [ -s "$1/skills/laixin-version-flow/SKILL.md" ] && grep -q "for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow" "$2"' _ "$(cd "$(dirname "$0")/.." && pwd)" "$LANE"
 rm -rf "$TDB"
+
+# ── vmsg 固定段改形(2026-08-23 M 件「验收窗污染声明文本源定位」结论 A;dispatch 58 建议采)──────────────
+t "vmsg 固定段:⛔ 举例词样(旧三词不再出现)· 正文在前提醒在后 · 标注工具固定段且要求逐字引用正文那一句报污染" bash -c '
+  b="$(sed -n "/^cmd_vmsg()/,/^}$/p" "$1")"
+  ! grep -qF "「该怎么判、期望结果是什么、哪里应该没问题」" <<< "$b" || { echo "仍举例词样"; exit 1; }
+  a=$(grep -n "^\$body$" <<< "$b" | head -1 | cut -d: -f1); c=$(grep -n "\[工具固定段" <<< "$b" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$c" ] && [ "$a" -lt "$c" ] || { echo "顺序 $a $c"; exit 2; }
+  grep -q "⛔ 发件方所写 ⛔ 复述进回执" <<< "$b" && grep -q "逐字引用正文里那一句" <<< "$b" && grep -q "以上为发件方正文" <<< "$b"' _ "$LANE"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then

@@ -1057,6 +1057,14 @@ for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|m
             if re.search(r'[XN] ?(天|日|小时|个工作日|个月|%|元)|¥ ?X|预计 ?[XN]', lt) and not re.search(r'配置|渲染|取值|实值', lt):
                 errs.append(f"词表占位符未注取值来源: {rel}:{ln}(句含 X/N 占位,⛔ 直接上屏——先裁取值来源并在词表行旁注明,宪法头 2 条)")
 
+# 2026-08-23 宪法头两句绊线(方案窗口第二十三任 fb 四件之一:模板是被每份 prompt 抄的单点源,新 prompt 发车前必须含):
+#   ①「片射程与红线冲突=停车场景」(挂宪法第 8 条下)②「消费者可见片…单列「文案口径」节」(挂第 9 条下)。
+#   只对**带宪法头的 prompt**核(以末行契约句「【交付完成】」为宪法头在场判据);在飞旧 prompt ⛔ 回改,故此处报 err 只影响新发车。
+if "【交付完成】" in txt:
+    for need, hint in (("片射程与红线冲突=停车场景", "宪法第 8 条下缺 2026-08-23 停车句——重抄模板宪法头(⛔ 自拟措辞)"),
+                       ("单列「文案口径」节", "宪法第 9 条下缺 2026-08-23 文案口径节硬项——重抄模板宪法头(⛔ 自拟措辞)")):
+        if need not in txt: errs.append(f"宪法头缺句: {need} —— {hint}")
+        else: oks += 1
 pool = read(os.path.join(kb, "索引/wiki-裁定池总表.md"))
 redl = read(os.path.join(kb, "索引/wiki-红线清单.md"))
 if not pool: errs.append("裁定池总表读不到(核对 LAIXIN_KB)")
@@ -1893,7 +1901,7 @@ cmd_doctor() {
 
   echo "== 1. skill 落位(单点源=~/.codex/skills,其余必须是软链) =="
   local eff="${CLAUDE_CONFIG_DIR:-$HOME/.claude-official}"
-  for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience; do
+  for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow; do   # version-flow 2026-08-23 收敛入仓(此前两处真目录各自漂移:codex 侧落后 claude 侧 12 行)
     if [ ! -f "$HOME/.codex/skills/$sk/SKILL.md" ]; then bad "$sk 单点源缺失"; continue; fi
     if [ -L "$eff/skills/$sk" ]; then ok "$sk 生效目录已软链"
     elif [ -d "$eff/skills/$sk" ]; then bad "$sk 在生效目录是**实体副本**(会与单点源漂移)"

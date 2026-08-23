@@ -3322,6 +3322,26 @@ t "M1 结构销账:末行 commit 是 main 祖先 ⇒ 销账;未合入分支 comm
   e="$(sed -n "/^ev_loop()/,/^}$/p" "$4")"; grep -q "merge-base --is-ancestor \"\$_rc_hex\" main" <<< "$e" && grep -q "结构判据" <<< "$e"' _ "$TB5" "$H1" "$H2" "$LANE"
 rm -rf "$TB5"
 
+# ── 11B 待定轨文档批(2026-08-23):两卡句 · 宪法头两句 prompt-lint 绊线 · version-flow 收敛入仓 ──────────────
+TDB="$(mktemp -d)"; mkdir -p "$TDB/kb/索引" "$TDB/repo"
+printf '宪法头\n8. 需要 prompt 未授权的新机制=停车报告\n   - 片射程与红线冲突=停车场景:停车请裁\n9. 交付报告落盘\n   - 消费者可见片的交付报告必须单列「文案口径」节\n【交付完成】x y\n' > "$TDB/new.md"
+printf '宪法头\n8. 需要 prompt 未授权的新机制=停车报告\n9. 交付报告落盘\n【交付完成】x y\n' > "$TDB/old.md"
+printf '不是 prompt 的普通文档,没有契约句\n' > "$TDB/doc.md"
+t "prompt-lint:宪法头两句绊线——含两句 ⇒ 零缺句;缺 ⇒ 两条 ❌ 宪法头缺句;无宪法头的文档不核" bash -c '
+  a="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-lint "$1/new.md" 2>&1)"; ! grep -q "宪法头缺句" <<< "$a" || { echo "$a"; exit 1; }
+  b="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-lint "$1/old.md" 2>&1)"; [ "$(grep -c "宪法头缺句" <<< "$b")" -eq 2 ] || { echo "$b"; exit 2; }
+  c="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-lint "$1/doc.md" 2>&1)"; ! grep -q "宪法头缺句" <<< "$c"' _ "$TDB" "$LANE"
+t "宪法头模板本体含两句(射程红线停车句挂第 8 条 / 文案口径节挂第 9 条)" bash -c '
+  m="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/prompt/来信平台-prompt宪法头模板.md"; [ -f "$m" ] || { echo "模板不在(环境)"; exit 0; }
+  grep -q "片射程与红线冲突=停车场景" "$m" && grep -q "单列「文案口径」节" "$m"'
+t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kickoff 卡「结构未知字段族先实测」句在" bash -c '
+  grep -q "挂起 ≠ 停工" "$1/skills/laixin-pipeline/SKILL.md" && grep -q "本卡只放指针 ⛔ 抄全文" "$1/skills/laixin-pipeline/SKILL.md" &&
+  grep -q "结构未知的字段族,prompt ⛔ 替开发方假设结构" "$1/skills/laixin-kickoff/SKILL.md" &&
+  grep -q "^### 1-ter. 关系判据的样本值必须能让「通过」与「失败」分开" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "version-flow:仓库单点源在(skills/laixin-version-flow/SKILL.md)且 doctor §1 落位清单含它" bash -c '
+  [ -s "$1/skills/laixin-version-flow/SKILL.md" ] && grep -q "for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow" "$2"' _ "$(cd "$(dirname "$0")/.." && pwd)" "$LANE"
+rm -rf "$TDB"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

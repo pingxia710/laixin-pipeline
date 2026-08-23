@@ -15,6 +15,8 @@
 #                                    (codex|claude,默认 codex,#60①):codex 回执走落盘契约(末行
 #                                    【验收回执】,events 投递),claude 路径原样保留(SendMessage 回执)
 #   laixin-lane vdown <片名>         回收该验收窗口(收到回执后调,与 worktree 回收同理)
+#   laixin-lane verify … --no-send    起窗后停在未派单态(派单正文落 ~/.laixin-events.d/vbrief/;核环境/模型档后 vsend 派出)
+#   laixin-lane vsend <片名>          把 --no-send 落盘的派单正文原样派进该验收窗(⛔ 手工 tmux 注入绕过编排)
 #   laixin-lane vlist                列出在跑的验收窗口
 #   laixin-lane vmsg <片名> --from <来源> "<正文>"
 #                                    给在跑的验收窗口补发**工具侧**信息(通道/环境/机制)。
@@ -2785,6 +2787,15 @@ ev_loop(){
         if [ -n "$_rep" ] && [ -f "$_rep" ] && ! tail -1 "$_rep" | grep -q '^【交付完成】'; then
           ev_log "M1 认领销账:$_ps(交付报告末行已被验收结论覆盖=已被接手)"; continue
         fi
+        # 🔴 第三条销账(2026-08-23 待定轨件「M1 销账机器判据」,方案窗口第二十一任 17:1x 补规格):**结构判据**——交付报告末行的 commit
+        #   已是 main 祖先 ⇒ 已合入 ⇒ 销账;不依赖看板措辞、验收窗在不在、回执文件命名。⛔ 拿「合并」措辞 grep(本仓判据方向:事实优先于措辞)。
+        #   末行契约形如「【交付完成】<片名> <commit>」,取其中最后一个 ≥7 位 hex;no-commit(M 件)无 hex ⇒ 本条不适用,落到下面按窗口/升级走。
+        if [ -n "$_rep" ] && [ -f "$_rep" ]; then
+          _rc_hex="$(tail -1 "$_rep" | grep -oE '\b[0-9a-f]{7,40}\b' | tail -1 || true)"
+          if [ -n "$_rc_hex" ] && git -C "$DEFAULT_DIR" merge-base --is-ancestor "$_rc_hex" main 2>/dev/null; then
+            ev_log "M1 认领销账:$_ps(末行 commit ${_rc_hex:0:7} 已是 main 祖先=已合入;结构判据)"; continue
+          fi
+        fi
         if [ "$_pst" = "P" ] && [ $(( _now - _pe )) -ge "$EV_ACK" ]; then
           # 🔴 ${_ps} 花括号不能省(2026-08-20 00:32 实撞,ev-loop 连崩两拍进 crashloop,看门狗每分钟重起):bash 3.2 在 zh_CN/en_US.UTF-8
       #   下把裸 $var 紧跟的全角字符首字节卷进变量名 ⇒ set -u 报 `_ps�: unbound variable` 整条循环退出;本分支是冷路径(投递 ≥EV_ACK
@@ -2901,9 +2912,12 @@ $(echo "$_ovd" | sed 's/^/  /')
       elif [ "$_bl_now" -gt "$_bl_pos" ] 2>/dev/null; then
         sed -n "$((_bl_pos+1)),${_bl_now}p" "$BOARD" 2>/dev/null | ev_directive_filter | while IFS= read -r _dl; do
           [ -n "$_dl" ] || continue
-          ev_deliver "指令" "【事件】创始人直令/在飞口径变更已落看板(#106 机器搬运,原文以看板为准):
+          # 来源级别按被搬运原文取值 ⛔ 模板断言(2026-08-23 待定轨件;2026-08-22 实撞:方案窗口 12:32 裁定被固定标成「创始人直令」,dispatch 广播来源级别错标)
+          _dl_src="$(printf '%s' "$_dl" | cut -d'|' -f3 | sed -E 's/^ +//; s/ +$//')"; _dl_mark="口径事件"
+          case "$_dl" in *创始人直令*) _dl_mark="创始人直令" ;; *在飞口径变更*) _dl_mark="在飞口径变更" ;; esac
+          ev_deliver "指令" "【事件】口径事件已落看板(来源=${_dl_src:-?};标记=${_dl_mark};#106 机器搬运,级别以看板原文为准 ⛔ 按本条模板推断):
 $(printf '%s' "$_dl" | cut -c1-360)…
-下一步:读看板该条**全文**,按新口径调整在飞片与排队;受影响的在飞窗口由你广播(照 main 前进广播形态)。"
+下一步:读看板该条**全文**,按其来源与口径调整在飞片与排队;受影响的在飞窗口由你广播(照 main 前进广播形态,来源级别照抄原文)。"
         done
       fi
       printf '%s\n' "$_bl_now" > "$EV_BOARD_POS"
@@ -5172,9 +5186,10 @@ vwin() {  # 验收窗口名(片名里 tmux 目标语法有意义的字符一律�
 cmd_verify() {
   local slice="${1:-}"; shift || true
   [ -n "$slice" ] || die "verify 需要片名:laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径"
-  local branch="" commit="" report="" prompt="" dir="$HOME" to=""
+  local branch="" commit="" report="" prompt="" dir="$HOME" to="" nosend=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --no-send) nosend=1; shift ;;   # 起窗后停在未派单态(2026-08-23 待定轨件:派单前检查/模型档设置此前无执行点,两次挡住正当需求);派单=laixin-lane vsend <片名>
       --branch) branch="${2:?--branch 需要分支名}"; shift 2 ;;
       --commit) commit="${2:?--commit 需要 commit}"; shift 2 ;;
       --report) report="${2:?--report 需要交付报告路径}"; shift 2 ;;
@@ -5322,6 +5337,13 @@ commit:$commit
 EOF
 )"
   fi
+  if [ -n "$nosend" ]; then
+    # 未派单态:派单正文落盘(⛔ 丢进内存),人工核完环境/模型档后 laixin-lane vsend <片名> 原样派出;⛔ 手工 tmux 注入绕过编排
+    mkdir -p "$EV_DIR/vbrief"; printf '%s' "$msg" > "$EV_DIR/vbrief/$w.md"
+    board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)引擎=$VERIFY_ENGINE;**--no-send 未派单态**(派单正文已落 $EV_DIR/vbrief/$w.md;核完后 laixin-lane vsend $slice)"
+    echo "$w 已起,**未派单**(--no-send)。核完环境/模型档后派单:laixin-lane vsend $slice;看现场:laixin-lane peek-v $slice 30"
+    return 0
+  fi
   printf '%s' "$msg" | tmux load-buffer -b laixin-vmsg -
   tmux paste-buffer -p -b laixin-vmsg -t "$SESSION:$w"
   tmux delete-buffer -b laixin-vmsg
@@ -5351,6 +5373,23 @@ EOF
   else
     echo "回执契约:$receipt 末行行首【验收回执】——事件总线监听落盘并投递 dispatch(#60①,⛔ 等 SendMessage)。"
   fi
+}
+
+cmd_vsend() {  # <片名> —— 把 verify --no-send 落盘的派单正文原样派进该验收窗(仍走 load-buffer/paste,与 verify 同一形态)
+  local slice="${1:-}"; [ -n "$slice" ] || die "vsend 需要片名"
+  local w; w="$(vwin "$slice")"; local f="$EV_DIR/vbrief/$w.md"
+  [ -f "$f" ] || die "未找到 $w 的未派单正文($f)——它不是 --no-send 起的,或已派过(vsend 派后即删)"
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" || die "$w 不在跑(验收窗已收?)——vsend 只派给在跑的窗"
+  printf '%s' "$(cat "$f")" | tmux load-buffer -b laixin-vmsg -
+  tmux paste-buffer -p -b laixin-vmsg -t "$SESSION:$w"
+  tmux delete-buffer -b laixin-vmsg
+  sleep 0.5
+  tmux send-keys -t "$SESSION:$w" C-m
+  rm -f "$f"
+  ( confirm_briefed "$w" "verify" "${VERIFY_ENGINE:-codex}" ) >/dev/null 2>&1 &
+  board "$(caller_src)" "vsend→验收窗口 $w:派单正文已派出(此前 --no-send 未派单态)"
+  echo "$w 已派单(来自 --no-send 落盘正文)。复核:laixin-lane peek-v $slice 30"
+  return 0
 }
 
 cmd_vdown() {
@@ -5437,11 +5476,16 @@ cmd_vlog() {  # 验收窗口专用记看板:免掉 LAIXIN_WINDOW= 前缀(带 env
   echo "已记录到看板"
 }
 
-cmd_vlist() {
+cmd_vlist() {  # 在跑验收窗清单:比照 mlist 输出 BU 与端口(2026-08-23 待定轨件:自证②「与在跑窗互异」此前只能做一半)
   tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }
-  local out
-  out="$(tmux list-windows -t "$SESSION" -F '#{window_name}  [#{pane_current_command}]' | grep '^verify-' || true)"
-  [ -n "$out" ] && echo "$out" || echo "当前没有在跑的验收窗口"
+  local w pc n=0
+  while read -r w pc; do
+    [ -n "$w" ] || continue
+    n=$((n+1))
+    printf '%s  [%s]  BU=v%s 端口=%s\n' "$w" "$pc" "$(printf '%s' "$w" | cksum | awk '{print $1}')" "$(cdp_port_verify "$w")"
+  done < <(tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_current_command}' 2>/dev/null | grep '^verify-' || true)
+  [ "$n" -gt 0 ] || echo "当前没有在跑的验收窗口"
+  return 0
 }
 
 # copy-audit(#28):词表覆盖率审计——逻辑全在 bin/copy_audit.py(检查器三约束见其头注),
@@ -5768,6 +5812,7 @@ case "${1:-}" in
   report-lint) shift; cmd_report_lint "$@" ;;  # 交付报告举证lint:契约末行/输出块计数/逐字带锚/达标自证行(#18b)  # 发车前核 prompt 引用可解析性(文件:行号/裁定编号/R编号)
   verify) shift; cmd_verify "$@" ;;
   vdown)  shift; cmd_vdown "$@" ;;
+  vsend)  shift; cmd_vsend "$@" ;;   # 派出 verify --no-send 落盘的派单正文
   vlog)   shift; cmd_vlog "$@" ;;
   vmsg)   shift; cmd_vmsg "$@" ;;
   peek-v) shift; cmd_peekv "$@" ;;

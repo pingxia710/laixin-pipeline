@@ -3292,6 +3292,36 @@ t "⑤kb-commit #107:改含历史占位(22:4x)的长行而新增文本无占位 
   grep -q "#107 占位时刻" <<< "$out" && grep -q "23:1x" <<< "$out" && ! grep -q "22:4x" <<< "$out"' _ "$V5" "$LANE"
 rm -rf "$TB4"
 
+# ── 11B 待定轨第二批(2026-08-23):vlist 端口 · verify --no-send/vsend · #106 来源标签 · M1 结构销账 ──────────
+TB5="$(mktemp -d)"
+t "vlist:比照 mlist 输出 BU=v<cksum> 与端口(两窗互异可核);无窗时照旧提示" bash -c '
+  { sed -n "/^cdp_port_verify()/,/^}/p" "$1"; sed -n "/^cmd_vlist()/,/^}/p" "$1"; } > "$2/vl.sh"; source "$2/vl.sh"; SESSION=s
+  tmux(){ case "$1" in has-session) return 0 ;; list-windows) printf "verify-a node\nverify-b node\nlane-a node\n" ;; esac; }
+  out="$(cmd_vlist)"; [ "$(grep -c "BU=v" <<< "$out")" -eq 2 ] || { echo "$out"; exit 1; }
+  p1=$(grep "^verify-a" <<< "$out" | grep -oE "端口=[0-9]+"); p2=$(grep "^verify-b" <<< "$out" | grep -oE "端口=[0-9]+"); [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$p2" ] || exit 2
+  tmux(){ case "$1" in has-session) return 0 ;; list-windows) printf "lane-a node\n" ;; esac; }; grep -q "没有在跑的验收窗口" <<< "$(cmd_vlist)"' _ "$LANE" "$TB5"
+t "verify --no-send:停在未派单态(正文落 vbrief/<窗>.md、return 在 paste 之前);vsend 派出并删文件;不带参数保持原子派单" bash -c '
+  v="$(sed -n "/^cmd_verify()/,/^}$/p" "$1")"
+  grep -q "\-\-no-send) nosend=1" <<< "$v" || exit 1
+  a=$(grep -n "if \[ -n \"\$nosend\" \]; then" <<< "$v" | head -1 | cut -d: -f1); b=$(grep -n "tmux load-buffer -b laixin-vmsg -" <<< "$v" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || { echo "顺序 $a $b"; exit 2; }
+  grep -q "vbrief/\$w.md" <<< "$v" && grep -q "未派单态" <<< "$v" || exit 3
+  s="$(sed -n "/^cmd_vsend()/,/^}$/p" "$1")"; grep -q "rm -f \"\$f\"" <<< "$s" && grep -q "confirm_briefed" <<< "$s" && grep -q "load-buffer -b laixin-vmsg" <<< "$s" || exit 4
+  grep -qE "^  vsend\)" "$1" && grep -q "^#   laixin-lane vsend" "$1"' _ "$LANE"
+tfail "vsend:无落盘正文(非 --no-send 起的/已派过)⇒ 拒" "未找到" env LAIXIN_SESSION=lx-nowin-$$ "$LANE" vsend 从未起过的片
+t "#106:搬运投递来源级别按原文取值(来源=第 3 列、标记按原文关键词),⛔ 模板断言「创始人直令」" bash -c '
+  e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
+  ! grep -q "【事件】创始人直令/在飞口径变更已落看板" <<< "$e" && grep -q "口径事件已落看板(来源=\${_dl_src:-?};标记=\${_dl_mark}" <<< "$e" &&
+  grep -qF "case \"\$_dl\" in *创始人直令*) _dl_mark=\"创始人直令\" ;; *在飞口径变更*) _dl_mark=\"在飞口径变更\" ;; esac" <<< "$e"' _ "$LANE"
+git -C "$TB5" init -q 2>/dev/null && git -C "$TB5" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base && git -C "$TB5" branch -M main 2>/dev/null; H1=$(git -C "$TB5" rev-parse --short HEAD); git -C "$TB5" checkout -q -b feat && git -C "$TB5" -c user.email=t@t -c user.name=t commit -q --allow-empty -m f1; H2=$(git -C "$TB5" rev-parse --short HEAD); git -C "$TB5" checkout -q main
+t "M1 结构销账:末行 commit 是 main 祖先 ⇒ 销账;未合入分支 commit ⇒ 不销;no-commit ⇒ 不适用(判据本体=merge-base --is-ancestor)" bash -c '
+  cd "$1"; h1="$2"; h2="$3"
+  x="$(printf "【交付完成】片甲 %s" "$h1" | grep -oE "\b[0-9a-f]{7,40}\b" | tail -1)"; git merge-base --is-ancestor "$x" main || exit 1
+  y="$(printf "【交付完成】片乙 %s" "$h2" | grep -oE "\b[0-9a-f]{7,40}\b" | tail -1)"; git merge-base --is-ancestor "$y" main && exit 2
+  z="$(printf "【交付完成】M轨-丙 no-commit" | grep -oE "\b[0-9a-f]{7,40}\b" | tail -1 || true)"; [ -z "$z" ] || exit 3
+  e="$(sed -n "/^ev_loop()/,/^}$/p" "$4")"; grep -q "merge-base --is-ancestor \"\$_rc_hex\" main" <<< "$e" && grep -q "结构判据" <<< "$e"' _ "$TB5" "$H1" "$H2" "$LANE"
+rm -rf "$TB5"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

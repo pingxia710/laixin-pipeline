@@ -72,6 +72,8 @@
 #   laixin-lane facts-fresh          事实表新鲜度(表头 main@commit vs 当前 main)+codegraph sync 顺手跑/被占告警
 #   laixin-lane audit-queue          台账巡检(排队/验收中 × 看板合并记录揪陈旧行;#49 进行中节 × 轨道占用移节核)
 #   laixin-lane audit-pages          底册复查提醒(#五-19):走查底册 🔁 页的「××片」触发点 × 看板合并记录;接班巡检可选项
+#   laixin-lane prompt-rescan [--days N] [--all]  批量重扫 prompt 引用指纹(默认=总表进行中/排队/验收中引用的 prompt;--all=prompt/ 近 N 天)只报失准——
+#                                    词表编辑行号漂移是静默的,2026-08-23 起词表引用无指纹即红、在飞引用靠本命令发现失准
 #   laixin-lane kb-commit <说明> <文件>...  知识库提交守卫(拒目录/旗标;涉执行总表自动跑分桶自检+新鲜度)
 #   laixin-lane copy-audit [--ref R] 词表覆盖率审计(#28):copy/映射源中文值×两词表,三列清单给方案窗口判读
 #   laixin-lane merge-guard <目标commit> [--ref 分支] [--old 旧值]  ref级合并前后核主树是否被甩下(#24)
@@ -1044,7 +1046,9 @@ for m in re.finditer(r'([A-Za-z0-9_.\-/\[\]一-鿿]+\.(?:py|tsx|ts|sh|toml|css|m
             elif st == "miss":
                 errs.append(f"内容指纹不匹配: {rel}:{ln}「{fp[:24]}」——行号漂移或内容已改(词表被编辑时行号全体漂移的形态),重新定位后更新引用(#五-29)")
         elif is_vocab:
-            warns.append(f"词表引用未带内容指纹: {rel}:{ln} ——词表编辑行号会漂移,引用请带行首几个字锚内容(写法 {rel}:{ln}「首N字」),指纹不符会在发车前变红(#五-29)")
+            # 2026-08-23 升为强制(待定轨「词表引用行号失准的机器防线」候选①,11B 定):一夜 4 次同形漂移全靠指纹救回,而无指纹的引用
+            #   漂了就是静默错锚——看纸面完全正常却指向另一条词族。⇒ 无指纹即红,发车前必补。
+            errs.append(f"词表引用未带内容指纹: {rel}:{ln} ——词表编辑行号会漂移,引用必须带行首几个字锚内容(写法 {rel}:{ln}「首N字」;2026-08-23 起无指纹即红,#五-29)")
         # 词表占位符检测(2026-08-18 优化#11:片二-B 把字面「X」直出消费者页面——宪法头 2 条的机器化那半)
         # 引用的词表行含 X/N 类占位而行内无取值来源标注(配置/渲染/取值/实值)⇒ 红:占位模板不是可上屏的成句
         if "词汇表" in rel:
@@ -1103,6 +1107,28 @@ print(f"prompt-lint: {os.path.basename(f)} — {oks} 项引用可解析,{len(err
 print("  已核(各项适用即核,零适用项≠核过):①文件:行号 ②裁定编号 ③R编号 · 内容指纹(#五-29,带「」才核) · 词表占位符(#11/#22a) · 消费点提示(#18a) · 供给侧半面提示(#22b)")
 sys.exit(1 if errs else 0)
 PYEOF
+}
+
+cmd_prompt_rescan() {  # [--days N] [--all]:批量重扫 prompt 的「文件:行号「指纹」」引用,只报失准(指纹不符/行号越界/文件不存在)——2026-08-23 待定轨件候选③
+  # 射程默认=执行总表 进行中/排队/验收中 三节里出现的 prompt 路径(在飞与待发的);--all=4-开发层/prompt/ 下近 N 天(默认 3)修改过的全部 prompt。
+  # 只复用 cmd_prompt_lint 的判定(⛔ 平行实现),从其输出里筛「指纹/行号/文件」族行;宪法头缺句等与漂移无关的项在此不报(旧 prompt ⛔ 回改)。
+  local days=3 allmode="" f list="" n=0 bad=0 out hits
+  while [ $# -gt 0 ]; do case "$1" in --days) days="${2:?--days 需要天数}"; shift 2 ;; --all) allmode=1; shift ;; *) die "未知参数:$1(用法:laixin-lane prompt-rescan [--days N] [--all])" ;; esac; done
+  if [ -n "$allmode" ]; then
+    list="$(find "$KB/4-开发层/prompt" -maxdepth 1 -name '*.md' -mtime -"$days" 2>/dev/null | sort)"
+  else
+    [ -f "$TABLE" ] || die "执行总表不可读:$TABLE"
+    list="$(awk '/^## /{act=($0 ~ /^## (进行中|排队|验收中)/)} act' "$TABLE" | grep -oE '(4-开发层/)?prompt/[^ |`()「」]+\.md' | sed -E 's#^4-开发层/##' | sort -u | while IFS= read -r p; do [ -n "$p" ] && [ -f "$KB/4-开发层/$p" ] && echo "$KB/4-开发层/$p"; done)"
+  fi
+  [ -n "$list" ] || { echo "prompt-rescan:射程内零 prompt(总表三节未引用任何存在的 prompt 文件;要扫全目录用 --all)"; return 0; }
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue; n=$((n+1))
+    out="$(cmd_prompt_lint "$f" 2>&1 || true)"
+    hits="$(grep -E '内容指纹不匹配|指纹只命中|行号越界|文件不存在|词表引用未带内容指纹' <<< "$out" || true)"
+    if [ -n "$hits" ]; then bad=$((bad+1)); echo "❌ $(basename "$f")"; sed 's/^/   /' <<< "$hits"; fi
+  done <<< "$list"
+  echo "prompt-rescan:扫 ${n} 份 prompt,${bad} 份有引用失准(指纹不符/行号越界/文件不存在/词表引用无指纹);零失准=引用仍指向你以为的那句(#五-29)"
+  [ "$bad" -eq 0 ]
 }
 
 cmd_report_lint() {  # #18b(2026-08-19):交付报告举证 lint——举证毛病反复(自称逐字不逐字/零命令输出/
@@ -5822,6 +5848,7 @@ case "${1:-}" in
   wd-loop)  shift; wd_loop ;;
   dialog-classify) shift; dialog_classify ;;  # stdin=画面文本 → esc:<名>/alert:<名>/none(看门狗对话框签名库,可独测)
   prompt-lint) shift; cmd_prompt_lint "$@" ;;
+  prompt-rescan) shift; cmd_prompt_rescan "$@" ;;   # 批量重扫在飞/排队 prompt 的引用指纹(词表行号漂移防线③)
   report-lint) shift; cmd_report_lint "$@" ;;  # 交付报告举证lint:契约末行/输出块计数/逐字带锚/达标自证行(#18b)  # 发车前核 prompt 引用可解析性(文件:行号/裁定编号/R编号)
   verify) shift; cmd_verify "$@" ;;
   vdown)  shift; cmd_vdown "$@" ;;

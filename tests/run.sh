@@ -469,7 +469,7 @@ tfail "查无编号在报错清单里点名" "商会-99" \
 tfail "缺文件参数报用法" "用法" "$LANE" prompt-lint
 printf '| 满员话术 | 预计X日内原路到账 |\n| 好话术 | 预计 N 天内答复(N=时效配置渲染) |\n' > "$TMPP/kb/索引/wiki-消费者词汇表.md"
 printf '引用 索引/wiki-消费者词汇表.md:1 与 转单-9。\n' > "$TMPP/ph-bad.md"
-printf '引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-good.md"
+printf '引用 索引/wiki-消费者词汇表.md:2「好话术」 与 转单-9。\n' > "$TMPP/ph-good.md"   # 2026-08-23 起词表引用无指纹即红,夹具补指纹(本组测占位符,与指纹无关)
 tfail "词表占位符未注取值来源 → 红(优化#11)" "占位符" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-bad.md"
 tout "占位符带取值注 → 过" "0 项查无" \
@@ -477,7 +477,7 @@ tout "占位符带取值注 → 过" "0 项查无" \
 # #22a(2026-08-19):占位符只扫词格——第三格备注引用被替换旧句(含 N)不再算到新句头上。
 # 定稿句零占位而备注引旧句 ⇒ 修复前报红(结构性误报),修复后过。
 printf '| 付款指引 | 收款方式会短信发给你 | 替换「请按线下收款指令支付 N 元」旧句 |\n' >> "$TMPP/kb/索引/wiki-消费者词汇表.md"
-printf '引用 索引/wiki-消费者词汇表.md:3 与 转单-9。\n' > "$TMPP/ph-note.md"
+printf '引用 索引/wiki-消费者词汇表.md:3「付款指引」 与 转单-9。\n' > "$TMPP/ph-note.md"
 tout "备注格引旧句含占位不误伤新句(#22a 只扫词格)" "0 项查无" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-note.md"
 printf '| 坏例 | 预计 X 日内原路到账 | 备注 |\n' >> "$TMPP/kb/索引/wiki-消费者词汇表.md"
@@ -485,16 +485,16 @@ printf '引用 索引/wiki-消费者词汇表.md:4 与 转单-9。\n' > "$TMPP/p
 tfail "词格本身含占位仍红(#22a 不放松词格)" "占位符" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-cell.md"
 # #22b:供给侧半面提示(提示级不拦,退出码仍 0)
-printf 'admin 工作台改造。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-side.md"
+printf 'admin 工作台改造。引用 索引/wiki-消费者词汇表.md:2「好话术」 与 转单-9。\n' > "$TMPP/ph-side.md"
 tout "提及供给侧界面只引消费者词表 → ⚠️ 提示(#22b)" "供给侧词汇表逐角色" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-side.md"
 t "#22b 提示不改变退出码(纯提示级)" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-side.md"
 # #18a:改读法片缺消费点清单 → 提示级
-printf '收敛 payload 序列化面。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-read.md"
+printf '收敛 payload 序列化面。引用 索引/wiki-消费者词汇表.md:2「好话术」 与 转单-9。\n' > "$TMPP/ph-read.md"
 tout "改读法片缺消费点清单 → ⚠️ 提示(#18a)" "消费点清单" \
   env LAIXIN_KB="$TMPP/kb" LAIXIN_REPO="$TMPP/repo" "$LANE" prompt-lint "$TMPP/ph-read.md"
-printf '收敛 payload 序列化面,消费点清单如下。引用 索引/wiki-消费者词汇表.md:2 与 转单-9。\n' > "$TMPP/ph-read2.md"
+printf '收敛 payload 序列化面,消费点清单如下。引用 索引/wiki-消费者词汇表.md:2「好话术」 与 转单-9。\n' > "$TMPP/ph-read2.md"
 t "带消费点清单不提示(#18a)" bash -c 'out="$(env LAIXIN_KB="'"$TMPP"'/kb" LAIXIN_REPO="'"$TMPP"'/repo" "'"$LANE"'" prompt-lint "'"$TMPP"'/ph-read2.md" 2>&1)"; ! grep -q "消费点清单——" <<< "$out"' 
 # #18b report-lint:举证形态半边机器化(实质归验收)
 RPT="$(mktemp -d)"
@@ -1870,8 +1870,8 @@ printf '引用 索引/wiki-消费者词汇表.md:3「彻底废句」 与 转单-
 tfail "指纹只命中删除线 → 红并点名已废弃" "只命中删除线" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-struck.md"
 # 词表引用未带指纹 → 提示级(迁移推手,⛔ 拦)
 printf '引用 索引/wiki-消费者词汇表.md:1 与 转单-9。\n' > "$FPD/fp-none.md"
-tout "词表引用未带指纹 → ⚠️ 提示并给写法" "未带内容指纹" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-none.md"
-t "未带指纹提示不改退出码(提示级)" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-none.md"
+tout "词表引用未带指纹 → ❌ 并给写法(2026-08-23 由提示升红:漂移是静默的,无指纹=静默错锚)" "未带内容指纹" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-none.md"
+t "未带指纹 ⇒ 非零退出(2026-08-23 升红;原「提示级不改退出码」口径作废)" bash -c '! "$@" >/dev/null 2>&1' _ "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-none.md"
 # 非词表文件带指纹同样核(通用同一性;不带则不提示——提示射程只在词表)
 printf '引用 app/x.py:3「l3」 与 转单-9。\n' > "$FPD/fp-code-ok.md"
 tout "非词表文件指纹匹配 → 过" "0 项查无" "${FPE[@]}" "$LANE" prompt-lint "$FPD/fp-code-ok.md"
@@ -3349,6 +3349,29 @@ t "vmsg 固定段:⛔ 举例词样(旧三词不再出现)· 正文在前提醒�
   a=$(grep -n "^\$body$" <<< "$b" | head -1 | cut -d: -f1); c=$(grep -n "\[工具固定段" <<< "$b" | head -1 | cut -d: -f1)
   [ -n "$a" ] && [ -n "$c" ] && [ "$a" -lt "$c" ] || { echo "顺序 $a $c"; exit 2; }
   grep -q "⛔ 发件方所写 ⛔ 复述进回执" <<< "$b" && grep -q "逐字引用正文里那一句" <<< "$b" && grep -q "以上为发件方正文" <<< "$b"' _ "$LANE"
+
+# ── 词表引用行号失准机器防线(2026-08-23 待定轨件:①无指纹即红 ③prompt-rescan 批量重扫)────────────────
+TRS="$(mktemp -d)"; mkdir -p "$TRS/kb/索引" "$TRS/kb/4-开发层/prompt" "$TRS/repo"
+printf '| 键 | 句 |\n|---|---|\n| a | 未能提交:这项金额变更已不存在 |\n| b | 第二句 |\n' > "$TRS/kb/索引/wiki-消费者词汇表.md"
+printf '裁定池(夹具)\n' > "$TRS/kb/索引/wiki-裁定池总表.md"; printf '红线清单(夹具)\n' > "$TRS/kb/索引/wiki-红线清单.md"   # lint 读不到这两张会另报 ❌,与本组判据无关
+printf '引用 索引/wiki-消费者词汇表.md:3「未能提交」 带指纹\n' > "$TRS/kb/4-开发层/prompt/ok.md"
+printf '引用 索引/wiki-消费者词汇表.md:3 无指纹\n' > "$TRS/kb/4-开发层/prompt/nofp.md"
+printf '引用 索引/wiki-消费者词汇表.md:4「未能提交」 指纹漂了\n' > "$TRS/kb/4-开发层/prompt/drift.md"
+t "prompt-lint:词表引用无指纹 ⇒ ❌(2026-08-23 升红);带对指纹 ⇒ 零错;指纹漂移 ⇒ ❌ 不匹配" bash -c '
+  e="env LAIXIN_KB=$1/kb LAIXIN_REPO=$1/repo"
+  a="$($e "$2" prompt-lint "$1/kb/4-开发层/prompt/ok.md" 2>&1)"; ! grep -q "❌" <<< "$a" || { echo "$a"; exit 1; }
+  b="$($e "$2" prompt-lint "$1/kb/4-开发层/prompt/nofp.md" 2>&1)"; grep -q "❌ 词表引用未带内容指纹" <<< "$b" || { echo "$b"; exit 2; }
+  c="$($e "$2" prompt-lint "$1/kb/4-开发层/prompt/drift.md" 2>&1)"; grep -q "❌ 内容指纹不匹配" <<< "$c"' _ "$TRS" "$LANE"
+printf '## 进行中(= 轨道占用)\n| 片甲 | A | prompt/drift.md 在飞 |\n## 排队(无裁定依赖)\n| 片乙 | B | 4-开发层/prompt/ok.md 待发 |\n## 已完成(今日)\n| 片丙 | A | prompt/nofp.md 已合 |\n' > "$TRS/table.md"
+t "prompt-rescan:只扫总表进行中/排队/验收中引用的 prompt(已完成节的 nofp 不扫),报出 drift 失准、ok 零失准,退出码随失准数" bash -c '
+  out="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" LAIXIN_TABLE="$1/table.md" "$2" prompt-rescan 2>&1)"; rc=$?
+  grep -q "扫 2 份 prompt,1 份有引用失准" <<< "$out" || { echo "$out"; exit 1; }
+  grep -q "❌ drift.md" <<< "$out" && ! grep -q "nofp.md" <<< "$out" && [ $rc -ne 0 ] || exit 2
+  printf "## 进行中\n| 片甲 | A | prompt/ok.md |\n" > "$1/t2.md"
+  out2="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" LAIXIN_TABLE="$1/t2.md" "$2" prompt-rescan 2>&1)"; [ $? -eq 0 ] && grep -q "扫 1 份 prompt,0 份有引用失准" <<< "$out2"' _ "$TRS" "$LANE"
+t "prompt-rescan --all:扫 prompt/ 目录近 N 天全部(含 nofp ⇒ 2 份失准)" bash -c '
+  out="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-rescan --all --days 1 2>&1)"; grep -q "扫 3 份 prompt,2 份有引用失准" <<< "$out"' _ "$TRS" "$LANE"
+rm -rf "$TRS"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then

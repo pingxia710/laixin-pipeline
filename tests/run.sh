@@ -3388,6 +3388,27 @@ t "prompt-lint 分支名:v02-<域>-<slug> 过;verify 前缀/旧式短名/大写�
 t "kickoff 卡:发车闸门第 7 条分支命名闸在,指向版本流卡 A-4 单点源" bash -c 'grep -q "^7\. \*\*分支命名闸" "$1/skills/laixin-kickoff/SKILL.md" && grep -q "版本流卡 A-4 为单点源" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TBN"
 
+# ── 验收回执末行分类 × 正文一致性自检(2026-08-23;实证=B5 第二次回执) ──────────────────────────
+TRC="$(mktemp -d)"; sed -n "/^receipt_consistency()/,/^}/p" "$LANE" > "$TRC/f.sh"
+printf '验收通道注入问题,不是候选代码的可复现缺陷。\n不要求开发轨因本回执改代码。\n【验收回执】打回 工程\n' > "$TRC/r1.md"
+printf '全量两轮 PASS。\n【验收回执】通过 v02-x abc1234 def5678\n' > "$TRC/r2.md"
+printf '问题 1:状态渲染缺失,可复现。\n【验收回执】打回 工程\n' > "$TRC/r3.md"
+printf '本轮复核:上轮打回的两条已改。\n【验收回执】通过 v02-x abc1234 def5678\n' > "$TRC/r4.md"
+printf '第二条仍然必须整改。\n【验收回执】通过 v02-x abc1234 def5678\n' > "$TRC/r5.md"
+printf '第 1 轮:缺陷两条。\n【验收回执】打回 工程\n第 2 轮复核:两条已改,全量 PASS。\n【验收回执】通过 v02-x abc1234 def5678\n' > "$TRC/r6.md"   # 多轮同文件(真库 B5 形态)
+t "receipt_consistency:末行打回+正文「不是候选代码的缺陷/不要求开发轨改」⇒ 报冲突;一致的通过/打回不报;「上轮打回」提及不误报;末行通过+正文「必须整改」⇒ 报" bash -c '
+  source "$1/f.sh"
+  grep -q "末行=打回,而正文自述非缺陷" <<< "$(receipt_consistency "$1/r1.md")" || exit 1
+  [ -z "$(receipt_consistency "$1/r2.md")" ] || exit 2
+  [ -z "$(receipt_consistency "$1/r3.md")" ] || exit 3
+  [ -z "$(receipt_consistency "$1/r4.md")" ] || { echo "上轮提及误报"; exit 4; }
+  grep -q "末行=通过,而正文含打回/整改语" <<< "$(receipt_consistency "$1/r5.md")" || exit 5
+  [ -z "$(receipt_consistency "$1/r6.md")" ] || { echo "多轮文件把上一轮末行当本轮打回语误报:$(receipt_consistency "$1/r6.md")"; exit 6; }' _ "$TRC"
+t "ev-loop 回执分支附一致性标注(⛔ 按末行自动转整改),verify 派单契约含落盘前自检句" bash -c '
+  e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"; grep -q "receipt_consistency \"\$f\"" <<< "$e" && grep -q "按正文人判 ⛔ 按末行自动转整改" <<< "$e" &&
+  v="$(sed -n "/^cmd_verify()/,/^}$/p" "$1")"; grep -q "落盘前自检(2026-08-23)" <<< "$v" && grep -q "末行分类须与正文实质一致" <<< "$v"' _ "$LANE"
+rm -rf "$TRC"
+
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'

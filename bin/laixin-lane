@@ -62,6 +62,8 @@
 #   laixin-lane prompt-down <片名>   回收写单窗(+清其 CDP 通道;件毕即收 ⛔ 常驻)
 #   laixin-lane peek-prompt <片名> [N]  看写单窗最近 N 行
 #   laixin-lane prompt-list          在跑写单窗清单
+#   laixin-lane codex-tier [normal|fast|status]
+#                                    11B/11C 新起 Codex 窗的用量档;默认 normal(普通),不改全局 Codex 设置
 #   laixin-lane chrome-up <a|b|c|dispatch|verify名|片名|m名> [--port N] [--dry]
 #                                    #42(2026-08-23 方案窗口裁 A):走查用 headless Chrome 由 **tmux 服务端托管**(窗 chrome-<端口>)⇒ 跨命令边界存活,
 #                                    ⛔ 在 shell 工具里裸起/nohup &(命令结束即被回收);端口按目标固定(与 BU_CDP_URL 同源),url 写回 ~/.laixin-events.d/cdp/<窗名>.url;
@@ -132,6 +134,20 @@ VERIFY_MODEL="${LAIXIN_VERIFY_MODEL:-claude-opus-5}"
 # claude 路径**原样保留**零行为变化,LAIXIN_VERIFY_ENGINE=claude 即回切;是否回切归创始人。
 # VERIFY_MODEL 只在 claude 引擎下参与起窗(doctor §6 的显示同步适配,⛔ 旧文案误导)。
 LANE_SWITCH_DIR="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}"   # 运行时开关的持久化目录(#75)
+# 11B/11C 的 Codex 用量档独立于 ~/.codex/config.toml：避免全局快速档静默带进流水线。
+# 优先级与其他开关一致：当次 env > 持久状态文件 > 普通档。只影响之后新起的 Codex 窗。
+codex_service_tier(){  # → default(普通) | priority(快速)
+  local tier="${LAIXIN_CODEX_SERVICE_TIER:-}"
+  if [ -z "$tier" ] && [ -s "$LANE_SWITCH_DIR/codex-service-tier" ]; then
+    tier="$(head -1 "$LANE_SWITCH_DIR/codex-service-tier" | tr -d '[:space:]')"
+  fi
+  case "${tier:-default}" in
+    normal|default) printf '%s' default ;;
+    fast|priority)  printf '%s' priority ;;
+    *) die "未知 Codex 用量档:$tier(只接受 normal|fast；可用 laixin-lane codex-tier status 查看)" ;;
+  esac
+}
+codex_service_tier_flag(){ printf ' -c service_tier="%s"' "$(codex_service_tier)"; }
 # ⚠️ 三个开关一律「env > 状态文件 > 默认」:环境变量只在当次命令有效,而**看门狗/boot 链重生窗口时不继承环境变量**
 #    (`:926` 逐字只带 LAIXIN_BOARD_SRC)⇒ 只用 env 切换的意图**活不过一次重生**,且回退是静默的、发生在无人值守的夜里,
 #    回退后一切照常运转只是账单/引擎变了 —— 成功与失败长得一模一样(2026-08-19 b7 在切换前核出,dispatch 三十六任自核确认)。
@@ -396,7 +412,7 @@ agent_launch_cmd(){  # <BU_NAME> <cdp端口> <引擎启动串> → stdout=完整
 codex_launch_cmd(){  # <BU_NAME> <cdp端口> <mcp关闭串>
   # ⚠️ 唯一调用点=cmd_verify(验收窗);开发轨 lane-a/b 走 cmd_up 里的 _launch,**不经过这里** ⇒
   #   改本函数只影响验收窗,这正是裁定射程(验收窗+一次性中继窗),⛔ 误伤在飞开发轨。
-  agent_launch_cmd "$1" "$2" "codex -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_EFFORT\" $3"
+  agent_launch_cmd "$1" "$2" "codex -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_EFFORT\"$(codex_service_tier_flag) $3"
 }
 # kimi 起窗形态与 lane 的 C 轨(cmd_up)**同一份**:`--auto` 全自主 ⛔ 交互提问(派工窗口无人应答)。
 # ⚠️ kimi 的 --prompt 与 --auto/--yolo **互斥**(实测 0.37.2 直接报错)⇒ 托管窗口只能走交互式常驻。
@@ -454,7 +470,7 @@ cmd_up() {
     # 只留 codegraph(开发可用)。
     # --with-mcp <名> 可按片放行(创始人:aliyun-readonly 是自家运维通道,部署片会用——默认关、选择性开)。
     local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
-    _launch="codex $_mcp_off"
+    _launch="codex$(codex_service_tier_flag) $_mcp_off"
   fi
   tmux send-keys -t "$(target "$lane")" "BU_NAME=\"lane-$lane\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" $_launch" C-m
   board "lane-$lane" "启动 $_eng @ $dir"
@@ -750,6 +766,28 @@ cmd_log() {
 cmd_status() {
   tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在(laixin-lane up a 创建)"; return 0; }
   tmux list-windows -t "$SESSION" -F '#{window_name}  #{pane_current_path}  [#{pane_current_command}]'
+}
+
+cmd_codex_tier(){
+  local mode="${1:-status}" tier tmp
+  [ "$#" -le 1 ] || die "codex-tier 只接受 normal|fast|status"
+  case "$mode" in
+    status) tier="$(codex_service_tier)" ;;
+    normal) tier="default" ;;
+    fast)   tier="priority" ;;
+    *) die "codex-tier 只接受 normal|fast|status" ;;
+  esac
+  if [ "$mode" != "status" ]; then
+    mkdir -p "$LANE_SWITCH_DIR" || die "无法创建 Codex 用量档开关目录:$LANE_SWITCH_DIR"
+    tmp="$LANE_SWITCH_DIR/.codex-service-tier.new.$$"
+    printf '%s\n' "$tier" > "$tmp" || die "无法写入 Codex 用量档开关:$tmp"
+    mv -f "$tmp" "$LANE_SWITCH_DIR/codex-service-tier" || { rm -f "$tmp"; die "无法更新 Codex 用量档开关"; }
+  fi
+  case "$tier" in
+    default)  echo "11B/11C Codex 用量档：普通(default)" ;;
+    priority) echo "11B/11C Codex 用量档：快速(priority，1.5x)" ;;
+  esac
+  echo "只影响之后新起的 Codex 窗；正在运行的窗口不会被中断。"
 }
 
 cmd_attach() {
@@ -4856,7 +4894,7 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
   local launch gdef="—"
   if [ "$TOOL_ENGINE" = "codex" ]; then
-    launch="$(agent_launch_cmd "$bu" "$port" "codex $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
+    launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
     gdef="$(codex_global_default 2>/dev/null || echo '?')"
   else
     # 🔴 模型串**必须带引号**(2026-08-23 首火实撞,shell 六发第七发):`claude-fable-5[1m]` 的 `[1m]`
@@ -5099,7 +5137,7 @@ EOF
   else
     local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
     # #164:relay-once 的 codex 用**独立口径**(⛔ codex_launch_cmd 的 CODEX_MODEL——那是验收窗的)
-    tmux send-keys -t "$SESSION:$w" "$(agent_launch_cmd "$bu" "$port" "codex -m ${RO_CODEX_MODEL:-$RELAY_ONCE_CODEX_MODEL} -c model_reasoning_effort=\"$RELAY_ONCE_CODEX_EFFORT\" $_mcp_off")" C-m
+    tmux send-keys -t "$SESSION:$w" "$(agent_launch_cmd "$bu" "$port" "codex -m ${RO_CODEX_MODEL:-$RELAY_ONCE_CODEX_MODEL} -c model_reasoning_effort=\"$RELAY_ONCE_CODEX_EFFORT\"$(codex_service_tier_flag) $_mcp_off")" C-m
     vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-ro $item 40"
   fi
   sleep 1
@@ -5220,7 +5258,7 @@ cmd_mup() {
   local bu port; bu="m$(printf '%s' "$w" | cksum | awk '{print $1}')"; port="$(cdp_port_verify "$w")"
   local gdef; gdef="$(codex_global_default)"
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
-  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
+  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
   local report="$KB/4-开发层/记录/M轨-${item}-报告.md"
   local msg; msg="$(cat <<EOF
 你是 laixin 开发流水线的**机动窗**(M 轨一次性应召窗;引擎=codex,配置=与 A/B 开发轨同源吃 config.toml 全局默认——本窗起窗自证:${gdef};由派工窗口按件起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
@@ -5446,7 +5484,7 @@ cmd_prompt_up() {
   local w; w="$(pwin "$item")"
   local bu port; bu="p$(printf '%s' "$w" | cksum | awk '{print $1}')"; port="$(cdp_port_verify "$w")"
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
-  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex -m $PROMPT_LANE_MODEL -c model_reasoning_effort='\"$PROMPT_LANE_EFFORT\"'$_mcp_off")"
+  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex -m $PROMPT_LANE_MODEL -c model_reasoning_effort='\"$PROMPT_LANE_EFFORT\"'$(codex_service_tier_flag)$_mcp_off")"
   local report="$KB/4-开发层/记录/写单-${item}-报告.md"
   local promptf="$KB/4-开发层/prompt/来信平台-${item}开发prompt.md"
   local msg; msg="$(cat <<EOF
@@ -6834,6 +6872,7 @@ case "${1:-}" in
   quota)          shift; cmd_quota "$@" ;;           # 两账号额度 + 派工席账号 + 哨兵线
   quota-tick)     shift; quota_sentinel_tick; echo "哨兵已跑一拍(到线才有输出:WD 日志/看板/桌面通知);已提醒登记:$(tr '\n' ' ' < "$QUOTA_ALERTED" 2>/dev/null || echo 无)" ;;   # 手动跑一拍(演练/换阈值后验证;与看门狗每 5 分钟那拍同一函数)
   account-switch) shift; cmd_account_switch "$@" ;;  # 按剧本切账号(人/受授权者手跑;哨兵 ⛔ 调用)
+  codex-tier) shift; cmd_codex_tier "$@" ;;
   handover-mode)  shift; cmd_handover_mode "$@" ;;   # 交班形态判据:同账号 or 跨账号(⛔ 靠推定)
   dispatch) shift; cmd_dispatch "$@" ;;
   peek-d)   shift; cmd_peekd "$@" ;;

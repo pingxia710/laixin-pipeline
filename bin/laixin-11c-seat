@@ -76,6 +76,19 @@ READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
 #   > <开关目录>/claude-launcher(与 laixin-lane **同一个**开关:创始人切账号时 11C 跟着切)> claude(与 laixin-lane 同默认)。
 #   值=PATH 上的包装器名(claude→~/.claude-official,claude-b→~/.claude-b;两包装器逐字只差配置目录一行),不在 PATH 即拒起。
 SWITCH_DIR="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}"
+# 与 11B 共用的 Codex 用量档：env > 状态文件 > 普通档。只影响之后新起的席位。
+codex_service_tier(){
+  local tier="${LAIXIN_CODEX_SERVICE_TIER:-}"
+  if [ -z "$tier" ] && [ -s "$SWITCH_DIR/codex-service-tier" ]; then
+    tier="$(head -1 "$SWITCH_DIR/codex-service-tier" | tr -d '[:space:]')"
+  fi
+  case "${tier:-default}" in
+    normal|default) printf '%s' default ;;
+    fast|priority)  printf '%s' priority ;;
+    *) die "未知 Codex 用量档:$tier(只接受 normal|fast)" ;;
+  esac
+}
+codex_service_tier_flag(){ printf ' -c service_tier="%s"' "$(codex_service_tier)"; }
 claude_launcher_11c(){  # → stdout="<入口名> <来源说明>"
   local v src
   if [ -n "${LAIXIN_11C_CLAUDE_LAUNCHER:-}" ]; then v="$LAIXIN_11C_CLAUDE_LAUNCHER"; src="env LAIXIN_11C_CLAUDE_LAUNCHER"
@@ -114,6 +127,8 @@ usage(){
   sol     codex + gpt-5.6-sol    同上;显式 xhigh(创始人 2026-08-23 直令「书记员的模型差点意思了,后面 11C 的
           书记员用 5.6-sol」;实测横幅自报 `gpt-5.6-sol xhigh fast` ⇒ 默认已是 xhigh,仍显式带 ⛔ 依赖默认)
           ⚠️ luna 默认档只有 medium,本脚本对 luna 一律显式带 max ⛔ 依赖默认
+
+全部 Codex 席位的用量档：`laixin-lane codex-tier normal|fast|status`（默认普通；不影响已运行席位）。
 
 议题暂存目录必须在 ~/.laixin-11c/ 下(白名单根，realpath 解析后校验，防 ../ 逃逸)。
 USAGE
@@ -361,7 +376,7 @@ cmd_start(){
       fi
       cwd="$wd"
       _mcp_off="$(codex_mcp_off_flags)"
-      launch="codex$_mcp_off"
+      launch="codex$(codex_service_tier_flag)$_mcp_off"
       ;;
     luna)
       # 调研席/批量席配型(创始人 2026-08-21 直令「用 luna max」「错配的那个 sol 改成 luna max」)
@@ -378,13 +393,13 @@ cmd_start(){
       fi
       cwd="$wd"
       _mcp_off="$(codex_mcp_off_flags)"
-      launch="codex -m gpt-5.6-luna -c model_reasoning_effort='\"max\"'$_mcp_off"
+      launch="codex -m gpt-5.6-luna -c model_reasoning_effort='\"max\"'$(codex_service_tier_flag)$_mcp_off"
       ;;
     sol)
       # 书记员/记录席配型(创始人 2026-08-23 直令「书记员的模型差点意思了,后面 11C 的书记员用 5.6-sol」)
       # ⚠️ 实测(隔离会话真起)横幅自报 `gpt-5.6-sol xhigh fast` ⇒ 默认档已是 xhigh;仍**显式带**
       #    ⛔ 依赖默认(luna 那次正是默认 medium 咬人)。
-      launch="codex -m gpt-5.6-sol -c model_reasoning_effort='\"xhigh\"'$_mcp_off"
+      launch="codex -m gpt-5.6-sol -c model_reasoning_effort='\"xhigh\"'$(codex_service_tier_flag)$_mcp_off"
       ;;
   esac
 

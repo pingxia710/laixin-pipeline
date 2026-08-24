@@ -42,6 +42,19 @@ set -Eeuo pipefail
 SESSION="${LAIXIN_11C_SESSION:-laixin-11c}"
 WIN="${LAIXIN_11C_DISPATCH_WIN:-dispatch-11c}"
 SWITCH_DIR="${LAIXIN_SWITCH_DIR:-$HOME/.laixin-lane-switch}"
+# 与 11B 共用的 Codex 用量档：env > 状态文件 > 普通档。只影响之后新起的书记员窗。
+codex_service_tier(){
+  local tier="${LAIXIN_CODEX_SERVICE_TIER:-}"
+  if [ -z "$tier" ] && [ -s "$SWITCH_DIR/codex-service-tier" ]; then
+    tier="$(head -1 "$SWITCH_DIR/codex-service-tier" | tr -d '[:space:]')"
+  fi
+  case "${tier:-default}" in
+    normal|default) printf '%s' default ;;
+    fast|priority)  printf '%s' priority ;;
+    *) die "未知 Codex 用量档:$tier(只接受 normal|fast)" ;;
+  esac
+}
+codex_service_tier_flag(){ printf ' -c service_tier="%s"' "$(codex_service_tier)"; }
 ALLOW_ROOT="${LAIXIN_11C_ALLOW_ROOT:-$HOME/.laixin-11c}"
 SETTINGS="${LAIXIN_11C_DISPATCH_SETTINGS:-$ALLOW_ROOT/dispatch-settings.json}"
 READY_TIMEOUT="${LAIXIN_11C_READY_TIMEOUT:-150}"
@@ -87,6 +100,7 @@ usage(){
   --engine  书记员引擎:sol 默认(codex gpt-5.6-sol xhigh——创始人 2026-08-23「后面 11C 的书记员用
             5.6-sol」;MCP 默认全关仅放 exa)/ claude 第二(通道走与机务窗同一条开关链)
   --dir     书记员 cwd,默认 $HOME(codex 信任框 fail-closed:未信任目录会拒起并点名,⛔ 自动应答)
+  Codex 用量档：laixin-lane codex-tier normal|fast|status（默认普通；不影响已运行窗口）
 
 谁来拉:方案窗口(圆桌主持)拉机务窗(up);书记员窗由机务窗按主持点名起(scribe-up)。
 设立依据=创始人 2026-08-23 分窗令:laixin:dispatch 专管 11B,11C 机务(起收席/书记员对接/搬运/
@@ -355,7 +369,7 @@ cmd_scribe_up(){
   if [ "$engine" = "sol" ]; then
     read -r _model _msrc <<< "$(scribe_model_11c)"
     local _mcp_off; _mcp_off="$(codex_mcp_off_flags)"
-    launch="codex -m ${_model} -c model_reasoning_effort='\"${SCRIBE_EFFORT}\"'${_mcp_off}"
+    launch="codex -m ${_model} -c model_reasoning_effort='\"${SCRIBE_EFFORT}\"'$(codex_service_tier_flag)${_mcp_off}"
   else
     local _cl _clsrc
     read -r _cl _clsrc <<< "$(claude_launcher_11c)"

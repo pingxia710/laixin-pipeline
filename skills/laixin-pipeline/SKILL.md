@@ -24,7 +24,7 @@ description: laixin开发流水线——五窗口拓扑下派工窗口与验收�
 > 🔧 **遇到工具/流水线问题(11B),或 11C 工具侧的活?** —— 它是**第四条开发轨**,由 **`laixin:dispatch`(管 11B 的那个派工窗口)**按件拉起
 > (⚠️ **`dispatch-11c` 在工具层被硬禁 `tool-up`,这是对的 ⛔ 开口子**——它的工具需求走归口点名给 11B 归口):
 > `git -C ~/Developer/laixin-pipeline worktree add <路径> main` → `laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <路径>`
-> (**引擎 codex 默认 / claude 第二**,`--engine codex|claude`;codex 与开发轨同源吃全局默认,claude 钉模型+工具层禁令;**派工窗口写 prompt**;开分支 ⛔ 提交 main;交付 `记录/11B工具件-<件名>-报告.md` 末行【工具件完成】⇒ events 投指针;件毕 `laixin-lane tool-down <件名>`)。
+> (**引擎 codex 默认 / claude 第二**,`--engine codex|claude`;codex 与开发轨同源吃全局模型默认、用量档由 `laixin-lane codex-tier normal|fast|status` 统一控制（默认普通）,claude 钉模型+工具层禁令;**派工窗口写 prompt**;开分支 ⛔ 提交 main;交付 `记录/11B工具件-<件名>-报告.md` 末行【工具件完成】⇒ events 投指针;件毕 `laixin-lane tool-down <件名>`)。
 > **写 prompt 前先读角色卡**(射程与边界):`~/Obsidian/项目入口/laixin开发流水线/知识库/wiki/11B-11C开发维护角色卡.md`。
 > ⚠️ 该线**只维护 11B/11C** ⛔ 产品代码;⛔ 起验收窗 ⛔ 进 M1 台账。
 
@@ -43,6 +43,7 @@ laixin-lane peek a 30                      # 抽查在飞状态;一律 ≥20 行
 LAIXIN_WINDOW=派工窗口 laixin-lane log "合并 客服-1 <commit> 195绿"   # ← 派工窗口记看板用 log
                                            #   vlog 是验收窗口专用(来源固定标"验收窗口"),你用了会记错来源
 laixin-lane status / attach / down <a|b>
+laixin-lane codex-tier normal|fast|status    # 11B/11C 新起 Codex 窗的用量档：默认 normal(普通)；不影响已运行窗口
 
 laixin-lane verify-from "<报告>" --prompt P --to dispatch   # 一步式进验收(解析末行,防手抄 hash 错)
 laixin-lane next-migration / next-worktree # 发车前占号校准(未合并分支/未提交文件都占号)

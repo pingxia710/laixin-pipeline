@@ -96,6 +96,22 @@ echo "== 4. 配置外置(env 覆盖生效,默认不变) =="
 tout "SESSION 可覆盖" "不存在" env LAIXIN_SESSION=lx-test-nonexist "$LANE" status
 tout "ctx 分母可覆盖" "500,000" env LAIXIN_CTX_WINDOW=500000 "$LANE" ctx 3683f143
 
+TIER_SW="$(mktemp -d)"
+tout "Codex 用量档默认普通" "普通(default)" env LAIXIN_SWITCH_DIR="$TIER_SW" "$LANE" codex-tier status
+tout "Codex 用量档可持久切快速" "快速(priority，1.5x)" env LAIXIN_SWITCH_DIR="$TIER_SW" "$LANE" codex-tier fast
+t "Codex 快速档写入统一开关文件" test "$(cat "$TIER_SW/codex-service-tier")" = priority
+tout "env 普通档覆盖持久快速档" "普通(default)" env LAIXIN_SWITCH_DIR="$TIER_SW" LAIXIN_CODEX_SERVICE_TIER=normal "$LANE" codex-tier status
+tfail "Codex 用量档非法值拒绝(⛔ 静默回退普通)" "未知 Codex 用量档" env LAIXIN_SWITCH_DIR="$TIER_SW" LAIXIN_CODEX_SERVICE_TIER=bad-tier "$LANE" codex-tier status
+t "Codex 用量档覆盖全部 11B/11C 起窗入口" bash -c '
+  lane="$1"; seat="$2"; dispatch="$3"
+  for fn in codex_launch_cmd cmd_up cmd_tool_up cmd_mup cmd_relay_once cmd_prompt_up; do
+    body="$(sed -n "/^${fn}()/,/^}/p" "$lane")"
+    grep -qF "codex_service_tier_flag" <<< "$body" || exit 1
+  done
+  [ "$(grep -cF "codex_service_tier_flag" "$seat")" -ge 4 ] || exit 1
+  [ "$(grep -cF "codex_service_tier_flag" "$dispatch")" -ge 2 ]' _ "$LANE" "$(dirname "$LANE")/laixin-11c-seat" "$(dirname "$LANE")/laixin-11c-dispatch"
+rm -rf "$TIER_SW"
+
 echo "== 4b. 模型钉死(起窗命令不继承全局默认) =="
 tout "起窗命令引用 VERIFY_MODEL" 'model \$VERIFY_MODEL' grep -- '--model' "$LANE"
 tout "起窗命令引用 DISPATCH_MODEL" 'model \$DISPATCH_MODEL' grep -- '--model' "$LANE"
@@ -2126,7 +2142,7 @@ t "#60②:up c --with-mcp 被拒时零 tmux 副作用" bash -c '! tmux has-sessi
 t "#60②:cmd_up 起动命令分引擎(kimi --auto -m 钉死 / codex MCP 关闭原样)" bash -c '
   body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
   grep -q -- "\$KIMI_BIN\\\\\" --auto -m \$KIMI_MODEL" <<< "$body" || grep -q -- "--auto -m \$KIMI_MODEL" <<< "$body" || exit 1
-  grep -q "codex \$_mcp_off" <<< "$body"' "$LANE"
+  grep -q 'codex$(codex_service_tier_flag) $_mcp_off' <<< "$body"' "$LANE"
 KM="$(bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
 tout "#60②:kimi 模型默认钉 kimi-code/k3" "kimi-code/k3" echo "$KM"
 KM2="$(env LAIXIN_KIMI_MODEL=kimi-code/k4 bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
@@ -2909,8 +2925,10 @@ t "未知子命令:告警走 stderr ⛔ stdout(混进 stdout 会被当成输出�
 # 「没有任何 SendMessage / ListAgents 之类的工具」)⇒ 与 codex 同档,出站 relay-msg、
 # 入站 dmsg/events,通信面已闭合,kimi 不需要额外机制。
 VKM="$(mktemp -d)"; VKMF="$VKM/fn.sh"
-{ echo 'KIMI_BIN=/k/kimi; KIMI_MODEL=k3; CODEX_MODEL=luna-probe; CODEX_EFFORT=max-probe';
+{ echo 'KIMI_BIN=/k/kimi; KIMI_MODEL=k3; CODEX_MODEL=luna-probe; CODEX_EFFORT=max-probe; LANE_SWITCH_DIR=/nonexistent-codex-tier-test';
   sed -n "/^agent_launch_cmd()/,/^}$/p" "$LANE";
+  sed -n "/^codex_service_tier()/,/^}$/p" "$LANE";
+  sed -n "/^codex_service_tier_flag()/,/^}$/p" "$LANE";
   sed -n "/^codex_launch_cmd()/,/^}$/p" "$LANE";
   sed -n "/^kimi_launch_cmd()/,/^}$/p" "$LANE"; } > "$VKMF"
 tout "kimi:构造串走同一注入形态(⛔ 各写一套)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" "/k/kimi" --auto -m k3' bash -c '
@@ -2918,7 +2936,7 @@ tout "kimi:构造串走同一注入形态(⛔ 各写一套)" 'BU_NAME="d" BU_CDP
 # ⚠️ 原判据是「与引入 kimi 前逐字一致」——该前提已被 2026-08-22 创始人配档裁定推翻(验收窗须显式带
 #    模型与推理档)⇒ 判据改守**语义**:注入形态仍与 kimi 同源 + 模型档显式取自变量(⛔ 硬编码、⛔ 吃 config.toml)。
 #    测试值用可辨识的 luna-probe/max-probe:若实现改成硬编码,此断言会因取不到探针值而变红。
-tout "codex:构造串显式带模型档且取自变量(配档裁定后的新判据)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" codex -m luna-probe -c model_reasoning_effort="max-probe" --x' bash -c '
+tout "codex:构造串显式带模型档与普通用量档且取自变量" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" codex -m luna-probe -c model_reasoning_effort="max-probe" -c service_tier="default" --x' bash -c '
   source "'"$VKMF"'"; codex_launch_cmd d 9 "--x"'
 # ⛔ 在这里再写一条"未知引擎被拒":既有 #67 那条已覆盖,且它带 LAIXIN_SESSION 隔离;
 # 照抄时漏掉隔离 ⇒ 会在**真实** tmux 会话里跑起窗命令(2026-08-19 自撞,当轮发现并撤回)。
@@ -3787,7 +3805,7 @@ tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M
 tfail "#165 ⛔ 拿产品仓 worktree 起工具件(本线只维护 11B/11C)" "不是\*\*工具仓\*\*的 worktree" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$HOME/来信平台"
 t "#165 起动串与开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd(那条钉 luna/sol,是验收窗与中继件的射程)" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
-  grep -q "agent_launch_cmd .* \"codex " <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
+  grep -qF '"'"'codex$(codex_service_tier_flag)'"'"' <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
 # ⚠️ 判据必须**剥注释**再扫:本函数注释里有意写着反引号包的样例(`claude-fable-5[1m]` 等),
 #   而互指注释是本仓惯例 ⇒ 该适配的是判据(今日第二次撞同族,前一次是 dry_win_clash 的 ensure_session)。
 t "#165 点名指令(**代码部分**)零反引号〔病灶:反引号在 $(cat <<EOF) 里被求值,首火实撞 run.sh: command not found + grep usage〕" bash -c '

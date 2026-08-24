@@ -2142,7 +2142,7 @@ t "#60②:up c --with-mcp 被拒时零 tmux 副作用" bash -c '! tmux has-sessi
 t "#60②:cmd_up 起动命令分引擎(kimi --auto -m 钉死 / codex MCP 关闭原样)" bash -c '
   body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
   grep -q -- "\$KIMI_BIN\\\\\" --auto -m \$KIMI_MODEL" <<< "$body" || grep -q -- "--auto -m \$KIMI_MODEL" <<< "$body" || exit 1
-  grep -q 'codex$(codex_service_tier_flag) $_mcp_off' <<< "$body"' "$LANE"
+  grep -qF "codex\$(codex_service_tier_flag) \$_mcp_off" <<< "$body"' "$LANE"
 KM="$(bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
 tout "#60②:kimi 模型默认钉 kimi-code/k3" "kimi-code/k3" echo "$KM"
 KM2="$(env LAIXIN_KIMI_MODEL=kimi-code/k4 bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
@@ -2484,6 +2484,7 @@ t "#130 tmux 内活窗(pane 非 shell)⇒ 直测判活不报〔应召机务窗�
   awk "/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl2-fn.sh; source /tmp/lx-sl2-fn.sh
   tmux kill-session -t lxslt-$$ 2>/dev/null
   tmux new-session -d -s lxslt-$$ -n live-seat-zz -x 40 -y 8 "sleep 25"   # -n 显式命名=tmux 自动关 automatic-rename(rename-window 会被自动改名顶回)
+  sleep 1   # 等 tmux 已从登录 shell 切到目标进程，⛔ 把启动瞬间误判为死席
   printf "%s\\n" "| **测试机务窗** | **\`live-seat-zz\`**(**在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl2-reg.md
   out="$(LAIXIN_SEATLIVE_TMUX_SESSIONS=lxslt-$$ seat_liveness /tmp/lx-sl2-reg.md)"
   tmux kill-session -t lxslt-$$ 2>/dev/null
@@ -2703,7 +2704,6 @@ t "relay-once:claude 分支钉 RELAY_MODEL + RELAY_ONCE_DENY + vwait_ready(与�
 #   (⛔ 复用 codex_launch_cmd 的 CODEX_MODEL——那同时是**验收窗**的模型,动它会误伤验收)。
 #   ⇒ 断言随之更新 **⛔ 删**:仍钉「显式配型 + 就绪自证」,只把配型来源换成 RELAY_ONCE_CODEX_MODEL。
 t "relay-once:codex 分支显式配型(独立口径 RELAY_ONCE_CODEX_MODEL)+ vwait_ready_codex 就绪自证" bash -c 'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "RELAY_ONCE_CODEX_MODEL" <<< "$b" && grep -q "vwait_ready_codex" <<< "$b"' _ "$LANE"
-  'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; grep -q "codex_launch_cmd \"\$bu\"" <<< "$b" && grep -q "vwait_ready_codex \"\$w\"" <<< "$b"' _ "$LANE"
 t "relay-once:引擎校验在 ensure_session 之前(#60① 一课)" bash -c \
   'b="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"; c="$(grep -n "未知一次性中继引擎" <<< "$b" | head -1 | cut -d: -f1)"; e="$(grep -n "^  ensure_session" <<< "$b" | head -1 | cut -d: -f1)"; [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ]' _ "$LANE"
 t "relay-once:点名指令含回复契约/⛔ dmsg 注入/件毕即收/rdown 四要件" bash -c \
@@ -2928,7 +2928,7 @@ VKM="$(mktemp -d)"; VKMF="$VKM/fn.sh"
 { echo 'KIMI_BIN=/k/kimi; KIMI_MODEL=k3; CODEX_MODEL=luna-probe; CODEX_EFFORT=max-probe; LANE_SWITCH_DIR=/nonexistent-codex-tier-test';
   sed -n "/^agent_launch_cmd()/,/^}$/p" "$LANE";
   sed -n "/^codex_service_tier()/,/^}$/p" "$LANE";
-  sed -n "/^codex_service_tier_flag()/,/^}$/p" "$LANE";
+  grep '^codex_service_tier_flag(){' "$LANE";
   sed -n "/^codex_launch_cmd()/,/^}$/p" "$LANE";
   sed -n "/^kimi_launch_cmd()/,/^}$/p" "$LANE"; } > "$VKMF"
 tout "kimi:构造串走同一注入形态(⛔ 各写一套)" 'BU_NAME="d" BU_CDP_URL="http://127.0.0.1:9" "/k/kimi" --auto -m k3' bash -c '
@@ -3037,7 +3037,12 @@ tfail "11c-trust:路径含引号拒绝(TOML 注入面)" "注入面" env LAIXIN_C
 tfail "11c-trust:配置不存在拒绝且不代建" "不存在" env LAIXIN_CODEX_CONFIG="$TTD/没有.toml" "$T11C" "$TDIR"
 tout "11c-trust:--check 未信任报 1" "未信任" bash -c 'LAIXIN_CODEX_CONFIG="'"$TCFG"'" "'"$T11C"'" --check "'"$TDIR"'"; true'
 tout "11c-trust:预写成功且出 before/after diff" "before/after diff" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" "$TDIR"
-t "11c-trust:写后 TOML 仍可解析且键在" python3 -c 'import tomllib,sys; d=tomllib.load(open(sys.argv[1],"rb")); assert sys.argv[2] in d["projects"]' "$TCFG" "$TDIR"
+t "11c-trust:写后 TOML 可解析或无解析器时键在" bash -c '
+  if python3 -c "import tomllib" >/dev/null 2>&1; then
+    python3 -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],\"rb\")); assert sys.argv[2] in d[\"projects\"]" "$1" "$2"
+  else
+    grep -qF "[projects.\"$2\"]" "$1"
+  fi' _ "$TCFG" "$TDIR"
 tout "11c-trust:二次运行幂等零写盘(键值判据 ⛔ mtime)" "零写盘" env LAIXIN_CODEX_CONFIG="$TCFG" "$T11C" "$TDIR"
 t "11c-trust:幂等未产生重复表(重复表=TOML 致命)" bash -c '[ "$(grep -cF "[projects.\"'"$TDIR"'\"]" "'"$TCFG"'")" = "1" ]'
 t "11c-trust:既有条目(/Users/pingxia)原样未动" bash -c 'grep -qF "[projects.\"/Users/pingxia\"]" "'"$TCFG"'"'

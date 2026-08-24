@@ -3437,7 +3437,7 @@ if not os.path.isfile(card) or os.path.getsize(card) == 0:
 c = io.open(card, encoding='utf-8').read()
 cs = strip(c)
 n = len(c.rstrip('\n').split('\n'))
-if n > 250: errs.append('卡 %d 行 > 250' % n)
+if n > 200: errs.append('卡 %d 行 > 200' % n)   # 2026-08-24 整改轮主持裁:上限 250 -> 200
 if 'name: laixin-plan-window' not in c: errs.append('frontmatter name 不对')
 if 'laixin-version-flow laixin-plan-window' not in io.open(lane, encoding='utf-8').read():
     errs.append('doctor §1 落位清单未含 laixin-plan-window')
@@ -3471,12 +3471,50 @@ for kind, pb in probes:
     if len(pb) < 6: errs.append('判据串过短无分辨力:%r' % pb); continue
     if pb not in src: errs.append('阳性对照失败(%s 语料里找不到 %r)——抽取或去噪写错,判红' % (kind, pb))
     if pb in tgt: errs.append('卡内抄了条文正文(%s):%r' % (kind, pb))
+# ── 整改轮绊线(2026-08-24 干跑 #1 十七条里可机器判的那几条)──────
+# 病灶级:下面每一条在修复被回退时都会变红 ⛔ 只测字串在不在。
+kb4 = os.path.expanduser('~/Obsidian/项目入口/来信平台/知识库/4-开发层')
+i3 = c.find('### ③ 读注册表你那一行')
+i4 = c.find('### ④ 自更注册表你那一行')
+if i3 < 0 or i4 < 0:
+    errs.append('C2:找不到 ③读注册表 / ④自更注册表 两步标题')
+elif i3 > i4:
+    errs.append('C2:③ 读注册表排在了 ④ 自更之后 = 步序死锁原样重现')
+WANT = ((u'起手式六步', 'C2 步数'),
+        (u'N = M+1', 'C1 任次取法'),
+        (u'sessionId', 'C11 前8位取处'),
+        (u'自证是「证」', 'C3 名字不符分支'),
+        (u'名字裸写', 'C4 看板名字形态'),
+        (u'已见·归属=', 'C5 警告认领动作'),
+        (u'改写同一行', 'C6/C7 注册表行处置'),
+        (u'同日多份仍不定', 'C8/C9 快照选型'),
+        (u'候方案窗口裁', 'C10 总表 grep 关键词'),
+        (u'书写形态四条', 'C15 LAIXIN_WINDOW 第四条'),
+        (u'先落盘成文件再派', 'C17 scribe-up 前置'),
+        (u'卡自身步序死锁', '第六族'))
+for want, why in WANT:
+    if want not in c:
+        errs.append('整改项回退(%s):卡内找不到 %r' % (why, want))
+s6 = c[c.find('## 六 已发生过的失败'):]
+rows6 = [l for l in s6.split('\n')
+         if l.startswith('| ') and not l.startswith('| 族 ') and not l.startswith('|---')]
+if len(rows6) < 6:
+    errs.append('§六 失败样本表只有 %d 行(期望 >= 6 族)' % len(rows6))
+if not os.path.isdir(kb4):
+    print('知识库 4-开发层读不到(失效朝红 ⛔ 跳过):', kb4); sys.exit(1)
+for r in rows6:
+    mds = re.findall(r'`([^`]+\.md)`', r)
+    if not mds:
+        errs.append('§六 该行无真实文件名锚(⛔ 简称):%s' % r[:36]); continue
+    for m in mds:
+        if not os.path.isfile(os.path.join(kb4, m)):
+            errs.append('§六 锚指向盘上不存在的文件:%s' % m)
 if errs:
     for e in errs: print('❌', e)
     sys.exit(1)
-print('plan-window 绊线全过:%d 行 · 判据串 %d 条(raw/strip 各半)阳性命中且卡内 0 命中' % (n, len(probes)))
+print('plan-window 绊线全过:%d 行 · 判据串 %d 条(raw/strip 各半)阳性命中且卡内 0 命中 · 整改绊线 %d 条全存 · §六 %d 族锚均指盘上真实文件' % (n, len(probes), len(WANT), len(rows6)))
 PLANWIN_PY
-t "plan-window:卡在仓 + doctor §1 清单含它 + 零条文复制(判据串双向验证)+ 零项目状态 + ≤250 行" \
+t "plan-window:卡在仓 + doctor §1 清单含它 + 零条文复制(判据串双向验证)+ 零项目状态 + ≤200 行 + 整改十七条不可回退" \
   python3 /tmp/lx-planwin-lint.py "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TDB"
 

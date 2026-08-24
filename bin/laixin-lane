@@ -2134,7 +2134,7 @@ cmd_doctor() {
 
   echo "== 1. skill 落位(单点源=~/.codex/skills,其余必须是软链) =="
   local eff="${CLAUDE_CONFIG_DIR:-$HOME/.claude-official}"
-  for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow; do   # version-flow 2026-08-23 收敛入仓(此前两处真目录各自漂移:codex 侧落后 claude 侧 12 行)
+  for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow laixin-plan-window; do   # version-flow 2026-08-23 收敛入仓(此前两处真目录各自漂移:codex 侧落后 claude 侧 12 行);plan-window 2026-08-24 新增(方案窗口/11C 主持卡)。清单是**手挑的流水线核心卡** ⛔ 读成「仓里 skills/ 全集」——deploy 与 opc-business 不在起窗注入路径上,故不入本检
     if [ ! -f "$HOME/.codex/skills/$sk/SKILL.md" ]; then bad "$sk 单点源缺失"; continue; fi
     if [ -L "$eff/skills/$sk" ]; then ok "$sk 生效目录已软链"
     elif [ -d "$eff/skills/$sk" ]; then bad "$sk 在生效目录是**实体副本**(会与单点源漂移)"

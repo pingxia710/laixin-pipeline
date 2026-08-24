@@ -3417,6 +3417,67 @@ t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kicko
   grep -q "^### 1-ter. 关系判据的样本值必须能让「通过」与「失败」分开" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "version-flow:仓库单点源在(skills/laixin-version-flow/SKILL.md)且 doctor §1 落位清单含它" bash -c '
   [ -s "$1/skills/laixin-version-flow/SKILL.md" ] && grep -q "for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow" "$2"' _ "$(cd "$(dirname "$0")/.." && pwd)" "$LANE"
+
+# ── plan-window 绊线(2026-08-24 11B 工具件「方案窗口skill」)──────────────────────────────
+# 夹具落临时文件再跑 ⛔ source <(…)/内联多层引号(bash 3.2 第六发)。
+# 🔴 探针**双向验证**:每条判据串必须在权威档里命中 ≥1(阳性对照)且在卡里命中 0(阴性)——
+#    只测「卡里 0 命中」会在抽取写错时全绿,那正是本卡自己写死要防的两态同形;
+# 🔴 **失效方向朝红**(检查器三约束②):权威档读不到 / 抽不出条目 ⇒ 直接红,⛔ 静默跳过当绿。
+cat > /tmp/lx-planwin-lint.py <<'PLANWIN_PY'
+import io, os, re, sys
+repo = sys.argv[1]
+card = os.path.join(repo, 'skills/laixin-plan-window/SKILL.md')
+lane = os.path.join(repo, 'bin/laixin-lane')
+flow = os.path.expanduser('~/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-开发协作流程.md')
+NOISE = r'[*`🔴⚠️⛔⭐🔑⚖️📌\s]'
+strip = lambda t: re.sub(NOISE, '', t)
+errs = []
+if not os.path.isfile(card) or os.path.getsize(card) == 0:
+    print('卡不在或为空:', card); sys.exit(1)
+c = io.open(card, encoding='utf-8').read()
+cs = strip(c)
+n = len(c.rstrip('\n').split('\n'))
+if n > 250: errs.append('卡 %d 行 > 250' % n)
+if 'name: laixin-plan-window' not in c: errs.append('frontmatter name 不对')
+if 'laixin-version-flow laixin-plan-window' not in io.open(lane, encoding='utf-8').read():
+    errs.append('doctor §1 落位清单未含 laixin-plan-window')
+st = [x for x in ('第二十六任', 'dd33beb', '5959042', '候创始人') if x in c]
+if st: errs.append('卡内出现项目状态串:%s' % st)
+if not os.path.isfile(flow):
+    print('权威档读不到(失效朝红 ⛔ 跳过):', flow); sys.exit(1)
+raw = io.open(flow, encoding='utf-8').read()
+lines = raw.split('\n')
+rawc, flows = raw, strip(raw)
+def sect(title):
+    a = next((i for i, l in enumerate(lines) if l.startswith('### ' + title)), None)
+    if a is None: return []
+    b = next((j for j in range(a + 1, len(lines)) if l_is_head(lines[j])), len(lines))
+    return lines[a + 1:b]
+def l_is_head(l): return l.startswith('### ') or l.startswith('#### ')
+probes = []
+for title, lo, hi in (('方案窗口纪律', 1, 11), ('方案窗口交班卡', 0, 7)):
+    got = []
+    for l in sect(title):
+        m = re.match(r'^(\d+)\.\s+', l)
+        if m and lo <= int(m.group(1)) <= hi:
+            body = l[m.end():]
+            got.append(('raw', body[:12]))
+            got.append(('strip', strip(body)[:12]))
+    if len(got) != (hi - lo + 1) * 2:
+        errs.append('%s 抽出 %d 条判据串(期望 %d)——抽取失效,判红' % (title, len(got), (hi - lo + 1) * 2))
+    probes += got
+for kind, pb in probes:
+    src, tgt = (rawc, c) if kind == 'raw' else (flows, cs)
+    if len(pb) < 6: errs.append('判据串过短无分辨力:%r' % pb); continue
+    if pb not in src: errs.append('阳性对照失败(%s 语料里找不到 %r)——抽取或去噪写错,判红' % (kind, pb))
+    if pb in tgt: errs.append('卡内抄了条文正文(%s):%r' % (kind, pb))
+if errs:
+    for e in errs: print('❌', e)
+    sys.exit(1)
+print('plan-window 绊线全过:%d 行 · 判据串 %d 条(raw/strip 各半)阳性命中且卡内 0 命中' % (n, len(probes)))
+PLANWIN_PY
+t "plan-window:卡在仓 + doctor §1 清单含它 + 零条文复制(判据串双向验证)+ 零项目状态 + ≤250 行" \
+  python3 /tmp/lx-planwin-lint.py "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TDB"
 
 # ── vmsg 固定段改形(2026-08-23 M 件「验收窗污染声明文本源定位」结论 A;dispatch 58 建议采)──────────────

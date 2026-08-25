@@ -4011,10 +4011,37 @@ esac
 SH
 cat > "$N165/fakebin/tmux" <<'SH'
 #!/bin/sh
-: > "${TMUX_MARK:?}"
+[ "${1:-}" != new-window ] || : > "${TMUX_MARK:?}"
 exit 0
 SH
-chmod +x "$N165/fake-claude" "$N165/fakebin/tmux"
+cat > "$N165/fakebin/codex" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = "--version" ]; then printf '%s\n' 'codex-cli fixture'; exit 0; fi
+printf '%s\n' "$@" > "${FAKE_CODEX_ARGS:?}"
+if IFS= read -r unexpected; then echo 'stdin was not closed' >&2; exit 91; fi
+thread="${FAKE_CODEX_THREAD:-thread-$$}"
+started(){ printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"turn.started"}\n' "$thread"; }
+completed(){ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":3,"cached_input_tokens":1,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":1}}'; }
+case "${FAKE_CODEX_MODE:-normal}" in
+  failed) started; printf '%s\n' '{"type":"error","message":"429 reconnect evidence"}' '{"type":"turn.failed","error":{"message":"429 fixture exhausted"}}' ;;
+  missing) started ;;
+  unknown) started; printf '%s\n' '{"type":"future_event"}' ;;
+  badjson) started; printf '%s\n' '{"type":bad}' ;;
+  quiet) started; sleep "${FAKE_CODEX_SLEEP:-2}"; completed ;;
+  *)
+    echo 'Skill laixin-pipeline loaded; MCP unavailable fixture evidence' >&2
+    started
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"id":"e1","type":"error","message":"agent refusal evidence"}}' \
+      '{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"objective notice"}}' \
+      '{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"false","status":"in_progress"}}' \
+      '{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"false","aggregated_output":"fixture command failed","exit_code":23,"status":"completed"}}'
+    completed
+    ;;
+esac
+exit "${FAKE_CODEX_CLI_RC:-0}"
+SH
+chmod +x "$N165/fake-claude" "$N165/fakebin/tmux" "$N165/fakebin/codex"
 
 dry165(){
   env HOME="$N165/home" LAIXIN_RELEASE_REPO="$N165/repo" LAIXIN_SWITCH_DIR="$N165/sw" \
@@ -4035,9 +4062,15 @@ t "#165-3 transport 优先级=参数 > env > 文件 > tui；空/删开关均回 
   grep -q "transport=print" <<< "$3" && grep -q "transport=tui" <<< "$4" && grep -q "transport=tui" <<< "$5"' \
   _ "$out165_cli" "$out165_env" "$out165_file" "$out165_empty" "$out165_default"
 tfail "#165-3 非法 transport 在昂贵校验/起窗前 die" "未知 transport" "$LANE" tool-up t165 --transport warp
-t "#165-3 codex+print 明拒且零 tmux 副作用" bash -c '
+t "#165-3 kimi+print 明拒第三片未开且零 tmux 副作用" bash -c '
+  out="$(env HOME="$1/home" PATH="$1/fakebin:$PATH" TMUX_MARK="$1/tmux-called" "'$LANE'" tool-up x --engine kimi --transport print 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "第三片未开" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
+t "#165-3 codex+print 缺 prompt 仍到既有必填校验且零 tmux 副作用" bash -c '
   out="$(env HOME="$1/home" PATH="$1/fakebin:$PATH" TMUX_MARK="$1/tmux-called" "'$LANE'" tool-up x --engine codex --transport print 2>&1)"; rc=$?
-  [ "$rc" -ne 0 ] && grep -q "第一片只支持 claude print" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
+  [ "$rc" -ne 0 ] && grep -q "必须 --prompt" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
+t "#165-3 codex+print 走官方 exec JSON 且 --dry 零 tmux 副作用" bash -c '
+  out="$(env HOME="$1/home" PATH="$1/fakebin:$PATH" TMUX_MARK="$1/tmux-called" LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_SWITCH_DIR="$1/sw" LAIXIN_BOARD="$1/board.md" LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "'$LANE'" tool-up x --engine codex --transport print --prompt "$1/p.md" --dir "$1/wt" --dry 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q "codex exec --json --sandbox workspace-write -C" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
 t "#165-3 --dry 报 engine/transport/账/回退且零持久写" bash -c '
   grep -q "引擎=claude" <<< "$1" && grep -q "transport=print" <<< "$1" && grep -q "native 账:" <<< "$1" && grep -q "回退:" <<< "$1" &&
   [ ! -e "$2/headless.json" ] && [ ! -e "$2/home/.laixin-events.d" ]' _ "$out165_cli" "$N165"
@@ -4072,6 +4105,28 @@ native165 timeout timeout > "$N165/timeout.out" 2>&1; timeout_rc=$?
 native165 missing-init missing-init > "$N165/missing-init.out" 2>&1; missing_init_rc=$?
 native165 missing-result missing-result > "$N165/missing-result.out" 2>&1; missing_result_rc=$?
 native165 normal drift 9.9.9 > "$N165/drift.out" 2>&1; drift_rc=$?
+
+native165_codex(){
+  local mode="$1" name="$2" cli_rc="${3:-0}" run
+  run="$N165/native-codex/$name/run"
+  mkdir -p "$run"
+  env HOME="$N165/home" PATH="$N165/fakebin:$PATH" LAIXIN_TOOL_NATIVE_ENGINE=codex \
+    LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=fixture-codex LAIXIN_BOARD="$N165/native-codex-board.md" \
+    LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=2 FAKE_CODEX_MODE="$mode" FAKE_CODEX_CLI_RC="$cli_rc" \
+    FAKE_CODEX_ARGS="$run/args" FAKE_CODEX_THREAD="thread-$name" \
+    "$LANE" tool-native-run "tool-codex-$name" "$run" "$N165/p.md" "$N165/wt" bu 9999
+}
+native165_codex normal normal 7 > "$N165/codex-normal.out" 2>&1; codex_normal_rc=$?
+native165_codex failed failed 1 > "$N165/codex-failed.out" 2>&1; codex_failed_rc=$?
+native165_codex missing missing > "$N165/codex-missing.out" 2>&1; codex_missing_rc=$?
+native165_codex unknown unknown > "$N165/codex-unknown.out" 2>&1; codex_unknown_rc=$?
+native165_codex badjson badjson > "$N165/codex-badjson.out" 2>&1; codex_badjson_rc=$?
+FAKE_CODEX_SLEEP=2 native165_codex quiet quiet > "$N165/codex-quiet.out" 2>&1 & codex_quiet_pid=$!
+sleep 1
+codex_quiet_one="$(head -1 "$N165/native-codex/quiet/run/status")"
+sleep 0.2
+codex_quiet_two="$(head -1 "$N165/native-codex/quiet/run/status")"
+wait "$codex_quiet_pid"; codex_quiet_rc=$?
 
 t "#165-3 普通前置行 raw+notice 双留且后续可 settled；prompt 是单 argv、stdin=EOF" bash -c '
   [ "$1" -eq 0 ] && grep -Fxq "wrapper readiness line" "$2/raw.jsonl" && grep -q "\"phase\":\"notice\"" "$2/events.jsonl" &&
@@ -4121,6 +4176,39 @@ t "#165-3 版本漂移只警一次且不阻断 settled" bash -c '
   [ "$1" -eq 0 ] && [ "$(grep -c "协议版本漂移" "$2")" -eq 1 ] && grep -q "\"cli_version\":\"9.9.9\"" "$3/events.jsonl" && grep -q "\"phase\":\"settled\"" "$3/events.jsonl"' \
   _ "$drift_rc" "$N165/native-board.md" "$N165/native/drift/run"
 
+t "#165-3 codex 官方 exec 固定 argv、零 ephemeral、stdin=EOF" bash -c '
+  [ "$1" -eq 0 ] && grep -Fxq exec "$2/args" && grep -Fxq -- --json "$2/args" &&
+  grep -Fxq workspace-write "$2/args" && grep -Fxq "probe fixture prompt" "$2/args" &&
+  ! grep -q -- --ephemeral "$2/args"' _ "$codex_normal_rc" "$N165/native-codex/normal/run"
+t "#165-3 codex thread 接受+持久化；五 usage 键/cost 空；命令 rc23 不覆盖 turn.completed/CLI rc7" python3 - "$codex_normal_rc" "$N165/native-codex/normal/run" <<'PY'
+import json, sys
+rc, run = int(sys.argv[1]), sys.argv[2]
+events = [json.loads(line) for line in open(run + "/events.jsonl")]
+assert rc == 0 and open(run + "/thread_id").read().strip() == "thread-normal"
+assert any(e["phase"] == "accepted" and e["thread_id"] == "thread-normal" for e in events)
+assert any(e["phase"] == "tool_finished" and e["exit_code"] == 23 for e in events)
+settled = [e for e in events if e["phase"] == "settled"][-1]
+assert settled["cli_exit_code"] == 7 and settled["cost"] is None
+assert set(settled["usage"]) == {"input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"}
+assert any(e["phase"] == "notice" and e["item_type"] in {"error", "agent_message"} for e in events)
+assert "settled 0" in open(run + "/status").read() and "MCP unavailable" in open(run + "/stderr.log").read()
+PY
+t "#165-3 codex turn.failed 保留 429、失败且绝不 running" bash -c '
+  [ "$1" -ne 0 ] && grep -q "429 fixture exhausted" "$2/events.jsonl" && grep -q "429 reconnect evidence" "$2/events.jsonl" &&
+  grep -Fq "\"raw_type\":\"error\"" "$2/events.jsonl" && ! grep -Fq "\"phase\":\"protocol_unknown\"" "$2/events.jsonl" &&
+  grep -q "^failed .*turn_failed" "$2/status" && ! grep -q "^running" "$2/status"' \
+  _ "$codex_failed_rc" "$N165/native-codex/failed/run"
+t "#165-3 codex CLI rc0 + 缺 terminal = result_missing(零假 settled)" bash -c '
+  [ "$1" -ne 0 ] && grep -q "^failed 1 result_missing" "$2/status" && grep -Fq "\"cli_exit_code\":0" "$2/events.jsonl" && ! grep -Fq "\"phase\":\"settled\"" "$2/events.jsonl"' \
+  _ "$codex_missing_rc" "$N165/native-codex/missing/run"
+t "#165-3 codex 未知/坏 JSON 均 raw 留账+protocol_unknown+零 settled" bash -c '
+  [ "$1" -ne 0 ] && [ "$2" -ne 0 ] && grep -q future_event "$3/raw.jsonl" && grep -Fq "\"reason\":\"invalid_json\"" "$4/events.jsonl" &&
+  ! grep -Fq "\"phase\":\"settled\"" "$3/events.jsonl" && ! grep -Fq "\"phase\":\"settled\"" "$4/events.jsonl"' \
+  _ "$codex_unknown_rc" "$codex_badjson_rc" "$N165/native-codex/unknown/run" "$N165/native-codex/badjson/run"
+t "#165-3 codex 长静默期间两读都是 running，终态后才 settled" bash -c '
+  [ "$1" -eq 0 ] && grep -q "^running" <<< "$2" && grep -q "^running" <<< "$3" && grep -q "^settled 0" "$4/status"' \
+  _ "$codex_quiet_rc" "$codex_quiet_one" "$codex_quiet_two" "$N165/native-codex/quiet/run"
+
 sed -n '/^tool_native_parse()/,/^}/p' "$LANE" > "$N165/native-parse.sh"
 t "#165-3 pid/session 绑定:同 session 后续放行；第二 init/错 pid/错 session/跨 run 重复均拒" env T="$N165" bash -c '
   board(){ printf "%s\n" "$*" >> "$T/parse-board"; }
@@ -4135,10 +4223,22 @@ t "#165-3 pid/session 绑定:同 session 后续放行；第二 init/错 pid/错 
   prep "$T/cross/r1"; prep "$T/cross/r2"; tool_native_parse "$T/cross/r1" w 200 200 /tmp "$(init SX)" || exit 6
   tool_native_parse "$T/cross/r2" w 201 201 /tmp "$(init SX)" && exit 7
   [ "$(grep -c protocol_unknown "$T/bind/run/events.jsonl")" -ge 3 ] && grep -q "duplicate_session_across_run" "$T/cross/r2/events.jsonl"'
+t "#165-3 codex thread 绑定:持久化、第二 thread/跨 run 重复拒绝，未绑定 turn 拒绝" env T="$N165" bash -c '
+  board(){ :; }; export LAIXIN_TOOL_NATIVE_ENGINE=codex
+  source "$T/native-parse.sh"
+  prep(){ mkdir -p "$1"; : > "$1/raw.jsonl"; : > "$1/events.jsonl"; : > "$1/status"; }
+  thread(){ printf "{\"type\":\"thread.started\",\"thread_id\":\"%s\"}" "$1"; }
+  prep "$T/codex-bind/run"; tool_native_parse "$T/codex-bind/run" w 300 300 /tmp "$(thread C1)" || exit 1
+  [ "$(cat "$T/codex-bind/run/thread_id")" = C1 ] || exit 2
+  tool_native_parse "$T/codex-bind/run" w 300 300 /tmp "$(thread C1)" && exit 3
+  prep "$T/codex-cross/r1"; prep "$T/codex-cross/r2"; tool_native_parse "$T/codex-cross/r1" w 301 301 /tmp "$(thread CX)" || exit 4
+  tool_native_parse "$T/codex-cross/r2" w 302 302 /tmp "$(thread CX)" && exit 5
+  prep "$T/codex-before/run"; tool_native_parse "$T/codex-before/run" w 303 303 /tmp "{\"type\":\"turn.started\"}" && exit 6
+  grep -q second_thread "$T/codex-bind/run/events.jsonl" && grep -q duplicate_session_across_run "$T/codex-cross/r2/events.jsonl" && grep -q event_before_thread "$T/codex-before/run/events.jsonl"'
 t "#165-3 settled 与报告契约彻底分离；失败零 retry；看板仍唯一经 board()" bash -c '
   status="$(sed -n "/^tool_native_status()/,/^}/p" "'$LANE'")"
   native="$(sed -n "/^tool_native_parse()/,/^}/p;/^tool_native_status()/,/^}/p;/^tool_native_launch()/,/^}/p" "'$LANE'")"
-  ! grep -q "工具件完成" <<< "$status" && ! grep -qi "retry" <<< "$native" && [ "$(grep -cF ">> \"\$BOARD\"" "'$LANE'")" -eq 1 ]'
+  ! grep -q "工具件完成" <<< "$status" && ! grep -qiE "retry|resume" <<< "$native" && [ "$(grep -cF ">> \"\$BOARD\"" "'$LANE'")" -eq 1 ]'
 rm -rf "$N165"
 rm -rf "$W165"
 

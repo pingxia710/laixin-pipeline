@@ -12,7 +12,7 @@ description: 来信平台版本节奏配套卡——版本制(版本讨论-执�
 ## 一 代码管理工序(A 件五点;创始人 2026-08-20 18:4x 放行先进行,可回改;权威=[[来信平台-代码管理方案-讨论稿]],本节只给操作步)
 
 **发车侧(写 prompt/开分支时,叠加在 kickoff 卡发车闸门之后)**:
-1. **片分支命名统一 `v0y-<域>-<slug>`**(A-4;例 `v02-frontend-nickname-guard`,`v0y` 取当前平台版本号;存量短命分支不追改;单点源=本条 ⛔ 别处复制)。
+1. **片分支命名统一 `v0y-<域>-<slug>`**(A-4;例 `v02-frontend-nickname-guard`,`v0y` 取当前平台版本号;存量短命分支不追改;单点源=本条 ⛔ 别处复制)。⚖️ **射程注(2026-08-25 10:16:34,方案窗口第二十九任,授权-2;样本=11B 第一片 `toolup-claude-print` Gate2 被 prompt-lint 以本条拦下)**:本条只管**产品仓** `~/来信平台`;**工具仓 `~/Developer/laixin-pipeline` 的工具件分支沿其既有惯例 `tool-<slug>`**(库内先例 `tool-plan-window-r2` / `tool-promptlint-date-seg` / `tool-scheme-window-skill`)⛔ 套 `v0y-`;prompt-lint 该条射程收窄归 11B 件(按 prompt 的 `--dir` 所指仓判)。
 
 **合并侧(派工方,每片合并后,叠加在 acceptance 卡「四处台账」清单之后执行)**:
 2. **代码仓根 `CHANGELOG.md` 的 `## Unreleased` 段追一行**(A-1;Keep a Changelog 式,人读的对外变更账,⛔ 替代执行总表——两者分工在 A 稿 §一.1):一句写清本片对外可感知的变更;**仓根尚无该文件时,先建档并回填 `## v0.1` 一条总账再追行**;作为独立纯文档提交进 main,⛔ 混入代码改动。

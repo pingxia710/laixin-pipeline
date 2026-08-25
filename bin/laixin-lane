@@ -541,6 +541,7 @@ cmd_fresh() {
     board "lane-$lane" "重启(全新上下文)"
     sleep 0.3
   fi
+  rm -f "$EV_PROMPT_DIR/lane-$lane" 2>/dev/null || true
   cmd_up "$lane" "$@"
 }
 
@@ -683,6 +684,9 @@ cmd_send() {
   local text
   if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
   [ -n "$text" ] || die "没有要发送的内容"
+  local _prompt
+  _prompt="$(grep -oE '/[^[:space:]]*[Pp]rompt[^[:space:]]*\.md' <<< "$text" | head -1 || true)"
+  [ -z "$_prompt" ] || ev_prompt_set "lane-$lane" "$_prompt" || true
   # #163 落地校验:投递**前**取基线(⛔ 事后拿绝对计数——同串历史可能已有 N 次,重投场景必然)
   local _feat _base
   _feat="$(printf '%s' "$text" | inject_features)"
@@ -2685,6 +2689,10 @@ EV_HB="$EV_DIR/heartbeat"            # 循环每 tick 写 epoch;重启时它就�
 EV_BOARD_POS="$EV_DIR/board.pos"    # #106 直令搬运:已扫描的看板行数基线(看板只追加 ⇒ 行数单调,回退即异常)
 EV_VAULT="${LAIXIN_VAULT:-$HOME/Obsidian}"
 EV_VAULT_HEAD="$EV_DIR/vault.head"  # #105 材料广播:已扫描的 vault HEAD 基线(首启记当前,⛔ 回放历史)
+EV_MATERIAL_FILES="$EV_DIR/material.pending"
+EV_MATERIAL_AT="$EV_DIR/material.at"
+EV_MATERIAL_DEBOUNCE="${LAIXIN_EV_MATERIAL_DEBOUNCE:-180}"
+EV_PROMPT_DIR="$EV_DIR/prompts"
 
 ev_log(){ echo "[$(date '+%F %T')] $*" >> "$EV_LOG"; }
 
@@ -2807,6 +2815,74 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
       }
     }' "$TABLE" "$TABLE" 2>/dev/null | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
 }
+
+ev_lane_assigned(){  # <A|B|C> → 当前「进行中」表里的片名;0=有分配 1=确认空闲 2=表结构未知
+  awk -v lane="$1" '
+    /^## / { if (active && header) exit; active=($0 ~ /进行中/); next }
+    active && /^\| *片 *\| *轨道 *\| *分支 \/ worktree *\| *状态 *\| *发车契约 *\|/ { header=1; next }
+    active && header && /^\|---/ { next }
+    active && header && /^\|/ {
+      n=split($0,c,/ \| /); if (n < 3) next
+      tr=c[2]; gsub(/[ *]/,"",tr)
+      if (tr == lane || tr == lane "小片") {
+        name=c[1]; sub(/^\| */,"",name); gsub(/\*\*/,"",name); sub(/\(.*/,"",name)
+        print name; found=1; exit
+      }
+    }
+    END { if (found) exit 0; if (header) exit 1; exit 2 }
+  ' "$TABLE" 2>/dev/null
+}
+
+ev_verify_receipt_ready(){  # <verify窗名> <本窗起点epoch> → 本轮已落盘的回执路径
+  local w="$1" started="${2:-0}" f slice m
+  for f in "$KB/4-开发层/记录"/*-验收回执.md; do
+    [ -f "$f" ] || continue
+    slice="$(basename "$f" -验收回执.md)"
+    [ "$(vwin "$slice" 2>/dev/null)" = "$w" ] || continue
+    m="$(stat -f %m "$f" 2>/dev/null || echo 0)"
+    [ "$m" -ge "$started" ] 2>/dev/null || continue
+    last_contract_line "$f" | grep -q '^【验收回执】' || continue
+    printf '%s\n' "$f"; return 0
+  done
+  return 1
+}
+
+ev_prompt_set(){  # <lane-a|lane-b|lane-c|verify-*> <prompt绝对路径>
+  local target="$1" prompt="$2"
+  [ -r "$prompt" ] || return 1
+  mkdir -p "$EV_PROMPT_DIR"
+  printf '%s\n' "$prompt" > "$EV_PROMPT_DIR/$target"
+}
+
+ev_prompt_mentions_materials(){  # <prompt>；stdin=材料路径。命中文件名或去后缀锚即 0
+  local prompt="$1" material base stem
+  [ -r "$prompt" ] || return 1
+  while IFS= read -r material; do
+    [ -n "$material" ] || continue
+    base="${material##*/}"; stem="${base%.md}"
+    grep -Fq "$base" "$prompt" 2>/dev/null || grep -Fq "$stem" "$prompt" 2>/dev/null || continue
+    return 0
+  done
+  return 1
+}
+
+ev_material_targets(){  # <材料清单文件> → 真正在飞且 prompt 引用材料的窗口;prompt 状态缺失时失效朝提醒侧
+  local materials="${1:-$EV_MATERIAL_FILES}" lane target state prompt vw
+  [ -s "$materials" ] || return 0
+  for lane in A B C; do
+    ev_lane_assigned "$lane" >/dev/null 2>&1 || continue
+    target="lane-$(printf '%s' "$lane" | tr 'ABC' 'abc')"; state="$EV_PROMPT_DIR/$target"
+    prompt="$(cat "$state" 2>/dev/null)"
+    if [ ! -r "$prompt" ] || ev_prompt_mentions_materials "$prompt" < "$materials"; then printf '%s\n' "$target"; fi
+  done
+  tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep '^verify-' | while IFS= read -r vw; do
+    state="$EV_PROMPT_DIR/$vw"; prompt="$(cat "$state" 2>/dev/null)"
+    if [ ! -r "$prompt" ] || ev_prompt_mentions_materials "$prompt" < "$materials"; then printf '%s\n' "$vw"; fi
+  done
+  return 0
+}
+
+ev_same_contract_mode(){ case "$1" in 【交付完成】*) printf quiet ;; *) printf notify ;; esac; }
 
 # ── #105/#106/#107/#108(复盘页 §十六,方案窗口第十四任收班盘点;创始人 2026-08-20 07:0x 直令实现)──
 # 四条共同的形状:把「靠人记得」的搬运/自查换成机器可见——判据函数全部纯化(stdin→stdout),绊线直测。
@@ -3126,26 +3202,41 @@ ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值�
     return 0
   fi
   rm -f "$gf"   # 窗口在 ⇒ 清除消失标记,使"再次消失"仍能告警(否则只报第一次)
-  local old="" silent=0 alerted=0
-  [ -f "$sf" ] && read -r old silent alerted < "$sf" 2>/dev/null || true  # read 在无换行/空文件时返 1,不兜底会在 set -e 下击穿调用方
+  local old="" silent=0 alerted=0 started=""
+  [ -f "$sf" ] && read -r old silent alerted started < "$sf" 2>/dev/null || true  # read 在无换行/空文件时返 1,不兜底会在 set -e 下击穿调用方
+  [ -n "$started" ] || started=$(( $(date +%s) - EV_TICK ))
   if [ "$h" = "${old:-}" ]; then silent=$((silent+EV_TICK)); else silent=0; alerted=0; fi
   if [ "$silent" -ge "$EV_STALL" ] && [ "${alerted:-0}" -eq 0 ]; then
-    alerted=1
     case "$w" in
       lane-a|lane-b|lane-c)
-        local lane="${w#lane-}" LN nxt hint
+        local lane="${w#lane-}" LN nxt hint _arc
         LN="$(echo "$lane" | tr 'abc' 'ABC')"
         nxt="$(ev_next_ready "$LN")"
+        if [ -z "$nxt" ]; then
+          ev_lane_assigned "$LN" >/dev/null 2>&1; _arc=$?
+          if [ "$_arc" -eq 1 ]; then
+            alerted=0  # 无在飞分配 + 无 ready = 有意空闲；保持可重判但不制造重复消息
+            printf '%s %s %s %s\n' "$h" "$silent" "$alerted" "$started" > "$sf"
+            return 0
+          fi
+        fi
+        alerted=1
         hint="排队节未解析到该轨可发片 ⇒ 若确无,在总表'进行中'写明原因"
         [ -n "$nxt" ] && hint="该轨下一片:${nxt}(ready 即 fresh+send)"
         ev_deliver "告警" "【告警】$w 已 $((silent/60)) 分钟无变化(空闲或卡住)。🔴 **先 laixin-lane peek $lane 30 核一眼,⛔ 直接 fresh+send** —— 第①项会打断正在跑的全量,是三选一里最贵的。peek 判:等回答/做完没落盘/真空闲。${hint}。三选一(派工/现在写/总表写明),同一轮内给出可见结论。"
         ;;
       verify-*)
-        ev_deliver "告警" "【告警】验收窗口 $w 已 $((silent/60)) 分钟无变化——可能撞上需拍板的问题、卡在权限提示、或已回执未回收。laixin-lane peek-v ${w#verify-} 40 查看;已回执则 vdown 回收。"
+        alerted=1
+        local _receipt
+        if _receipt="$(ev_verify_receipt_ready "$w" "$started")"; then
+          ev_log "验收静默但本轮回执已落盘,不投卡住告警:$w → $_receipt"
+        else
+          ev_deliver "告警" "【告警】验收窗口 $w 已 $((silent/60)) 分钟无变化——可能撞上需拍板的问题或卡在权限提示。laixin-lane peek-v ${w#verify-} 40 查看。"
+        fi
         ;;
     esac
   fi
-  printf '%s %s %s\n' "$h" "$silent" "$alerted" > "$sf"
+  printf '%s %s %s %s\n' "$h" "$silent" "$alerted" "$started" > "$sf"
 }
 
 ev_loop(){
@@ -3290,9 +3381,13 @@ ev_loop(){
       # 降级只对**末行带可变部分**的两种标记开;其余(末行固定句)一律取空 ⇒ 走全量投
       case "$lastline" in 【交付完成】*|【验收回执】*) _prev="$(ev_last_get "$f")" ;; *) _prev="" ;; esac
       if [ -n "$_prev" ] && [ "$_prev" = "$_llh" ]; then
-        ev_deliver "更新" "【事件】报告文本更新(末行未变,非新交付):$f
+        if [ "$(ev_same_contract_mode "$lastline")" = quiet ]; then
+          ev_log "报告正文更新静默(交付契约未变,⛔ 重投):$f"
+        else
+          ev_deliver "更新" "【事件】报告文本更新(末行未变,非新交付):$f
 末行:$lastline
 下一步:这是同一交付/回执的正文更新(多为验收方追加修订结论或开发方补节)——⛔ 重起 verify-from ⛔ 重核 hash;若该片正在验收,验收方读得到;有疑再读一次全文即可。"
+        fi
         continue
       fi
       ev_last_set "$f" "$_llh"
@@ -3416,7 +3511,7 @@ $(printf '%s' "$_dl" | cut -c1-360)…
         fi
       done <<< "$_sl"
     fi
-    # 2.7) #105 材料更新广播:词表/设计要点落库(kb-commit)⇒ 投 dispatch——片⑥ r3 白烧一轮的根治半边。
+    # 2.7) #105 材料更新:短时间内多次 vault 提交先合批,再只报真正引用它的在飞 prompt。
     _vh_now="$(git -C "$EV_VAULT" rev-parse HEAD 2>/dev/null)"
     _vh_old="$(cat "$EV_VAULT_HEAD" 2>/dev/null)"
     if [ -n "$_vh_now" ] && [ "$_vh_now" != "$_vh_old" ]; then
@@ -3426,11 +3521,31 @@ $(printf '%s' "$_dl" | cut -c1-360)…
         #   八进制转义加双引号 ⇒ 字面中文 pattern 与 \.md$ 锚定全不命中 ⇒ #105 对全中文路径的来信 vault 100% 静默失效,
         #   而「没投递」与「没有材料更新」完全同形——发现通道只有完工通报里预写的「未出现即报修」那句。
         #   全文件同款已排查:仅此处把 git 文件名输出喂给中文 pattern(:1024 计数 / :1494 ls-tree ASCII 路径 / :3891 纯展示)。
-        [ -n "$_mf" ] && ev_deliver "材料" "【事件】词表/设计要点已更新(vault $(printf '%s' "$_vh_old" | cut -c1-7)→$(printf '%s' "$_vh_now" | cut -c1-7),#105):
-$_mf
-下一步:判哪些在飞片/在跑验收窗引用这些材料,向它们广播「材料已更新,rebase 认知」(照 main 前进广播形态)——材料到位而实现不知道,正是片⑥ r3 白烧一轮的形态。"
+        if [ -n "$_mf" ]; then
+          { cat "$EV_MATERIAL_FILES" 2>/dev/null || true; printf '%s\n' "$_mf"; } | sort -u > "$EV_MATERIAL_FILES.new"
+          mv -f "$EV_MATERIAL_FILES.new" "$EV_MATERIAL_FILES"
+          date +%s > "$EV_MATERIAL_AT"
+          ev_log "材料合批候选:+$(wc -l <<< "$_mf" | tr -d ' ') 份(vault $(printf '%s' "$_vh_old" | cut -c1-7)→$(printf '%s' "$_vh_now" | cut -c1-7));静默 ${EV_MATERIAL_DEBOUNCE}s 后按 prompt 定向"
+        fi
       fi
       printf '%s\n' "$_vh_now" > "$EV_VAULT_HEAD"
+    fi
+    if [ -s "$EV_MATERIAL_FILES" ] && [ -s "$EV_MATERIAL_AT" ]; then
+      _ma="$(cat "$EV_MATERIAL_AT" 2>/dev/null)"
+      if [ -n "$_ma" ] && [ $(( $(date +%s) - _ma )) -ge "$EV_MATERIAL_DEBOUNCE" ] 2>/dev/null; then
+        _mt="$(ev_material_targets "$EV_MATERIAL_FILES" | sort -u)"
+        if [ -n "$_mt" ]; then
+          ev_deliver "材料" "【事件】材料更新已合批(#105,仅列在飞 prompt 命中的目标):
+材料:
+$(sed 's/^/  /' "$EV_MATERIAL_FILES")
+目标:
+$(printf '%s\n' "$_mt" | sed 's/^/  /')
+下一步:只向上述目标发一条「材料已更新,重读权威档」短指针;其余轨道/验收窗无需动作。"
+        else
+          ev_log "材料合批完成但当前无在飞 prompt 引用,静默销候选:$(tr '\n' ' ' < "$EV_MATERIAL_FILES")"
+        fi
+        rm -f "$EV_MATERIAL_FILES" "$EV_MATERIAL_AT"
+      fi
     fi
     # 3) 卡住/空闲监视(lane + 全部验收窗口)
     ev_watch_target "lane-a"
@@ -3929,9 +4044,9 @@ DISPATCH_BRIEF='你是 laixin 开发流水线的**派工窗口**(由看门狗托
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
 
 接班先跑 laixin-lane doctor(体检)与 laixin-lane stats(看还剩多少燃料、有无总表状态滞后);合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
-**你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。所以状态一定随做随写进执行总表与看板,不要攒在窗口记忆里。
+**你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
 
-铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、SendMessage 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
+铁律:有在飞分配却卡住,或有 ready 燃料长期未处理,才是事故;无在飞且无 ready 是有意空闲,记一次即可、不要重复通信。合并不是终点,有下一片才继续派;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、SendMessage 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
 状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。
 📌 记看板用 laixin-lane log "..."(本窗口的来源会按窗口名自动标为「派工窗口」,⛔ 再手工拼前缀)。'
 
@@ -3961,12 +4076,12 @@ DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kim
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**。
 
 接班先跑 laixin-lane doctor 与 laixin-lane stats;合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
-**你被看门狗托管**:窗口死了它会自动起新的,你静默太久且有轨空闲它会先戳你、再换掉你。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
+**你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
 
 🔴 **红线(本引擎没有 claude 的 disallowedTools 工具层禁令,以下以本指令为准)**:⛔ git push。
 合并你照旧做(派工窗口持有合并权),但 merge 后按卡跑 merge-guard 收尾。越线即整轮作废并报创始人。
 
-铁律:轨道空闲是事故不是等待,合并不是终点派工才是;只发排队节已 ready 的片;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
+铁律:有在飞分配却卡住,或有 ready 燃料长期未处理,才是事故;无在飞且无 ready 是有意空闲,记一次即可、不要重复通信。合并不是终点,有下一片才继续派;只发排队节已 ready 的片;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
 📌 记看板用 laixin-lane log "..."(本窗口的来源会按窗口名自动标为「派工窗口」,⛔ 再手工拼前缀)。'
 
 # ---- 派工权认领:用"谁在动 lane"识别派工窗口,而不是数窗口个数 ----
@@ -5910,19 +6025,16 @@ ctx_watch_tick() {
 # ── #137 无燃料静默(2026-08-22 11B 监测登记)──────────────────────────────────────────────
 #   实证:08-22 02:19~07:23 三轨全空、排队节零可发,看门狗仍每 30 分钟戳一次派工窗口(11 次),同时段看板零派工产出
 #   =11 轮 Opus 空转。与中继的「反应式角色,没有缺口时静默就是健康态」同一条原则(见 wd_loop 0.5 段注)。
-#   燃料判据全走文件/窗口枚举 ⛔ 问 dispatch:①排队节有 ready 片(ev_next_ready A/B;C 轨起了才算)②有投出未认领的交付
-#   (pending P 态)③有在跑的 verify-*/relay-* 窗 ④转办 outbox 非空;⑤执行总表自上次判定后被改过(解析器漏判时给一次
-#   机会,在 wd_loop 内判)。任一成立=有燃料,照旧 15 分钟戳/30 分钟重起;全无 ⇒ 不戳、⛔ 按静默重起(死了照重起:
-#   dispatch_alive 在本段之前)。失效降级:总表读不到 ⇒ 按有燃料(⛔ 因探针失效而静默)。
+#   燃料只认**派工席此刻能动作**的两类:①空闲轨已有 ready 片 ②投出未认领的交付(P 态)。verify/relay/M/工具窗
+#   在跑与 relay outbox 都是等待态,各自由 events 管,不是催派工席的理由。全无 ⇒ 不戳、不按静默重起(死了照重起)。
+#   失效降级:总表读不到 ⇒ 按有燃料(⛔ 因探针失效而静默)。
 wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在 set -e 下用命令替换接)
   local src="" n
   if [ ! -r "$TABLE" ]; then printf '%s' "总表不可读(探针失效按有燃料)"; return 0; fi
-  n="$(ev_next_ready A 2>/dev/null || true)"; [ -n "$n" ] && src="A:${n}"
-  n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }B:${n}"
-  if win_exists "lane-c"; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }C:${n}"; fi
+  if ! lane_busy a; then n="$(ev_next_ready A 2>/dev/null || true)"; [ -n "$n" ] && src="A:${n}"; fi
+  if ! lane_busy b; then n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }B:${n}"; fi
+  if win_exists "lane-c" && ! lane_busy c; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }C:${n}"; fi
   if [ -s "$EV_PENDING" ] && grep -q '|P$' "$EV_PENDING" 2>/dev/null; then src="${src:+$src }待认领交付"; fi
-  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qE '^(verify|relay|m|tool)-'; then src="${src:+$src }在跑验收/中继/机动/工具窗"; fi
-  if [ -s "$RELAY_OUTBOX" ]; then src="${src:+$src }转办待回执"; fi
   printf '%s' "$src"; return 0
 }
 
@@ -5932,8 +6044,7 @@ wd_loop() {
   local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
   local max_restart="${WD_MAX_RESTART:-3}"
   local last_hash="" silent=0 nudged=0 restarts=0 ctx_tick=0
-  local _gen nofuel=0 fuel_tbl_m="" qtick=0; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
-  fuel_tbl_m="$(stat -f %m "$TABLE" 2>/dev/null || echo '')"                              # #137:启动不算「总表有变动」
+  local _gen nofuel=0 qtick=0; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
   echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
   board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
   while true; do
@@ -6049,33 +6160,29 @@ wd_loop() {
     # 各轨都在干活 ⇒ 派工窗口静止是正常等待,不打扰
     # #60②:lane-c 可选轨——**起了才算数**(在跑且空闲同样该被过问),没起不挡正常等待判定
     if lane_busy a && lane_busy b && { ! win_exists "lane-c" || lane_busy c; }; then continue; fi
-    # #137:三轨**全空**且无燃料 ⇒ 健康静默:不戳、⛔ 按静默重起(见 wd_fuel 注);燃料一出现立刻按「已到戳点」处理
-    if ! lane_busy a && ! lane_busy b && { ! win_exists "lane-c" || ! lane_busy c; }; then
-      local _fuel="" _tm=""
-      _tm="$(stat -f %m "$TABLE" 2>/dev/null || echo '')"
-      if [ -n "$_tm" ] && [ "$_tm" != "$fuel_tbl_m" ]; then _fuel="总表有变动($(date -r "$_tm" '+%H:%M'))"; fuel_tbl_m="$_tm"; else _fuel="$(wd_fuel)"; fi
-      if [ -z "$_fuel" ]; then
-        if [ "$nofuel" -eq 0 ]; then
-          nofuel=1
-          echo "[$(date '+%F %T')] 无燃料静默:三轨全空、排队节零可发、无待认领/在跑验收/转办 ⇒ 不戳不按静默重起(#137;燃料出现即恢复)" >> "$WD_LOG"
-          board "看门狗" "无燃料静默(#137):三轨全空且排队节零可发、无待认领/在跑验收/转办——派工窗口静默属健康态,不戳不按静默重起;燃料出现即恢复 15 分钟戳节奏"
-        fi
-        continue
+    # #137:只要存在空闲轨,就按「行动燃料」判是否该打扰;其他轨/验收窗仍在跑不构成燃料。
+    local _fuel; _fuel="$(wd_fuel)"
+    if [ -z "$_fuel" ]; then
+      if [ "$nofuel" -eq 0 ]; then
+        nofuel=1
+        echo "[$(date '+%F %T')] 无行动燃料:空闲轨零 ready、无待认领交付 ⇒ 派工席静默属健康态(#137)" >> "$WD_LOG"
+        board "看门狗" "无行动燃料(#137):空闲轨零 ready、无待认领交付——等待中的验收/中继/机动/工具窗不算派工燃料,不戳不按静默重起"
       fi
-      if [ "$nofuel" -eq 1 ]; then
-        nofuel=0
-        echo "[$(date '+%F %T')] 燃料出现(${_fuel}),恢复戳/重起节奏;静默已 ${silent}s ⇒ 按到戳点处理" >> "$WD_LOG"
-        [ "$silent" -gt "$nudge_after" ] && silent="$nudge_after"   # ⛔ 把无燃料期累计的静默直接算进重起阈值
-        nudged=0
-      fi
+      continue
+    fi
+    if [ "$nofuel" -eq 1 ]; then
+      nofuel=0
+      echo "[$(date '+%F %T')] 行动燃料出现(${_fuel}),恢复戳/重起节奏;静默已 ${silent}s ⇒ 按到戳点处理" >> "$WD_LOG"
+      [ "$silent" -gt "$nudge_after" ] && silent="$nudge_after"   # ⛔ 把无燃料期累计的静默直接算进重起阈值
+      nudged=0
     fi
     if [ "$silent" -ge "$restart_after" ]; then
       if [ "$restarts" -ge "$max_restart" ]; then
         board "看门狗" "⛔ 派工窗口持续无响应但已达重起上限,等人工介入"; continue
       fi
       restarts=$((restarts+1))
-      echo "[$(date '+%F %T')] 静默 ${silent}s 且有轨空闲,第 $restarts 次重起" >> "$WD_LOG"
-      board "看门狗" "⚠️ 派工窗口静默 $((silent/60)) 分钟且有轨空闲(戳过无效)→ 第 ${restarts} 次换新窗口接管"
+      echo "[$(date '+%F %T')] 静默 ${silent}s 且行动燃料未处理(${_fuel}),第 $restarts 次重起" >> "$WD_LOG"
+      board "看门狗" "⚠️ 派工窗口静默 $((silent/60)) 分钟且行动燃料未处理(${_fuel};戳过无效)→ 第 ${restarts} 次换新窗口接管"
       # #44:子 shell 隔离收码(cmd_dispatch 树里有 die)。⛔ 不带 --force-rival:换掉「活着但静默」的
       # dispatch 时,若派工权正被别人新鲜持有(人工接管形态),必须仍被双派工守卫拦下——
       # 拦下如今是大声失败上看板,⛔ 再是带死宿主;原 `|| true` 的静默吞错一并升级为大声报。
@@ -6085,16 +6192,14 @@ wd_loop() {
       last_hash=""; silent=0; nudged=0
     elif [ "$silent" -ge "$nudge_after" ] && [ "$nudged" -eq 0 ]; then
       nudged=1
-      local idle=""; lane_busy a || idle="lane-a"; lane_busy b || idle="${idle:+$idle 与 }lane-b"
-      if win_exists "lane-c" && ! lane_busy c; then idle="${idle:+$idle 与 }lane-c"; fi   # #60②:没起 ⛔ 算空闲
-      printf '%s' "【看门狗】你已静默 $((silent/60)) 分钟,而 ${idle} 空闲。轨道空闲是事故不是等待:立刻二选一——①该轨排队节有 ready 片就 fresh+send 派出去;②确无该轨片就在执行总表"进行中"节写明原因。同一轮内给出可见结论,不要只调工具不说话。" \
+      printf '%s' "【看门狗】你已静默 $((silent/60)) 分钟,且有未处理的行动燃料:${_fuel}。同一轮完成对应的认领或 fresh+send,并写一条可见结果;等待中的窗口不需要另发状态说明。" \
         | tmux load-buffer -b laixin-nudge -
       tmux paste-buffer -p -b laixin-nudge -t "$SESSION:$DISPATCH_WIN"
       tmux delete-buffer -b laixin-nudge
       sleep 0.4
       tmux send-keys -t "$SESSION:$DISPATCH_WIN" C-m
-      echo "[$(date '+%F %T')] 戳了派工窗口(静默 ${silent}s,${idle} 空闲)" >> "$WD_LOG"
-      board "看门狗" "戳派工窗口:静默 $((silent/60)) 分钟且 ${idle} 空闲"
+      echo "[$(date '+%F %T')] 戳了派工窗口(静默 ${silent}s,行动燃料:${_fuel})" >> "$WD_LOG"
+      board "看门狗" "戳派工窗口:静默 $((silent/60)) 分钟且行动燃料未处理(${_fuel})"
     fi
   done
 }
@@ -6289,6 +6394,9 @@ cmd_verify() {
   fi
 
   tmux new-window -t "$SESSION" -n "$w" -c "$dir"
+  mkdir -p "$EV_DIR"
+  printf 'INIT 0 0 %s\n' "$(date +%s)" > "$EV_DIR/$w.state"
+  ev_prompt_set "$w" "$prompt" || true
   sleep 0.5
   # 每窗口一条专属 CDP 通道(2026-08-17 创始人裁定「每个一个通道」):
   # BU_NAME=按窗口派生唯一 daemon 名(ASCII,片名可含中文故用 cksum)——daemon 按名单例,
@@ -6471,6 +6579,7 @@ cmd_vdown() {
   local slice="${1:-}"
   [ -n "$slice" ] || die "vdown 需要片名"
   local w; w="$(vwin "$slice")"
+  rm -f "$EV_DIR/$w.state" "$EV_PROMPT_DIR/$w" "$EV_DIR/vbrief/$w.md" 2>/dev/null || true
   tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" \
     || { echo "$w 本就不存在"; return 0; }
   tmux kill-window -t "$SESSION:$w"

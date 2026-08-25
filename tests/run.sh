@@ -359,7 +359,7 @@ echo "== 7. 事件总线执行级绊线(真跑;静态 grep 抓不到展开顺序
 TMPE="$(mktemp -d)"
 # ⚠️ #171 起 ev_scan_deliveries 依赖 last_contract_line(契约行取法单点源)⇒ 夹具抽取必须带上它,否则「函数不存在」
 #   的症状与「扫描逻辑写错」完全同形(本轮 5 条既有测试同时红,红因是依赖缺失不是被测行为)。
-{ sed -n "/^last_contract_line/,/^}/p" "$LANE"; sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^ev_next_ready/,/^}/p" "$LANE"; } > "$TMPE/fns.sh"
+{ sed -n "/^last_contract_line/,/^}/p" "$LANE"; sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^ev_next_ready/,/^}/p" "$LANE"; sed -n "/^ev_lane_assigned/,/^}/p" "$LANE"; sed -n "/^ev_verify_receipt_ready/,/^}/p" "$LANE"; } > "$TMPE/fns.sh"
 mkdir -p "$TMPE/kb/4-开发层/记录"
 printf 'x\n【交付完成】b z\n' > "$TMPE/kb/4-开发层/记录/a验收记录.md"
 printf 'y\n没有标记\n' > "$TMPE/kb/4-开发层/记录/b验收记录.md"
@@ -405,6 +405,41 @@ t "🅿️/design-ready 不作为下一片;A小片轨、后段顺带提及、格
   bash -uc "set -eo pipefail; TABLE='$QT'; source '$TMPE/fns.sh'; [ \"\$(ev_next_ready A)\" = '真ready片' ]"
 t "design-ready ≠ prompt ready,且已合入片的滞后排队行被已完成节事实压掉(B 轨须输出为空)" \
   bash -uc "set -eo pipefail; TABLE='$QT'; source '$TMPE/fns.sh'; [ -z \"\$(ev_next_ready B)\" ]"
+
+# 当前在飞表才是空闲告警的任务事实源:有分配才告警;无分配且无 ready 是有意空闲。
+AT="$TMPE/active-table.md"
+cat > "$AT" <<'AEOF'
+## 进行中(= 轨道占用,发车位只看这一节)
+| 片 | 轨道 | 分支 / worktree | 状态 | 发车契约 |
+|---|---|---|---|---|
+| **片甲** | A | branch-a | 🚀 已发车 | x |
+
+## 排队
+AEOF
+t "空闲判据:当前在飞表 A 有分配、B 无分配;表头缺失按未知退 2(失效朝告警侧)" bash -c '
+  source "'$TMPE'/fns.sh"; TABLE="'$AT'"
+  ev_lane_assigned A >/dev/null && ! ev_lane_assigned B >/dev/null || exit 1
+  TABLE="'$TMPE'/missing.md"; : > "$TABLE"; ev_lane_assigned A >/dev/null; [ "$?" -eq 2 ]'
+t "有意空闲:lane-b 无在飞分配且无 ready ⇒ 静默;lane-a 有分配 ⇒ 保留卡住告警" bash -c '
+  source "'$TMPE'/fns.sh"; TABLE="'$AT'"; SESSION=x; EV_TICK=60; EV_STALL=360
+  pane_hash(){ echo fixed; }; ev_next_ready(){ :; }; lane_engine(){ echo codex; }; ev_log(){ :; }
+  ev_deliver(){ printf "%s\n" "$2"; }
+  EV_DIR="'$TMPE'/idle-b"; mkdir -p "$EV_DIR"; printf "fixed 360 0 1\n" > "$EV_DIR/lane-b.state"
+  [ -z "$(ev_watch_target lane-b)" ] || exit 1
+  EV_DIR="'$TMPE'/active-a"; mkdir -p "$EV_DIR"; printf "fixed 360 0 1\n" > "$EV_DIR/lane-a.state"
+  ev_watch_target lane-a | grep -q "lane-a 已"' _
+
+# 已有本轮落盘回执时,verify 静默不是故障;旧轮回执(mtime 早于本窗起点)不能误抑制。
+RKB="$TMPE/rkb"; mkdir -p "$RKB/4-开发层/记录"
+printf '正文\n【验收回执】通过 v-branch abcdef1 1234567\n' > "$RKB/4-开发层/记录/片甲-验收回执.md"
+t "验收静默判据:本轮回执命中;早于本窗起点的旧回执不命中" bash -c '
+  source "'$TMPE'/fns.sh"; KB="'$RKB'"; vwin(){ echo "verify-$1"; }
+  now=$(date +%s); ev_verify_receipt_ready verify-片甲 $((now-1)) | grep -q "片甲-验收回执.md" || exit 1
+  ! ev_verify_receipt_ready verify-片甲 $((now+10)) >/dev/null' _
+tout "verify 卡住分支先查本轮回执(已有则不投告警)" "ev_verify_receipt_ready" sed -n "/^ev_watch_target/,/^}/p" "$LANE"
+t "验收起窗登记本轮起点与 prompt;一次性中继不误引用验收 prompt" bash -c '
+  v="$(sed -n "/^cmd_verify()/,/^}/p" "$1")"; r="$(sed -n "/^cmd_relay_once()/,/^}/p" "$1")"
+  grep -q "INIT 0 0" <<< "$v" && grep -q "ev_prompt_set.*prompt" <<< "$v" && ! grep -q "ev_prompt_set.*prompt" <<< "$r"' _ "$LANE"
 rm -rf "$TMPE"
 
 echo "== 9. 对话框签名分类(2026-08-15「Set up auto mode」一天冻 4 窗后加;自愈盲区修复) =="
@@ -2236,10 +2271,10 @@ t "#60②:doctor lane-c 未起 ⛔ 计入 warn(a/b 缺席才是 wrn)" bash -c '
   body="$(sed -n "/^cmd_doctor()/,/^cmd_stats/p" "$0")"
   grep -q "ℹ️ lane-c 未起" <<< "$body"' "$LANE"
 # ⭐ 看门狗「正常等待」判定:C 轨起了才算数(在跑且空闲要被过问,没起不挡)
-t "#60②:wd_loop 正常等待判定含 lane-c 条件(起了才算数)" bash -c '
+t "#60②:wd_loop 正常等待判定含 lane-c 条件(起了才算数),催办正文按行动燃料 ⛔ 空闲轨名" bash -c '
   body="$(sed -n "/^wd_loop()/,/^}/p" "$0")"
   grep -q "win_exists \"lane-c\" || lane_busy c" <<< "$body" || exit 1
-  grep -q "lane-c" <<< "$(grep "idle=" <<< "$body")"' "$LANE"
+  grep -q "行动燃料" <<< "$body" && ! grep -q "local idle=" <<< "$body"' "$LANE"
 # ⭐ next-worktree 扩 C(零命中管道击穿绊线:B 有存量掩蔽,C 首用必然零命中——修前函数中途死,C 行根本打不出)
 tout "#60②:next-worktree 给出 C 轨下一号(零命中 ⛔ 经 pipefail 击穿函数)" "C 轨下一可用" "$LANE" next-worktree
 tout "#60②:next-worktree B 轨行照旧" "B 轨下一可用" "$LANE" next-worktree
@@ -2411,7 +2446,7 @@ rm -rf "$VLP"
 # ── #105-#108(复盘页 §十六,2026-08-20 创始人直令实现):四条判据函数纯化直测 ──
 V16="$(mktemp -d)"; V16F="$V16/fn.sh"
 grep -E '^PH_TIME_RE=' "$LANE" > "$V16F"
-for fn in ph_time_hits ev_directive_filter ev_material_filter handover_unpaired; do
+for fn in ph_time_hits ev_directive_filter ev_material_filter ev_prompt_mentions_materials ev_same_contract_mode handover_unpaired; do
   sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$V16F"; done
 t "#107 占位时刻:22:4x 命中" bash -c 'source "'"$V16F"'"; printf "%s" "创始人确认复工(22:4x,方案窗口问得)" | ph_time_hits | grep -q "22:4x"'
 t "#107 占位时刻:23:xx 命中" bash -c 'source "'"$V16F"'"; printf "%s" "大约 23:xx 起" | ph_time_hits >/dev/null'
@@ -2470,6 +2505,15 @@ t "#105 材料过滤:设计要点命中" bash -c 'source "'"$V16F"'"; printf "%s
 t "#105-fix2 材料过滤:新目录(3-方案层/前端设计)的设计要点命中——按文件名特征 ⛔ 绑目录前缀" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/3-方案层/前端设计/来信平台-首页信息推演与重做-设计要点.md" | ev_material_filter >/dev/null'
 t "#105-fix2 反向:同目录非材料文件不命中(特征匹配 ⛔ 目录放行)" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "项目入口/来信平台/知识库/3-方案层/前端设计/来信平台-前端开源参照调研.md" | ev_material_filter >/dev/null'
 t "#105 材料过滤:看板与执行总表不命中(⛔ 全 vault 广播)" bash -c 'source "'"$V16F"'"; ! printf "%s\n%s\n" "项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md" "项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md" | ev_material_filter >/dev/null'
+printf '本片依赖 [[wiki-供给侧词汇表]]。\n' > "$V16/prompt.md"
+t "#105 降噪:只给真正引用材料的 prompt 命中(按文件名/去后缀锚)" bash -c 'source "'"$V16F"'"; printf "%s\n" "项目入口/来信平台/知识库/索引/wiki-供给侧词汇表.md" | ev_prompt_mentions_materials "'"$V16"'/prompt.md"'
+t "#105 降噪:无引用的材料不命中" bash -c 'source "'"$V16F"'"; ! printf "%s\n" "项目入口/来信平台/知识库/索引/wiki-消费者词汇表.md" | ev_prompt_mentions_materials "'"$V16"'/prompt.md"'
+t "#105 降噪接线:材料先合批,再按在飞 prompt 算目标;⛔ 每个 vault commit 立即全广播" bash -c '
+  e="$(sed -n "/^ev_loop()/,/^}$/p" "'"$LANE"'")"
+  grep -q "EV_MATERIAL_DEBOUNCE" <<< "$e" && grep -q "ev_material_targets" <<< "$e" && grep -q "材料合批" <<< "$e"'
+t "同契约正文更新:交付报告静默;验收回执仍通知(回执正文可能改结论)" bash -c '
+  source "'"$V16F"'"
+  [ "$(ev_same_contract_mode "【交付完成】片 abc1234")" = quiet ] && [ "$(ev_same_contract_mode "【验收回执】通过 x")" = notify ]'
 cat > "$V16/board" <<'BEOF'
 | 08-20 03:27 | 方案窗口 | 方案窗口第十四任 pingxia-fb 交班(六步…) |
 | 08-19 19:17 | 中继窗口 | 收班完成 中继窗口 relay 第五任(…) |
@@ -3159,21 +3203,22 @@ t "#136:release 文案改口——不再写「仍需 stop && start」为唯一�
 rm -rf "$T136"
 
 T137="$(mktemp -d)"; sed -n "/^wd_fuel()/,/^}/p" "$LANE" > "$T137/f.sh"
-t "#137:wd_fuel 全无 ⇒ 空;ready 片 / 待认领 P / 在跑 verify 窗 / 转办 outbox / C 轨起且有片 各=有燃料;E 态不算;总表不可读按有燃料" bash -c '
+t "#137:wd_fuel 只认可行动燃料:空闲轨 ready / 待认领 P;忙轨 ready、verify/工具等待窗、relay outbox 都不算;总表不可读朝告警侧" bash -c '
   source "$1/f.sh"; SESSION=s; TABLE="$1/table.md"; : > "$TABLE"; EV_PENDING="$1/pending"; RELAY_OUTBOX="$1/outbox"; : > "$EV_PENDING"; : > "$RELAY_OUTBOX"
-  ev_next_ready(){ :; }; win_exists(){ return 1; }; tmux(){ :; }
+  ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }; tmux(){ :; }
   [ -z "$(wd_fuel)" ] || { echo "全无应为空:$(wd_fuel)"; exit 1; }
   ev_next_ready(){ [ "$1" = B ] && echo "某片"; }; grep -q "B:某片" <<< "$(wd_fuel)" || exit 2; ev_next_ready(){ :; }
+  ev_next_ready(){ [ "$1" = B ] && echo "某片"; }; lane_busy(){ [ "$1" = b ]; }; [ -z "$(wd_fuel)" ] || exit 21; lane_busy(){ return 1; }; ev_next_ready(){ :; }
   echo "1|x|E" > "$EV_PENDING"; [ -z "$(wd_fuel)" ] || exit 3
   echo "1|x|P" >> "$EV_PENDING"; grep -q "待认领" <<< "$(wd_fuel)" || exit 4; : > "$EV_PENDING"
-  tmux(){ echo "verify-某片"; }; grep -q "在跑验收" <<< "$(wd_fuel)" || exit 5; tmux(){ :; }
-  echo "1|id|to|x" > "$RELAY_OUTBOX"; grep -q "转办" <<< "$(wd_fuel)" || exit 6; : > "$RELAY_OUTBOX"
+  tmux(){ echo "verify-某片"; }; [ -z "$(wd_fuel)" ] || exit 5; tmux(){ :; }
+  echo "1|id|to|x" > "$RELAY_OUTBOX"; [ -z "$(wd_fuel)" ] || exit 6; : > "$RELAY_OUTBOX"
   win_exists(){ [ "$1" = lane-c ]; }; ev_next_ready(){ [ "$1" = C ] && echo "C片"; }; grep -q "C:C片" <<< "$(wd_fuel)" || exit 7
   win_exists(){ return 1; }; [ -z "$(wd_fuel)" ] || exit 8
   rm -f "$TABLE"; grep -q "不可读" <<< "$(wd_fuel)"' _ "$T137"
-t "#137:wd_loop 无燃料钩位置正确——在 dispatch 死亡重起之后(死了照重起)、在静默重起分支之前;且燃料回归时封顶静默 ⛔ 直接触发重起" bash -c '
+t "#137:wd_loop 无行动燃料钩位置正确——在 dispatch 死亡重起之后(死了照重起)、在静默重起分支之前;且燃料回归时封顶静默 ⛔ 直接触发重起" bash -c '
   w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"
-  a=$(grep -n "if ! dispatch_alive; then" <<< "$w" | head -1 | cut -d: -f1); b=$(grep -n "无燃料静默" <<< "$w" | head -1 | cut -d: -f1); c=$(grep -n "\"\$silent\" -ge \"\$restart_after\"" <<< "$w" | head -1 | cut -d: -f1)
+  a=$(grep -n "if ! dispatch_alive; then" <<< "$w" | head -1 | cut -d: -f1); b=$(grep -n "无行动燃料" <<< "$w" | head -1 | cut -d: -f1); c=$(grep -n "\"\$silent\" -ge \"\$restart_after\"" <<< "$w" | head -1 | cut -d: -f1)
   [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] &&
   grep -qF "[ \"\$silent\" -gt \"\$nudge_after\" ] && silent=\"\$nudge_after\"" <<< "$w" && grep -q "wd_fuel" <<< "$w"' _ "$LANE"
 rm -rf "$T137"
@@ -3237,7 +3282,7 @@ t "m_self_attest_model:底栏过渡态「… default」先等(2026-08-22 首火�
   tmux(){ echo x >> "$CNT"; if [ "$(wc -l < "$CNT")" -le 2 ]; then echo "  gpt-5.6-terra default · ~/x"; else echo "  gpt-5.6-terra xhigh fast · ~/x"; fi; }   # 计数走文件:桩在 $(…) 子 shell 里跑,内存计数不回传
   [ "$(m_self_attest_model m-x)" = "gpt-5.6-terra xhigh" ] || exit 1
   tmux(){ echo "  gpt-5.6-terra default · ~/x"; }; [ "$(m_self_attest_model m-x)" = "gpt-5.6-terra default" ]' _ "$TM"
-t "机动窗:win() 映射 m-*→「机动窗」;doctor §4 列在跑机动窗;看门狗对话框扫描与 wd_fuel 的一次性窗正则都含 m" bash -c '
+t "机动窗:win() 映射 m-*→「机动窗」;doctor §4 列在跑机动窗;一次性窗扫描正则都含 m" bash -c '
   grep -q "m-\*)       echo \"机动窗\"" "$1" && grep -q "在跑的机动窗" "$1" &&
   [ "$(grep -c "(verify|relay|m)-" "$1")" -ge 3 ]' _ "$LANE"
 t "机动窗:events——M 件交付 ⛔ 进 M1 台账;ev_loop 有机动件分支(⛔ verify-from,按件轻量复核 + m-down)" bash -c '
@@ -3466,6 +3511,14 @@ t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kicko
   grep -q "挂起 ≠ 停工" "$1/skills/laixin-pipeline/SKILL.md" && grep -q "本卡只放指针 ⛔ 抄全文" "$1/skills/laixin-pipeline/SKILL.md" &&
   grep -q "结构未知的字段族,prompt ⛔ 替开发方假设结构" "$1/skills/laixin-kickoff/SKILL.md" &&
   grep -q "^### 1-ter. 关系判据的样本值必须能让「通过」与「失败」分开" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "pipeline 派工卡保持轻量(≤220 行且 ≤30000 bytes,避免每任先花五万 token 读操作史)" bash -c '
+  f="$1/skills/laixin-pipeline/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 220 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 30000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "pipeline 瘦身不丢六条操作程序:三条已迁协作流程权威节,另三条卡内留精确指针" bash -c '
+  repo="$1"; flow="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-开发协作流程.md"; card="$repo/skills/laixin-pipeline/SKILL.md"
+  sq=$(printf "\\047")
+  for want in "流水线纪律（派工操作程序权威）" "1. 先登记后发车" "2. 台账书写八律" "text = text.replace(${sq}⛔ ${sq}, ${sq}不要${sq})" "3. 整行移出与移入" "4. 收方扫存量" "触发不依赖发方标记" "固定做双层扫" "文本零命中不等于零冲突" "结果必须留痕"; do grep -qF "$want" "$flow" || exit 1; done
+  grep -qF "核发车位→登记→fresh→send" "$flow" && grep -qF "无 ready 记一次后静默" "$flow" || exit 3
+  for want in "先登记后发车 →" "台账八律 →" "整行移出 →" "发车位 →" "打回座位 →" "扫存量 →" "“硬规则” > “发车位纪律”" "“挂起升级创始人” > “打回整改的座位裁决”" "“流水线纪律（派工操作程序权威）” > “4. 收方扫存量”"; do grep -qF "$want" "$card" || exit 2; done' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "version-flow:仓库单点源在(skills/laixin-version-flow/SKILL.md)且 doctor §1 落位清单含它" bash -c '
   [ -s "$1/skills/laixin-version-flow/SKILL.md" ] && grep -q "for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow" "$2"' _ "$(cd "$(dirname "$0")/.." && pwd)" "$LANE"
 
@@ -3543,14 +3596,17 @@ i4 = c.find('### ④ 保持注册表「待接」')
 i5 = c.find('### ⑤ 读交接包其余五件')
 i6 = c.find('### ⑥ 体检 → 落接班条')
 doctor = c.find('laixin-lane doctor', i6)
+ctx = c.find('laixin-lane ctx', i6)
 log = c.find('LAIXIN_WINDOW=方案窗口 laixin-lane log', i6)
 ready = c.find('**接班完成闸**', i6)
 commit = c.find("laixin-lane kb-commit '注册表:方案窗口第N任", ready)
-report = c.find('随后 `SendMessage` 向派工窗口与 11C 机务窗', ready)
-if min(i3, i4, i5, i6, doctor, log, ready, commit, report) < 0:
+report = c.find('随后按在局状态报到', ready)
+if min(i3, i4, i5, i6, doctor, ctx, log, ready, commit, report) < 0:
     errs.append('C2/C18:接班六步或就绪闸标记不齐')
-elif not (i3 < i4 < i5 < i6 < doctor < log < ready < commit < report):
-    errs.append('C2/C18:必须读注册表→保持待接→读包→doctor→接班条→发布在班→报到')
+elif not (i3 < i4 < i5 < i6 < doctor < ctx < log < ready < commit < report):
+    errs.append('C2/C18:必须读注册表→保持待接→读包→doctor→最终 ctx→接班条→发布在班→报到')
+if 'laixin-lane ctx' in c[:i6]:
+    errs.append('接班就绪读数过早:ctx 只能在全部读取与 doctor 后运行')
 WANT = ((u'起手式六步', 'C2 步数'),
         (u'N = M+1', 'C1 任次取法'),
         (u'sessionId', 'C11 前8位取处'),
@@ -3565,6 +3621,10 @@ WANT = ((u'起手式六步', 'C2 步数'),
         (u'「在班」是就绪标记', 'C18 就绪闸'),
         (u'【接班令】角色=方案窗口第N任', 'C19 短指针接班令'),
         (u'⛔ 复制起步顺序 / 待创始人清单 / 在途正文', 'C19 禁止大段交接消息'),
+        (u'11C 未在局且第一件不属于 11C', '11C 按需读'),
+        (u'默认只发「动作 + 权威路径#内容锚 + commit」', '通信短指针'),
+        (u'ACK-only', '零确认消息'),
+        (u'只有关键且仍会变化的文件', '可变指针自核'),
         (u'卡自身步序死锁', '第六族'))
 for want, why in WANT:
     if want not in c:
@@ -3874,8 +3934,8 @@ t "#165 events 认【工具件完成】末行标记" bash -c '
   seg="$(sed -n "/^ev_scan_deliveries/,/^}/p" "'"$LANE"'")"; grep -q "工具件完成" <<< "$seg"'
 t "#165 ev_loop 分流:工具件 ⛔ verify-from ⛔ 进 M1" bash -c '
   seg="$(sed -n "/^ev_loop/,/^}/p" "'"$LANE"'")"; grep -q "工具件完成" <<< "$seg" && grep -q "⛔ 起验收窗 ⛔ 进 M1 台账" <<< "$seg"'
-t "#165 wd_fuel 认工具窗为燃料(有工具件在跑 ⇒ 看门狗 ⛔ 按静默重起派工窗)" bash -c '
-  seg="$(sed -n "/^wd_fuel()/,/^}/p" "'"$LANE"'")"; grep -q "verify|relay|m|tool" <<< "$seg"'
+t "#165 等待窗不是派工燃料(工具/验收/中继在跑 ⇒ 派工席静默可健康等待)" bash -c '
+  seg="$(sed -n "/^wd_fuel()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"; ! grep -q "verify|relay|m|tool" <<< "$seg"'
 t "#165 doctor 报在跑工具窗 ⛔ 单例(worktree 隔离 ⇒ 可并发)" bash -c '
   seg="$(sed -n "/^cmd_doctor/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
   grep -q "开发维护窗" <<< "$seg" && ! grep -q "单例被破" <<< "$seg"'
@@ -3958,6 +4018,9 @@ t "#167 末行固定句的三种契约 ⛔ 降级〔病灶:中转回复末行永
   grep -q "\*) _prev=\"\"" <<< "$seg"'
 t "#167 病灶级:失败面是「投了一条告诉人别管的事件」⛔「没投递」——注释须留住这条判读" bash -c '
   grep -q "投的却是一条\*\*告诉人别管\*\*的事件" "'"$LANE"'"'
+t "#167 降噪:交付报告同契约正文更新只记日志;回执同契约更新仍投事件" bash -c '
+  e="$(sed -n "/末行未变的内容变更/,/^      fi$/p" "'"$LANE"'")"
+  grep -q "ev_same_contract_mode" <<< "$e" && grep -q "报告正文更新静默" <<< "$e"'
 
 
 # ── #168 doctor 报 11C 在局(方案窗口第二十四任批:条文靠人记,提示靠机器)──

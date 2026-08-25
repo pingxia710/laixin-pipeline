@@ -3511,8 +3511,8 @@ t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kicko
   grep -q "挂起 ≠ 停工" "$1/skills/laixin-pipeline/SKILL.md" && grep -q "本卡只放指针 ⛔ 抄全文" "$1/skills/laixin-pipeline/SKILL.md" &&
   grep -q "结构未知的字段族,prompt ⛔ 替开发方假设结构" "$1/skills/laixin-kickoff/SKILL.md" &&
   grep -q "^### 1-ter. 关系判据的样本值必须能让「通过」与「失败」分开" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
-t "pipeline 派工卡保持轻量(≤220 行且 ≤30000 bytes,避免每任先花五万 token 读操作史)" bash -c '
-  f="$1/skills/laixin-pipeline/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 220 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 30000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "pipeline 派工卡防回胖(≤220 行且 ≤12000 bytes)" bash -c '
+  f="$1/skills/laixin-pipeline/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 220 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 12000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "pipeline 瘦身不丢六条操作程序:三条已迁协作流程权威节,另三条卡内留精确指针" bash -c '
   repo="$1"; flow="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-开发协作流程.md"; card="$repo/skills/laixin-pipeline/SKILL.md"
   sq=$(printf "\\047")
@@ -3527,7 +3527,7 @@ t "version-flow:仓库单点源在(skills/laixin-version-flow/SKILL.md)且 docto
 # 🔴 探针**双向验证**:每条判据串必须在权威档里命中 ≥1(阳性对照)且在卡里命中 0(阴性)——
 #    只测「卡里 0 命中」会在抽取写错时全绿,那正是本卡自己写死要防的两态同形;
 # 🔴 **失效方向朝红**(检查器三约束②):权威档读不到 / 抽不出条目 ⇒ 直接红,⛔ 静默跳过当绿。
-cat > /tmp/lx-planwin-lint.py <<'PLANWIN_PY'
+cat > "$TDB/lx-planwin-lint.py" <<'PLANWIN_PY'
 import io, os, re, sys
 repo = sys.argv[1]
 card = os.path.join(repo, 'skills/laixin-plan-window/SKILL.md')
@@ -3541,7 +3541,9 @@ if not os.path.isfile(card) or os.path.getsize(card) == 0:
 c = io.open(card, encoding='utf-8').read()
 cs = strip(c)
 n = len(c.rstrip('\n').split('\n'))
-if n > 200: errs.append('卡 %d 行 > 200' % n)   # 2026-08-24 整改轮主持裁:上限 250 -> 200
+b = len(c.encode('utf-8'))
+if n > 180: errs.append('卡 %d 行 > 180' % n)
+if b > 20000: errs.append('卡 %d bytes > 20000' % b)
 if 'name: laixin-plan-window' not in c: errs.append('frontmatter name 不对')
 if 'laixin-version-flow laixin-plan-window' not in io.open(lane, encoding='utf-8').read():
     errs.append('doctor §1 落位清单未含 laixin-plan-window')
@@ -3646,10 +3648,10 @@ for r in rows6:
 if errs:
     for e in errs: print('❌', e)
     sys.exit(1)
-print('plan-window 绊线全过:%d 行 · 判据串 %d 条(raw/strip 各半)阳性命中且卡内 0 命中 · 整改绊线 %d 条全存 · §六 %d 族锚均指盘上真实文件' % (n, len(probes), len(WANT), len(rows6)))
+print('plan-window 绊线全过:%d 行/%d bytes · 判据串 %d 条(raw/strip 各半)阳性命中且卡内 0 命中 · 整改绊线 %d 条全存 · §六 %d 族锚均指盘上真实文件' % (n, b, len(probes), len(WANT), len(rows6)))
 PLANWIN_PY
-t "plan-window:卡在仓 + doctor §1 清单含它 + 零条文复制(判据串双向验证)+ 零项目状态 + ≤200 行 + 整改十七条不可回退" \
-  python3 /tmp/lx-planwin-lint.py "$(cd "$(dirname "$0")/.." && pwd)"
+t "plan-window:卡在仓 + 零条文复制/项目状态 + ≤180 行/20000 bytes + 整改不可回退" \
+  python3 "$TDB/lx-planwin-lint.py" "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TDB"
 
 # ── vmsg 固定段改形(2026-08-23 M 件「验收窗污染声明文本源定位」结论 A;dispatch 58 建议采)──────────────

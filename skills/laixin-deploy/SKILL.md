@@ -31,7 +31,7 @@ ssh -J wyinmac-vps-gateway -i ~/.ssh/aliyun-laixin-ed25519 root@121.196.192.44
 
 1. **服务器 origin 不是 GitHub,是本机裸仓 `/srv/git/laixin.git`** —— `deploy.sh` 只做 `git fetch origin` + `git pull --ff-only` ⇒ **不先推,脚本会一路成功而什么都没更新**;
 2. **`/opt/laixin` 属主是 `laixin`** —— 以 root 跑 `git -C /opt/laixin ...` **直接报错** `fatal: detected dubious ownership`。**所有 git 查询必须 `sudo -u laixin`**。⚠️ 反过来:**应用本身以 `laixin` 身份运行,所以它在启动时跑 git 是可行的**,别把 root 的限制外推到应用;
-3. **`/healthz` 返回常量 `{"status":"ok"}`,`version` 硬编码** ⇒ **它只证明进程活着,⛔ 当发布成功的判据**。(发布指纹端点是已登记的工程候选;在它落地前,判据只能是第四节那两条外部命令。)
+3. **`/healthz` 返回常量 `{"status":"ok"}`** ⇒ **它只证明进程活着,⛔ 当发布成功的判据**。🔁 **指纹已落地(2026-08-25 13:52:13 方案窗口第三十任)**:`GET /version` 返回 `{"revision": <部署时 git HEAD>}`(deploy.sh 写 `DEPLOYMENT_REVISION` 进 `.env`),2026-08-25 13:28 起 Caddy `@ops` 反代后**公网可核**——第四节第一判据。
 
 ## 二之二、🔴 部署前置:生产配置校验(2026-08-19 实撞,**唯一真正拦住部署的东西**)
 
@@ -84,6 +84,7 @@ sudo systemctl restart caddy
 **⛔ 只看脚本退出码** —— "脚本跑完了" ≠ "服务换代了"。
 
 ```bash
+curl -s https://laixin.net.cn/version                        # revision 必须 == 前置第1步记下的 hash(公网端到端,2026-08-25 起)
 sudo -u laixin git -C /opt/laixin rev-parse --short HEAD     # 必须 == 前置第1步记下的 hash
 systemctl show laixin-api -p ActiveEnterTimestamp            # 必须晚于本次部署开始时刻
 systemctl show laixin-web -p ActiveEnterTimestamp            # 同上
@@ -112,6 +113,8 @@ systemctl show laixin-web -p ActiveEnterTimestamp            # 同上
 **任一条判据不达标 ⇒ 先回滚,⛔ 在生产上现场调试**(违反运维手册 §四 变更纪律)。步骤见 `docs/deploy.md` §3;要点:
 - 指定上一个**已验证**提交重发:`DEPLOY_REVISION=<hash> ./deploy.sh`;
 - **迁移能否降级以该版本的 alembic `downgrade` 说明为准**,⛔ 猜降级命令;不确定就**先恢复数据库备份**;
+- 🔴 **含新迁移的回滚,降之前必须先用新代码 `alembic downgrade <旧版本 head>`**(2026-08-25 v0.2.3 演练实证):旧代码没有新 revision 文件,`deploy.sh` 的 `alembic upgrade head` 会报 `Can't locate revision` 而停在 [5/6];顺序=`sudo -u laixin bash -c 'cd /opt/laixin; set -a; . /etc/laixin/laixin.env; set +a; .venv/bin/alembic downgrade <旧 head>'` → `DEPLOY_REVISION=<旧 hash> deploy.sh`;
+- 演练回升用 `DEPLOY_REVISION=<新 hash> deploy.sh`(detached 态下 `git pull --ff-only` 不可用),验完再 `sudo -u laixin git -C /opt/laixin switch main`(同一提交零代码变化,不必重启);
 - 回滚后**停在该已验证提交**,⛔ 紧接 `git switch main`(两服务 `Restart=always`,意外重启会重新加载工作区)。
 
 ## 六、已发生过的失败(照此避坑)
@@ -126,6 +129,7 @@ systemctl show laixin-web -p ActiveEnterTimestamp            # 同上
 | **探针 `pgrep -f "deploy.sh"` 抓到自己的命令行**,误报"仍在跑"(同日三次) | 用 `pgrep -f "[d]eploy.sh"`;**凡按命令行文本找进程,先想自己算不算命中** |
 | 🔴 **括号技巧也没防住(第二层,同日第四次)**:`until ! pgrep -f "/opt/laixin/[d]eploy.sh"` 的**同一条命令行里另有一段真实字符串** `nohup setsid sudo -u laixin /opt/laixin/deploy.sh` ⇒ **被自己的模式命中,循环永不退出**;部署 14:21 已完成,监控空转到 14:33 才被发现 | **括号技巧只防"模式字符串自身",防不了"同命令行的其他部分"**。⇒ 等待外部进程一律**⛔ 按命令行文本判**,改判**可靠信号**:①记下 PID 用 `kill -0 <pid>`;②让被等的进程**写完成标记**(`&& touch /tmp/done`),等标记文件;③用日志 mtime 停止增长 加 末行含完成词。**"进程还在不在"要问系统,别问文本。** |
 | **运维手册日巡第 1 条 `https://laixin.net.cn/healthz` 从写下就不可能通过** —— Caddyfile 里根本没有 healthz 路由,公网访问恒 404(API 内网 `127.0.0.1:8000/healthz` 才是 200) | **判据写下时要真跑一次**;"看起来该有的路由"不等于配了 |
+| 🔴 **`npm ci` 无限等:服务器到 `registry.npmjs.org` 临时全断(10s 超时),8 分钟前还正常;`npmmirror` 同刻 0.1s 可达**(2026-08-25 v0.2.3 演练「升」第一次,日志 13:34:37 后无输出、npm 进程活着 7 分 46 秒) | 出网到官方源可以**只断 npm 不断别的**,pip 只是慢(有重试)。处置=`kill` 掉 npm 与脚本 → `sudo -u laixin env DEPLOY_REVISION=<hash> npm_config_registry=https://registry.npmmirror.com /opt/laixin/deploy.sh`(**仅本次运行 env ⛔ 写 .npmrc**;lockfile 的 sha512 integrity 照常校验,npm≥7 会把 lock 里默认源 URL 映射到配置源)。判卡的判据=**日志 mtime 停增 + 子进程 `ps --ppid` 的 etime**,⛔ 只看脚本进程在不在。中间态与下一行同族:磁盘已新、进程仍旧,`npm ci` 先删后装 ⇒ 别搁置 |
 | 部署失败后留下 **磁盘=新代码、进程=旧代码** 的中间态,而两服务 `Restart=always` ⇒ **任何重启都会加载新代码并卡在同一校验上,站点挂掉** | **fail-stop 不等于 fail-safe**:脚本安全停下,现场仍可能是带雷的。⇒ 失败后**必须立刻决定"补配置往前"还是"回滚往后"**,⛔ 搁置 |
 
 ## 七、发布后
@@ -157,5 +161,6 @@ systemctl show laixin-web -p ActiveEnterTimestamp            # 同上
 | 全量部署(新代码,370 提交规模) | **~44 秒** |
 | 回滚到旧版(小得多的代码) | **~33 秒** |
 | 仅前端重建(改 `NEXT_PUBLIC_*` 后) | **~40 秒** |
+| v0.2.3 升-降-升演练(16 提交,1 迁移;2026-08-25) | 升 **~60 秒** · 降(含 downgrade) **77 秒** · 回升(npmmirror) **45 秒** |
 
 ⇒ **超过 2 分钟没动静,先怀疑自己的监控,别怀疑部署。** 本卡记录的那次"卡 13 分钟",部署其实 38 秒就完了,卡住的是探针(见第六节 `pgrep` 两条)。**判断卡没卡用日志 mtime,⛔ 用进程存在性。**

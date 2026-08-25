@@ -3499,6 +3499,19 @@ if not os.path.isfile(flow):
 raw = io.open(flow, encoding='utf-8').read()
 lines = raw.split('\n')
 rawc, flows = raw, strip(raw)
+role = os.path.join(os.path.dirname(flow), '来信平台-方案窗口角色卡.md')
+if not os.path.isfile(role):
+    print('角色卡读不到(失效朝红 ⛔ 跳过):', role); sys.exit(1)
+rc = io.open(role, encoding='utf-8').read()
+r2a, r2b = rc.find('## 二、上岗两步'), rc.find('## 三、纪律十条')
+r2 = rc[r2a:r2b] if 0 <= r2a < r2b else ''
+r2_wait = r2.find('接班全程保持「待接」')
+r2_doctor = r2.find('`doctor` 0 错')
+r2_ready = r2.find('最后把注册表改为「在班」')
+if min(r2_wait, r2_doctor, r2_ready) < 0 or not (r2_wait < r2_doctor < r2_ready):
+    errs.append('C18:角色卡未锁死待接→doctor→在班次序')
+if '「在班」是唯一机器就绪标记' not in raw:
+    errs.append('C18:协作流程未定义唯一机器就绪标记')
 def sect(title):
     a = next((i for i, l in enumerate(lines) if l.startswith('### ' + title)), None)
     if a is None: return []
@@ -3526,11 +3539,18 @@ for kind, pb in probes:
 # 病灶级:下面每一条在修复被回退时都会变红 ⛔ 只测字串在不在。
 kb4 = os.path.expanduser('~/Obsidian/项目入口/来信平台/知识库/4-开发层')
 i3 = c.find('### ③ 读注册表你那一行')
-i4 = c.find('### ④ 自更注册表你那一行')
-if i3 < 0 or i4 < 0:
-    errs.append('C2:找不到 ③读注册表 / ④自更注册表 两步标题')
-elif i3 > i4:
-    errs.append('C2:③ 读注册表排在了 ④ 自更之后 = 步序死锁原样重现')
+i4 = c.find('### ④ 保持注册表「待接」')
+i5 = c.find('### ⑤ 读交接包其余五件')
+i6 = c.find('### ⑥ 体检 → 落接班条')
+doctor = c.find('laixin-lane doctor', i6)
+log = c.find('LAIXIN_WINDOW=方案窗口 laixin-lane log', i6)
+ready = c.find('**接班完成闸**', i6)
+commit = c.find("laixin-lane kb-commit '注册表:方案窗口第N任", ready)
+report = c.find('随后 `SendMessage` 向派工窗口与 11C 机务窗', ready)
+if min(i3, i4, i5, i6, doctor, log, ready, commit, report) < 0:
+    errs.append('C2/C18:接班六步或就绪闸标记不齐')
+elif not (i3 < i4 < i5 < i6 < doctor < log < ready < commit < report):
+    errs.append('C2/C18:必须读注册表→保持待接→读包→doctor→接班条→发布在班→报到')
 WANT = ((u'起手式六步', 'C2 步数'),
         (u'N = M+1', 'C1 任次取法'),
         (u'sessionId', 'C11 前8位取处'),
@@ -3542,6 +3562,9 @@ WANT = ((u'起手式六步', 'C2 步数'),
         (u'候方案窗口裁', 'C10 总表 grep 关键词'),
         (u'书写形态四条', 'C15 LAIXIN_WINDOW 第四条'),
         (u'先落盘成文件再派', 'C17 scribe-up 前置'),
+        (u'「在班」是就绪标记', 'C18 就绪闸'),
+        (u'【接班令】角色=方案窗口第N任', 'C19 短指针接班令'),
+        (u'⛔ 复制起步顺序 / 待创始人清单 / 在途正文', 'C19 禁止大段交接消息'),
         (u'卡自身步序死锁', '第六族'))
 for want, why in WANT:
     if want not in c:

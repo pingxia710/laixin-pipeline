@@ -33,7 +33,7 @@
 #                                    末行【中转回复】,events 投路径指针给派工窗口;常驻中继 `relay` 仍是 claude(结构:代发 SendMessage)
 #   laixin-lane rdown <件名>         回收一次性中继窗(+清其 CDP 通道)
 #   laixin-lane peek-ro <件名> [N]   看一次性中继窗最近 N 行
-#   laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <工具仓worktree> [--with-mcp 名]... [--dry]
+#   laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <工具仓worktree> [--engine codex|claude] [--transport tui|print] [--with-mcp 名]... [--dry]
 #                                    起 **11B/11C 开发维护窗**(#165,2026-08-23 创始人定形态:「给派工窗口用的,放在
 #                                    tmux 里面,派工窗口遇到问题可以拉起来的窗口」「**用 codex,跟开发窗口一样,
 #                                    也需要派工窗口写 prompt**」「这条线**只维护 11B、11C 开发维护**」):
@@ -4973,24 +4973,405 @@ tool_running() {  # → stdout=在跑的工具窗名(零个则空);只读,**恒�
   #   正常态**反而让命令失败。AGENTS「grep -c 零命中退出码 1 要兜底」同族。
   { tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -E '^tool-' | head -9; } || true
 }
-cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-mcp 名]... [--dry]
+
+# tool-up × Claude print 的薄桥。只搬官方 CLI 的进程事实与 stream-json，⛔ 解释任务质量。
+tool_native_parse() {  # <run_dir> <window> <launch_pid> <source_pid> <cwd> <raw_line>
+  local run="$1" window="$2" launch_pid="$3" source_pid="$4" cwd="$5" line="$6"
+  local line_f="$run/.line.$$" map_f="$run/.mapped.$$" mode detail event py_rc=0
+  printf '%s\n' "$line" >> "$run/raw.jsonl"       # raw 必须先于任何解析结果落账
+  printf '%s' "$line" > "$line_f"
+  python3 - "$run" "$window" "$launch_pid" "$source_pid" "$cwd" \
+    "${LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION:-2.1.241}" "$line_f" > "$map_f" <<'PY' || py_rc=$?
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+run, window, launch_pid, source_pid, cwd, expected_version, line_path = sys.argv[1:]
+root = Path(run)
+line = Path(line_path).read_text(errors="replace")
+bound_path = root / "bound-session"
+version_path = root / "cli-version"
+bound = bound_path.read_text().strip() if bound_path.exists() else ""
+version = version_path.read_text().strip() if version_path.exists() else expected_version
+
+def envelope(phase, raw_type=None, session_id=None, usage=None, exit_code=None, **extra):
+    out = {
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "window": window,
+        "engine": "claude",
+        "cli_version": version or None,
+        "session_id": session_id or bound or None,
+        "pid": int(launch_pid),
+        "cwd": cwd,
+        "phase": phase,
+        "raw_type": raw_type,
+        "usage": usage,
+        "exit_code": exit_code,
+    }
+    out.update(extra)
+    return out
+
+def emit(mode, events):
+    print(mode)
+    for event in events:
+        print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+def reject(reason, raw_type=None):
+    emit("error\t" + reason, [envelope("protocol_unknown", raw_type, raw=line, reason=reason)])
+
+if source_pid != launch_pid:
+    reject("source_pid_mismatch")
+    raise SystemExit
+if not line.startswith("{"):
+    emit("events", [envelope("notice", None, raw=line)])
+    raise SystemExit
+try:
+    obj = json.loads(line)
+except Exception:
+    reject("invalid_json")
+    raise SystemExit
+raw_type = obj.get("type")
+if raw_type not in {"system", "assistant", "user", "result", "rate_limit_event", "tool_progress"}:
+    reject("unknown_type", raw_type)
+    raise SystemExit
+
+if raw_type == "system" and obj.get("subtype") == "init":
+    session_id = obj.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        reject("init_missing_session_id", raw_type)
+        raise SystemExit
+    if bound:
+        reject("second_init", raw_type)
+        raise SystemExit
+    registry = root.parent / "sessions"
+    seen = registry.read_text().splitlines() if registry.exists() else []
+    if session_id in seen:
+        reject("duplicate_session_across_run", raw_type)
+        raise SystemExit
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    with registry.open("a") as handle:
+        handle.write(session_id + "\n")
+    bound_path.write_text(session_id + "\n")
+    (root / "accepted").write_text(session_id + "\n")
+    actual_version = obj.get("claude_code_version")
+    if isinstance(actual_version, str) and actual_version:
+        version = actual_version
+        version_path.write_text(actual_version + "\n")
+        if expected_version and actual_version != expected_version and not (root / "version-alerted").exists():
+            (root / "version-alert.pending").write_text(actual_version + "|" + expected_version + "\n")
+    emit("events", [envelope(
+        "accepted", raw_type, session_id=session_id, usage=obj.get("usage"),
+        skills=obj.get("skills"), tools=obj.get("tools"), mcp_servers=obj.get("mcp_servers"),
+        permission_mode=obj.get("permissionMode"), subtype=obj.get("subtype"),
+    )])
+    raise SystemExit
+
+if not bound:
+    if raw_type == "system" and obj.get("subtype") in {"hook_started", "hook_response"}:
+        emit("events", [envelope(
+            "notice", raw_type, usage=obj.get("usage"),
+            native_subtype=obj.get("subtype"), system_event=obj,
+        )])
+        raise SystemExit
+    reject("event_before_init", raw_type)
+    raise SystemExit
+session_id = obj.get("session_id")
+if session_id is not None and session_id != bound:
+    reject("session_id_mismatch", raw_type)
+    raise SystemExit
+usage = obj.get("usage")
+events = []
+
+if raw_type == "system":
+    events.append(envelope(
+        "notice", raw_type, session_id=bound, usage=usage,
+        native_subtype=obj.get("subtype"), system_event=obj,
+    ))
+elif raw_type == "assistant":
+    message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+    usage = usage if usage is not None else message.get("usage")
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "tool_use":
+            events.append(envelope(
+                "tool_started", raw_type, session_id=bound, usage=usage,
+                name=part.get("name"), id=part.get("id"),
+            ))
+    events.append(envelope(
+        "assistant_message", raw_type, session_id=bound, usage=usage,
+        message_id=message.get("id"),
+        content_types=[p.get("type") for p in content if isinstance(p, dict)],
+    ))
+elif raw_type == "user":
+    message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "tool_result":
+            events.append(envelope(
+                "tool_finished", raw_type, session_id=bound, usage=usage,
+                id=part.get("tool_use_id"), is_error=part.get("is_error"),
+            ))
+    if not events:
+        events.append(envelope("turn_started", raw_type, session_id=bound, usage=usage))
+elif raw_type == "rate_limit_event":
+    events.append(envelope(
+        "notice", raw_type, session_id=bound, usage=usage,
+        rate_limit_event=obj.get("rate_limit_info"),
+    ))
+elif raw_type == "tool_progress":
+    events.append(envelope(
+        "notice", raw_type, session_id=bound, usage=usage,
+        tool_progress_event=obj,
+    ))
+elif raw_type == "result":
+    if not obj.get("subtype"):
+        reject("result_missing_subtype", raw_type)
+        raise SystemExit
+    if (root / "result.event").exists():
+        reject("second_result", raw_type)
+        raise SystemExit
+    result = envelope(
+        "settled", raw_type, session_id=bound, usage=usage, exit_code=None,
+        subtype=obj.get("subtype"), terminal_reason=obj.get("terminal_reason"),
+        stop_reason=obj.get("stop_reason"), permission_denials=obj.get("permission_denials"),
+        is_error=obj.get("is_error"), total_cost_usd=obj.get("total_cost_usd"),
+        num_turns=obj.get("num_turns"),
+    )
+    emit("result", [result])
+    raise SystemExit
+emit("events", events)
+PY
+  rm -f "$line_f"
+  if [ "$py_rc" -ne 0 ]; then
+    rm -f "$map_f"
+    touch "$run/protocol-error"
+    board "tool-native" "🔴 ${window} print 协议解析器异常(rc=${py_rc});raw 已留 ${run}/raw.jsonl"
+    return 1
+  fi
+  IFS=$'\t' read -r mode detail < "$map_f" || true
+  case "$mode" in
+    events)
+      { IFS= read -r _; while IFS= read -r event; do printf '%s\n' "$event" >> "$run/events.jsonl"; done; } < "$map_f"
+      ;;
+    result)
+      { IFS= read -r _; IFS= read -r event || event=""; printf '%s\n' "$event" > "$run/result.event"; } < "$map_f"
+      ;;
+    error)
+      { IFS= read -r _; while IFS= read -r event; do printf '%s\n' "$event" >> "$run/events.jsonl"; done; } < "$map_f"
+      printf '%s\n' "$detail" >> "$run/protocol-error"
+      board "tool-native" "🔴 ${window} print protocol_unknown:${detail};raw=${run}/raw.jsonl"
+      ;;
+    *)
+      printf 'parser_output_invalid\n' >> "$run/protocol-error"
+      board "tool-native" "🔴 ${window} print 解析器输出失效;raw=${run}/raw.jsonl"
+      mode=error
+      ;;
+  esac
+  rm -f "$map_f"
+  if [ -s "$run/version-alert.pending" ]; then
+    local drift; drift="$(cat "$run/version-alert.pending")"
+    board "tool-native" "⚠️ ${window} Claude CLI 协议版本漂移:${drift}（留账但不阻断）"
+    mv "$run/version-alert.pending" "$run/version-alerted"
+  fi
+  if [ -s "$run/accepted" ] && [ "$mode" != result ]; then
+    printf 'running %s\n' "$(cat "$run/accepted")" > "$run/status.new.$$"
+    mv "$run/status.new.$$" "$run/status"
+  fi
+  [ "$mode" != error ]
+}
+
+tool_native_status() {  # launched|read|finalize <run_dir> ...
+  local action="$1"; shift
+  case "$action" in
+    launched)
+      local run="$1" window="$2" pid="$3" cwd="$4" version="$5"
+      local event
+      printf '%s\n' "$pid" > "$run/pid"
+      printf '%s\n' "$version" > "$run/fixture-version"
+      event="$(python3 - "$window" "$pid" "$cwd" "$version" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+window, pid, cwd, version = sys.argv[1:]
+print(json.dumps({
+    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "window": window, "engine": "claude", "cli_version": version or None,
+    "session_id": None, "pid": int(pid), "cwd": cwd, "phase": "launched",
+    "raw_type": None, "usage": None, "exit_code": None,
+ }, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
+      printf '%s\n' "$event" >> "$run/events.jsonl"
+      printf 'launched %s\n' "$pid" > "$run/status"
+      ;;
+    read)
+      local run="$1"
+      if [ -s "$run/status" ]; then
+        cat "$run/status"
+        if grep -q '^failed ' "$run/status"; then
+          echo "--- stdout tail ---"; tail -20 "$run/raw.jsonl" 2>/dev/null || true
+          echo "--- stderr tail ---"; tail -20 "$run/stderr.log" 2>/dev/null || true
+        fi
+      else
+        echo "missing"
+      fi
+      ;;
+    finalize)
+      local run="$1" window="$2" pid="$3" cwd="$4" cli_rc="$5"
+      local reason="" overall="$cli_rc" event
+      if [ -e "$run/timeout" ]; then reason="init_timeout"
+      elif [ -s "$run/protocol-error" ]; then reason="protocol_unknown"
+      elif [ ! -s "$run/accepted" ]; then reason="init_missing"
+      elif [ ! -s "$run/result.event" ]; then reason="result_missing"
+      elif [ "$cli_rc" -ne 0 ]; then reason="cli_nonzero"
+      fi
+      if [ -z "$reason" ]; then
+        event="$(python3 - "$run/result.event" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+event = json.loads(open(sys.argv[1]).read())
+event["ts"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+event["exit_code"] = 0
+print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
+        printf '%s\n' "$event" >> "$run/events.jsonl"
+        printf 'settled 0\n' > "$run/status.new.$$"
+        mv "$run/status.new.$$" "$run/status"
+        return 0
+      fi
+      [ "$overall" -ne 0 ] || overall=1
+      event="$(python3 - "$run" "$window" "$pid" "$cwd" "$overall" "$cli_rc" "$reason" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+run, window, pid, cwd, exit_code, cli_exit_code, reason = sys.argv[1:]
+root = Path(run)
+def read(name):
+    path = root / name
+    return path.read_text(errors="replace").strip() if path.exists() else ""
+def tail(name, count=20):
+    lines = read(name).splitlines()
+    return "\n".join(lines[-count:])
+event = {
+    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "window": window, "engine": "claude",
+    "cli_version": read("cli-version") or read("fixture-version") or None,
+    "session_id": read("bound-session") or None, "pid": int(pid), "cwd": cwd,
+    "phase": "failed", "raw_type": None, "usage": None, "exit_code": int(exit_code),
+    "cli_exit_code": int(cli_exit_code), "reason": reason,
+    "stdout_tail": tail("raw.jsonl"), "stderr_tail": tail("stderr.log"),
+ }
+print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
+      printf '%s\n' "$event" >> "$run/events.jsonl"
+      printf 'failed %s %s\n' "$overall" "$reason" > "$run/status.new.$$"
+      mv "$run/status.new.$$" "$run/status"
+      if [ ! -e "$run/alerted" ]; then
+        touch "$run/alerted"
+        board "tool-native" "🔴 ${window} Claude print failed(reason=${reason};exit=${overall};cli_exit=${cli_rc});窗保留、⛔ 自动重投、⛔ 自动回落 TUI;证据=${run}"
+      fi
+      [ "$overall" -ge 1 ] && [ "$overall" -le 255 ] || overall=1
+      return "$overall"
+      ;;
+    *) die "tool-native status 未知动作:$action" ;;
+  esac
+}
+
+tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
+  local window="$1" run="$2" prompt="$3" cwd="$4" bu="$5" port="$6"
+  local fixture_version="${LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION:-2.1.241}"
+  local init_timeout="${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}"
+  case "$init_timeout" in ''|*[!0-9]*) init_timeout=90 ;; esac
+  [ -d "$run" ] || mkdir -p "$run"
+  umask 077
+  : > "$run/raw.jsonl"; : > "$run/events.jsonl"; : > "$run/stderr.log"; : > "$run/status"
+  local fifo="$run/stdout.pipe"; rm -f "$fifo"; mkfifo "$fifo"
+  ensure_headless_settings
+  local brief; brief="$(<"$prompt")"
+  BU_NAME="$bu" BU_CDP_URL="http://127.0.0.1:$port" \
+    "$CLAUDE_LAUNCHER" -n "$window" --model "$TOOL_CLAUDE_MODEL" \
+      --permission-mode auto --settings "$HEADLESS_SETTINGS" --disallowedTools "${TOOL_DENY[@]}" \
+      -p "$brief" --output-format stream-json --verbose \
+      > "$fifo" 2> "$run/stderr.log" </dev/null &
+  local pid=$! line cli_rc=0 final_rc=0 timeout_pid=""
+  tool_native_status launched "$run" "$window" "$pid" "$cwd" "$fixture_version"
+  (
+    sleep "$init_timeout"
+    if [ ! -s "$run/accepted" ] && kill -0 "$pid" 2>/dev/null; then
+      touch "$run/timeout"
+      python3 - "$pid" <<'PY'
+import os, signal, subprocess, sys, time
+root = int(sys.argv[1])
+pairs = [tuple(map(int, line.split())) for line in subprocess.check_output(
+    ["ps", "-axo", "pid=,ppid="], text=True
+).splitlines()]
+children = {}
+for child, parent in pairs:
+    children.setdefault(parent, []).append(child)
+tree, stack = [], [root]
+while stack:
+    parent = stack.pop()
+    for child in children.get(parent, []):
+        tree.append(child)
+        stack.append(child)
+for sig in (signal.SIGTERM, signal.SIGKILL):
+    for process in reversed(tree + [root]):
+        try: os.kill(process, sig)
+        except ProcessLookupError: pass
+    if sig == signal.SIGTERM: time.sleep(.2)
+PY
+    fi
+  ) &
+  timeout_pid=$!
+  exec 3< "$fifo"
+  while IFS= read -r line <&3; do
+    tool_native_parse "$run" "$window" "$pid" "$pid" "$cwd" "$line" || true
+    if [ -n "$timeout_pid" ] && [ -s "$run/accepted" ]; then
+      kill "$timeout_pid" 2>/dev/null || true
+      wait "$timeout_pid" 2>/dev/null || true
+      timeout_pid=""
+    fi
+  done
+  exec 3<&-
+  if [ -n "$timeout_pid" ]; then
+    kill "$timeout_pid" 2>/dev/null || true
+    wait "$timeout_pid" 2>/dev/null || true
+  fi
+  wait "$pid" || cli_rc=$?
+  rm -f "$fifo"
+  tool_native_status finalize "$run" "$window" "$pid" "$cwd" "$cli_rc" || final_rc=$?
+  return "$final_rc"
+}
+
+cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--engine codex|claude] [--transport tui|print] [--with-mcp 名]... [--dry]
   local item="${1:-}"; shift || true
-  [ -n "$item" ] || die "tool-up 需要件名:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--dry]"
-  local prompt="" dir="" mcp_keep="" dry="" eng_opt=""
+  [ -n "$item" ] || die "tool-up 需要件名:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--engine codex|claude] [--transport tui|print] [--dry]"
+  local prompt="" dir="" mcp_keep="" dry="" eng_opt="" transport_opt=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt)   prompt="${2:?--prompt 需要 prompt 路径}"; shift 2 ;;
       --dir)      dir="${2:?--dir 需要 worktree 路径}"; shift 2 ;;
       --with-mcp) mcp_keep="${mcp_keep:+$mcp_keep,}${2:?--with-mcp 需要服务名}"; shift 2 ;;
       --engine)   eng_opt="${2:?--engine 需要 codex|claude}"; shift 2 ;;
+      --transport) transport_opt="${2:?--transport 需要 tui|print}"; shift 2 ;;
       --dry)      dry=1; shift ;;
-      *) die "未知参数:$1(用法:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--engine codex|claude] [--with-mcp 名]... [--dry])" ;;
+      *) die "未知参数:$1(用法:laixin-lane tool-up <件名> --prompt <开发prompt.md> --dir <worktree> [--engine codex|claude] [--transport tui|print] [--with-mcp 名]... [--dry])" ;;
     esac
   done
+  # transport 只读解析:当次参数 > env > 既有 switch-dir 文件 > tui；CLI ⛔ 持久写开关。
+  local TOOL_TRANSPORT="$transport_opt"
+  if [ -z "$TOOL_TRANSPORT" ]; then TOOL_TRANSPORT="${LAIXIN_TOOL_TRANSPORT:-}"; fi
+  if [ -z "$TOOL_TRANSPORT" ] && [ -s "$LANE_SWITCH_DIR/tool-transport" ]; then
+    TOOL_TRANSPORT="$(head -1 "$LANE_SWITCH_DIR/tool-transport" | tr -d '[:space:]')"
+  fi
+  TOOL_TRANSPORT="${TOOL_TRANSPORT:-tui}"
+  case "$TOOL_TRANSPORT" in tui|print) : ;; *) die "未知 transport:$TOOL_TRANSPORT(只接受 tui|print;参数 > LAIXIN_TOOL_TRANSPORT > $LANE_SWITCH_DIR/tool-transport > tui)" ;; esac
   # 引擎:**最先解析与校验**——它是最便宜的判据(纯字符串),让人先被 worktree/prompt 校验挡住
   #   才发现引擎名写错,是把最贵的检查放在了最前面。起窗时**实时**读(与 dispatch 同一课)。
   local TOOL_ENGINE="${eng_opt:-$TOOL_ENGINE_SW}"
   case "$TOOL_ENGINE" in codex|claude) : ;; *) die "未知引擎:$TOOL_ENGINE(只接受 codex 默认 | claude 第二;开关 ~/.laixin-lane-switch/tool-engine 或 LAIXIN_TOOL_ENGINE)" ;; esac
+  [ "$TOOL_TRANSPORT" != print ] || [ "$TOOL_ENGINE" = claude ] || die "第一片只支持 claude print；codex + print 已拒绝，窗口未动（改用 --engine claude 或 --transport tui）"
   # 🔴 **prompt 必填**(创始人:「也需要派工窗口写 prompt」)——与开发片同一形态:prompt 是件的唯一依据,
   #   ⛔ 把任务塞进命令行(一句话描述漏掉复现步骤与判据,而工具件第一步就是「查清现状为什么是这样」)。
   [ -n "$prompt" ] || die "tool-up 必须 --prompt <开发prompt.md>(派工窗口写,与开发片同形;⛔ 把任务塞进命令行)"
@@ -5009,14 +5390,15 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--with-
   local report="$KB/4-开发层/记录/11B工具件-${item}-报告.md"
   local card="$HOME/Obsidian/项目入口/laixin开发流水线/知识库/wiki/11B-11C开发维护角色卡.md"
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
-  local launch gdef="—"
+  local launch gdef="—" native_ledger="$EV_DIR/native/$w/<run-id>"
   if [ "$TOOL_ENGINE" = "codex" ]; then
     launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
     gdef="$(codex_global_default 2>/dev/null || echo '?')"
+  elif [ "$TOOL_TRANSPORT" = "print" ]; then
+    launch="$CLAUDE_LAUNCHER -n \"$w\" --model \"$TOOL_CLAUDE_MODEL\" --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools <既有禁令> -p <同一件点名prompt-argv> --output-format stream-json --verbose </dev/null"
   else
     # 🔴 模型串**必须带引号**(2026-08-23 首火实撞,shell 六发第七发):`claude-fable-5[1m]` 的 `[1m]`
     #   被 zsh 当 glob 字符类 ⇒ `no matches found`,**整条起动命令根本没执行**,而外部只看到「90s 未见输入框」。
-    ensure_headless_settings
     local _deny; _deny="$(printf '"%s" ' "${TOOL_DENY[@]}")"
     launch="BU_NAME=\"$bu\" BU_CDP_URL=\"http://127.0.0.1:$port\" $CLAUDE_LAUNCHER -n \"$w\" --model \"$TOOL_CLAUDE_MODEL\" --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools $_deny"
   fi
@@ -5078,6 +5460,8 @@ EOF
   local troot="—" trc=0
   if [ "$TOOL_ENGINE" = "codex" ]; then
     troot="$(codex_trust_root "$dir_r")"; codex_dir_trusted "$dir_r" || trc=$?
+  elif [ "$TOOL_TRANSPORT" = "print" ]; then
+    troot="$dir_r(claude:print 只认 native event/exit,不读 TUI trust 画面)"
   else
     vtrusted_dir "$dir_r" || trc=$?; troot="$dir_r(claude:vtrusted_dir 判据)"
   fi
@@ -5085,9 +5469,12 @@ EOF
     if [ "$TOOL_ENGINE" = "codex" ]; then
       echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=codex(默认) 全局默认=${gdef}(与开发轨同源 ⛔ 钉模型)"
     else
-      echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=claude(第二路线) 模型=${TOOL_CLAUDE_MODEL}(开关 ~/.laixin-lane-switch/tool-claude-model)  工具层禁令 ${#TOOL_DENY[@]} 条"
+      echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=claude(第二路线) transport=${TOOL_TRANSPORT} 模型=${TOOL_CLAUDE_MODEL}(开关 ~/.laixin-lane-switch/tool-claude-model)  工具层禁令 ${#TOOL_DENY[@]} 条"
     fi
     echo "[dry] 起动串:$launch"
+    echo "[dry] transport=${TOOL_TRANSPORT}(参数 > LAIXIN_TOOL_TRANSPORT > $LANE_SWITCH_DIR/tool-transport > tui)"
+    echo "[dry] native 账:${native_ledger}/{raw.jsonl,events.jsonl,stderr.log,status}(仅 print 真跑创建)"
+    echo "[dry] 回退:删 $LANE_SWITCH_DIR/tool-transport 或显式 --transport tui；print 失败窗保留且 ⛔ 自动重投/⛔ 自动回落 TUI"
     echo "[dry] 信任核($TOOL_ENGINE):$troot($([ "$trc" -eq 0 ] && echo 已信任 || echo '🔴 未信任 ⇒ 真跑会被拦下'))"
     echo "[dry] 交付契约:$report 末行【工具件完成】11B-${item} <commit|no-commit>"
     echo "[dry] 点名指令首行:$(head -1 <<< "$msg" | cut -c1-120)"
@@ -5097,6 +5484,7 @@ EOF
     echo "[dry] 覆盖范围:参数校验 · worktree 归属(必须属工具仓)· ⛔ 主树 · 信任根读数 · 契约路径 · 同件窗冲突 · 端口撞车;⛔ 覆盖=启动超时/自证窗内自报模型(真起窗才知道)"
     return 0
   fi
+  [ "$TOOL_ENGINE" != "claude" ] || ensure_headless_settings
   if [ "$trc" -ne 0 ]; then
     if [ "$TOOL_ENGINE" = "codex" ]; then
       die "⛔ codex 未信任该 worktree 的项目根 ${troot}(~/.codex/config.toml 无对应 [projects.\"…\"] trust_level=\"trusted\")——起窗必被信任对话框挡住(对话框纪律 ⛔ 自动选默认项)"
@@ -5110,9 +5498,43 @@ EOF
   fi
   local clash; clash="$(oneshot_port_clash "$port" 2>/dev/null || true)"
   [ -z "$clash" ] || die "⛔ CDP 端口 $port 与在跑一次性窗 $clash 撞车——改件名再起"
+  local native_run=""
+  if [ "$TOOL_TRANSPORT" = "print" ]; then
+    local run_id lane_self
+    run_id="$(date '+%Y%m%d-%H%M%S')-$$"
+    native_run="$EV_DIR/native/$w/$run_id"
+    mkdir -p "$EV_DIR/native/$w"
+    mkdir "$native_run" || die "native run 账目录创建失败:$native_run"
+    printf '%s' "$msg" > "$native_run/brief.txt"
+    lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+    printf -v launch 'env HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q LAIXIN_CLAUDE_LAUNCHER=%q LAIXIN_TOOL_CLAUDE_MODEL=%q LAIXIN_HEADLESS_SETTINGS=%q LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q' \
+      "$HOME" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" "$CLAUDE_LAUNCHER" "$TOOL_CLAUDE_MODEL" "$HEADLESS_SETTINGS" \
+      "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION:-2.1.241}" \
+      "$lane_self" "$w" "$native_run" "$native_run/brief.txt" "$dir_r" "$bu" "$port"
+  fi
   tmux new-window -t "$SESSION" -n "$w" -c "$dir_r"
   sleep 0.5
   tmux send-keys -t "$SESSION:$w" "$launch" C-m
+  # print transport begin:只读 native status，⛔ pane/capture/dialog 判定。
+  if [ "$TOOL_TRANSPORT" = "print" ]; then
+    local state="" state_head="" waited=0
+    while [ "$waited" -lt 95 ]; do
+      state="$(tool_native_status read "$native_run")"
+      state_head="${state%%$'\n'*}"
+      case "$state_head" in
+        running\ *|settled\ *) break ;;
+        failed\ *) die "$w Claude print 启动失败，窗已保留。${state}" ;;
+      esac
+      sleep 1; waited=$((waited + 1))
+    done
+    case "$state_head" in running\ *|settled\ *) : ;; *) die "$w Claude print 90s 内未见合法 init，窗已保留。${state}" ;; esac
+    board "$(caller_src)" "起 11B/11C 开发维护窗 $w(件=${item};引擎 claude;transport print;配型 ${TOOL_CLAUDE_MODEL};worktree ${dir_r};prompt ${prompt};native账 ${native_run};交付=${report} 末行【工具件完成】)——**开分支 ⛔ 提交 main**;settled≠交付;件毕由起窗方 laixin-lane tool-down ${item} 回收"
+    echo "✅ 已起 11B/11C 开发维护窗 $w(claude,transport=print,cwd=$dir_r)"
+    echo "   native 账:${native_run}（终态只认 result + CLI exit；settled ≠【工具件完成】）"
+    echo "   看现场:laixin-lane peek-tool $item 40   回收:laixin-lane tool-down $item"
+    return 0
+  fi
+  # print transport end
   if [ "$TOOL_ENGINE" = "codex" ]; then
     vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-tool $item 40"
   else
@@ -6995,6 +7417,7 @@ case "${1:-}" in
   relay-once) shift; cmd_relay_once "$@" ;;   # 一次性应召中继窗(claude 默认 / codex 第二;件毕即收)
   rdown)      shift; cmd_rdown "$@" ;;        # 回收一次性中继窗
   peek-ro)    shift; cmd_peekro "$@" ;;
+  tool-native-run) shift; tool_native_launch "$@" ;;  # tool-up print 窗内私有入口(官方 CLI 单轮;⛔ 用户命令)
   tool-up)    shift; cmd_tool_up "$@" ;;    # 11B/11C 工具维护窗(#165;tmux 托管一次性应召,单例;派工窗口遇工具问题拉起)
   tool-down)  shift; cmd_tool_down "$@" ;;
   toollist)   shift; cmd_tool_list "$@" ;;

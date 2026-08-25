@@ -175,6 +175,7 @@ prompt 宪法头、测试矩阵、交付契约正文见：
 
 - M 件只做非产品代码的执行类活；报告末行 【交付完成】M轨-...，按任务单轻量复核，不起验收窗。
 - tool-up 只维护 11B/11C，自建分支，不提交 main；报告末行 【工具件完成】。
+- Claude print 传输 `--engine claude --transport print`(默认仍 `tui`)**已在册但整体 no-go**：候补首火件与方案窗口复核前 ⛔ 用它起件；解析顺序与回退跑 `--dry` 自看。
 - relay-once 是按件快查/书记，不替代常驻 relay；需要 relay-msg 代发时常驻 relay 必须在班。
 - 等待这些窗口产出不构成派工燃料；各自的超时和回执由 events 管。
 

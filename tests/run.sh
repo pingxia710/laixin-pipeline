@@ -1361,10 +1361,10 @@ t "#75 起窗入口默认仍是 claude(⛔ 默认换新,切换要显式;理由�
   'grep -qE "LAIXIN_CLAUDE_LAUNCHER:-.*echo claude" "'"$LANE"'"'
 t "#75 起窗入口可被 LAIXIN_CLAUDE_LAUNCHER 覆盖" bash -c \
   'grep -q "LAIXIN_CLAUDE_LAUNCHER" "'"$LANE"'"'
-# 🔁 沿革(2026-08-23 #165-2):调用点由 4 处 → **5 处**——创始人「这个位置默认 codex,也写个 claude 的版本」
-#   ⇒ 11B/11C 开发维护窗的 claude 路线是第 5 处。断言随之更新 **⛔ 删**(它钉的是「零硬编码 claude」,不是数字本身)。
-t "#75 五处起窗调用点全部走变量,零硬编码 claude(漏一处=该窗口静默用旧账号;2026-08-22 relay-once claude 分支加为第 4 处;2026-08-23 #165-2 工具窗 claude 路线加为第 5 处)" bash -c \
-  'n="$(grep -c "\$CLAUDE_LAUNCHER -n " "'"$LANE"'")"; [ "$n" = 5 ] || { echo "变量调用点=$n,应为5"; exit 1; };
+# 🔁 沿革:2026-08-23 #165-2 调用点由 4→5；本片 Claude print 新增第 6 个真实执行点。
+#   断言随之更新 **⛔ 删**(它钉的是「零硬编码 claude」,不是数字本身；dry 展示串不计执行点)。
+t "#75 六处起窗调用点全部走变量,零硬编码 claude(print 为第 6 处；dry 展示串不计执行点)" bash -c \
+  'n="$(grep -E '\''\$CLAUDE_LAUNCHER"? -n '\'' "'"$LANE"'" | grep -v "<同一件点名prompt-argv>" | wc -l | tr -d " ")"; [ "$n" = 6 ] || { echo "变量调用点=$n,应为6"; exit 1; };
    h="$(grep -c "\" claude -n " "'"$LANE"'" || true)"; [ "$h" = 0 ] || { echo "仍有 $h 处硬编码 claude -n"; exit 1; }'
 
 
@@ -3969,6 +3969,177 @@ t "#165-2 vtrusted_dir 按 git 结构认工具仓 worktree(⛔ 路径通配:work
 t "#165-2 起手式与红线按引擎分叉(claude 说工具层已禁 / codex 说以本指令为准)" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"
   grep -q "工具层已禁" <<< "$seg" && grep -q "没有 claude 的工具层禁令" <<< "$seg" && grep -q "opener=" <<< "$seg"'
+t "#165-3 Claude print 薄桥恰为主脚本内三函数(⛔ 独立 runtime)" bash -c '
+  [ "$(grep -c "^tool_native_[a-z_]*()" "'"$LANE"'")" -eq 3 ] &&
+  grep -q "^tool_native_launch()" "'"$LANE"'" && grep -q "^tool_native_parse()" "'"$LANE"'" && grep -q "^tool_native_status()" "'"$LANE"'"'
+
+N165="$(mktemp -d)"
+mkdir -p "$N165/repo" "$N165/home" "$N165/kb" "$N165/sw" "$N165/fakebin"
+git init -q -b main "$N165/repo"
+git -C "$N165/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$N165/repo" worktree add -q -b item "$N165/wt" main
+printf 'probe fixture prompt\n' > "$N165/p.md"
+cat > "$N165/fake-claude" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" > "${FAKE_ARGS:?}"
+if IFS= read -r unexpected; then
+  echo 'stdin was not closed' >&2
+  exit 91
+fi
+sid="${FAKE_SESSION:-s-$$}"
+init(){ printf '{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"%s","skills":["laixin-pipeline"],"tools":["Skill"],"mcp_servers":[],"permissionMode":"auto"}\n' "$sid" "${FAKE_VERSION:-2.1.241}"; }
+case "${FAKE_MODE:-normal}" in
+  timeout) sleep 5 ;;
+  kill) init; echo 'fixture native killed' >&2; kill -TERM $$ ;;
+  unknown) init; printf '%s\n' '{"type":"future_event","session_id":"x"}' '{"type":"result","subtype":"success","session_id":"x"}' ;;
+  badjson) init; printf '%s\n' '{"type":bad}' '{"type":"result","subtype":"success"}' ;;
+  missing-init) printf '%s\n' '{"type":"assistant","session_id":"none","message":{"content":[]}}' ;;
+  missing-result) init ;;
+  *)
+    printf '%s\n' 'wrapper readiness line'
+    printf '{"type":"system","subtype":"hook_started","session_id":"%s","hook_name":"SessionStart:startup"}\n' "$sid"
+    printf '{"type":"system","subtype":"hook_response","session_id":"%s","hook_name":"SessionStart:startup","outcome":"success"}\n' "$sid"
+    init
+    printf '{"type":"system","subtype":"thinking_tokens","session_id":"%s","estimated_tokens":7}\n' "$sid"
+    printf '{"type":"assistant","session_id":"%s","message":{"id":"m1","content":[{"type":"tool_use","id":"u1","name":"Skill","input":{"skill":"laixin-pipeline"}}],"usage":{"input_tokens":3,"cache_read_input_tokens":1}}}\n' "$sid"
+    printf '{"type":"user","session_id":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"u1","is_error":false}]}}\n' "$sid"
+    printf '{"type":"tool_progress","session_id":"%s","tool_use_id":"u1","tool_name":"Bash","elapsed_time_seconds":30,"heartbeat":true}\n' "$sid"
+    printf '{"type":"rate_limit_event","session_id":"%s","rate_limit_info":{"status":"allowed"}}\n' "$sid"
+    printf '{"type":"result","subtype":"success","session_id":"%s","terminal_reason":"completed","permission_denials":[],"usage":{"input_tokens":3,"cache_read_input_tokens":1},"total_cost_usd":0.01}\n' "$sid"
+    ;;
+esac
+SH
+cat > "$N165/fakebin/tmux" <<'SH'
+#!/bin/sh
+: > "${TMUX_MARK:?}"
+exit 0
+SH
+chmod +x "$N165/fake-claude" "$N165/fakebin/tmux"
+
+dry165(){
+  env HOME="$N165/home" LAIXIN_RELEASE_REPO="$N165/repo" LAIXIN_SWITCH_DIR="$N165/sw" \
+    LAIXIN_BOARD="$N165/board.md" LAIXIN_KB="$N165/kb" LAIXIN_REPO="$N165/repo" \
+    LAIXIN_HEADLESS_SETTINGS="$N165/headless.json" "$LANE" tool-up t165-print \
+    --prompt "$N165/p.md" --dir "$N165/wt" --engine claude "$@"
+}
+printf 'print\n' > "$N165/sw/tool-transport"
+out165_cli="$(LAIXIN_TOOL_TRANSPORT=tui dry165 --transport print --dry 2>&1)"
+out165_env="$(LAIXIN_TOOL_TRANSPORT=tui dry165 --dry 2>&1)"
+out165_file="$(dry165 --dry 2>&1)"
+: > "$N165/sw/tool-transport"
+out165_empty="$(dry165 --dry 2>&1)"
+rm -f "$N165/sw/tool-transport"
+out165_default="$(dry165 --dry 2>&1)"
+t "#165-3 transport 优先级=参数 > env > 文件 > tui；空/删开关均回 TUI" bash -c '
+  grep -q "transport=print" <<< "$1" && grep -q "transport=tui" <<< "$2" &&
+  grep -q "transport=print" <<< "$3" && grep -q "transport=tui" <<< "$4" && grep -q "transport=tui" <<< "$5"' \
+  _ "$out165_cli" "$out165_env" "$out165_file" "$out165_empty" "$out165_default"
+tfail "#165-3 非法 transport 在昂贵校验/起窗前 die" "未知 transport" "$LANE" tool-up t165 --transport warp
+t "#165-3 codex+print 明拒且零 tmux 副作用" bash -c '
+  out="$(env HOME="$1/home" PATH="$1/fakebin:$PATH" TMUX_MARK="$1/tmux-called" "'$LANE'" tool-up x --engine codex --transport print 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "第一片只支持 claude print" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
+t "#165-3 --dry 报 engine/transport/账/回退且零持久写" bash -c '
+  grep -q "引擎=claude" <<< "$1" && grep -q "transport=print" <<< "$1" && grep -q "native 账:" <<< "$1" && grep -q "回退:" <<< "$1" &&
+  [ ! -e "$2/headless.json" ] && [ ! -e "$2/home/.laixin-events.d" ]' _ "$out165_cli" "$N165"
+t "#165-3 TUI 路线保留原 vwait_ready + paste；print 判据零抓屏/对话框" bash -c '
+  tui="$(sed -n "/^cmd_tool_up()/,/^}/p" "'$LANE'")"
+  print="$(sed -n "/print transport begin/,/print transport end/p" "'$LANE'")"
+  grep -q "vwait_ready" <<< "$tui" && grep -q "paste-buffer" <<< "$tui" &&
+  ! grep -qE "vwait_ready|capture-pane|dialog_sweep" <<< "$print"'
+t "#165-3 shipping 只走 -p argv + stream-json/verbose + </dev/null，零 input stream-json" bash -c '
+  seg="$(sed -n "/^tool_native_launch()/,/^}/p" "'$LANE'")"
+  grep -q -- "-p \"\$brief\"" <<< "$seg" && grep -q -- "--output-format stream-json --verbose" <<< "$seg" &&
+  grep -q "</dev/null" <<< "$seg" && ! grep -q -- "--input-format" <<< "$seg"'
+t "#165-3 native 账独立按窗/run；零复用 spool/seen/outbox" bash -c '
+  seg="$(sed -n "/^tool_native_launch()/,/^}/p;/^tool_native_parse()/,/^}/p;/^tool_native_status()/,/^}/p" "'$LANE'")"
+  grep -q "raw.jsonl" <<< "$seg" && grep -q "events.jsonl" <<< "$seg" && grep -q "stderr.log" <<< "$seg" &&
+  ! grep -qE "EV_SPOOL|EV_SEEN|RELAY_OUTBOX|EV_PENDING" <<< "$seg"'
+
+native165(){
+  local mode="$1" name="$2" version="${3:-2.1.241}" run
+  run="$N165/native/$name/run"
+  mkdir -p "$run"
+  env HOME="$N165/home" LAIXIN_CLAUDE_LAUNCHER="$N165/fake-claude" LAIXIN_BOARD="$N165/native-board.md" \
+    LAIXIN_HEADLESS_SETTINGS="$N165/native-headless.json" LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=2 \
+    FAKE_MODE="$mode" FAKE_VERSION="$version" FAKE_ARGS="$run/args" FAKE_SESSION="s-$name" \
+    "$LANE" tool-native-run "tool-$name" "$run" "$N165/p.md" "$N165/wt" bu 9999
+}
+native165 normal normal > "$N165/normal.out" 2>&1; normal_rc=$?
+native165 unknown unknown > "$N165/unknown.out" 2>&1; unknown_rc=$?
+native165 badjson badjson > "$N165/badjson.out" 2>&1; badjson_rc=$?
+native165 kill killed > "$N165/killed.out" 2>&1; killed_rc=$?
+native165 timeout timeout > "$N165/timeout.out" 2>&1; timeout_rc=$?
+native165 missing-init missing-init > "$N165/missing-init.out" 2>&1; missing_init_rc=$?
+native165 missing-result missing-result > "$N165/missing-result.out" 2>&1; missing_result_rc=$?
+native165 normal drift 9.9.9 > "$N165/drift.out" 2>&1; drift_rc=$?
+
+t "#165-3 普通前置行 raw+notice 双留且后续可 settled；prompt 是单 argv、stdin=EOF" bash -c '
+  [ "$1" -eq 0 ] && grep -Fxq "wrapper readiness line" "$2/raw.jsonl" && grep -q "\"phase\":\"notice\"" "$2/events.jsonl" &&
+  grep -q "\"phase\":\"settled\"" "$2/events.jsonl" && grep -Fxq "probe fixture prompt" "$2/args"' _ "$normal_rc" "$N165/native/normal/run"
+t "#165-3 init 前官方 hook 生命周期只作未绑定 notice；accepted 仍只认 init" python3 - "$N165/native/normal/run/events.jsonl" <<'PY'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1])]
+hooks = [e for e in events if e.get("native_subtype") in {"hook_started", "hook_response"}]
+accepted = [i for i, e in enumerate(events) if e["phase"] == "accepted"]
+assert len(hooks) == 2 and all(e["phase"] == "notice" and e["session_id"] is None for e in hooks)
+assert len(accepted) == 1 and all(events.index(e) < accepted[0] for e in hooks)
+PY
+t "#165-3 标准事件每行必有最小信封键且 phase 不越权" python3 - "$N165/native/normal/run/events.jsonl" <<'PY'
+import json, sys
+required = {"ts","window","engine","cli_version","session_id","pid","cwd","phase","raw_type","usage","exit_code"}
+allowed = {"launched","accepted","turn_started","tool_started","tool_finished","assistant_message","settled","failed","protocol_unknown","notice","cancel_requested","cancel_confirmed"}
+events = [json.loads(line) for line in open(sys.argv[1])]
+assert events and all(required <= set(e) for e in events)
+assert all(e["phase"] in allowed for e in events)
+assert not any(set(e) & {"quality","success","pass"} for e in events)
+PY
+t "#165-3 init 保留 skills；真实 Skill tool_started/tool_finished；settled 保留 permission_denials/usage/费用/rate-limit" python3 - "$N165/native/normal/run/events.jsonl" <<'PY'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1])]
+assert any(e["phase"] == "accepted" and "laixin-pipeline" in e["skills"] for e in events)
+assert any(e["phase"] == "tool_started" and e["name"] == "Skill" for e in events)
+assert any(e["phase"] == "tool_finished" and e["is_error"] is False for e in events)
+assert any(e["raw_type"] == "tool_progress" and e["phase"] == "notice" and e["tool_progress_event"]["heartbeat"] is True for e in events)
+assert any(e["raw_type"] == "rate_limit_event" and e["rate_limit_event"]["status"] == "allowed" for e in events)
+assert any(e["raw_type"] == "system" and e["phase"] == "notice" and e["native_subtype"] == "thinking_tokens" for e in events)
+assert any(e["phase"] == "settled" and e["permission_denials"] == [] and e["total_cost_usd"] == .01 and e["usage"]["input_tokens"] == 3 for e in events)
+PY
+t "#165-3 未知 type:raw+protocol_unknown+非零+零 settled+看板报警" bash -c '
+  [ "$1" -ne 0 ] && grep -q "future_event" "$2/raw.jsonl" && grep -q "\"phase\":\"protocol_unknown\"" "$2/events.jsonl" &&
+  ! grep -q "\"phase\":\"settled\"" "$2/events.jsonl" && grep -q "protocol_unknown" "$3"' _ "$unknown_rc" "$N165/native/unknown/run" "$N165/native-board.md"
+t "#165-3 形似 JSON 坏行:raw+protocol_unknown+非零+零 settled" bash -c '
+  [ "$1" -ne 0 ] && grep -Fq "\"type\":bad" "$2/raw.jsonl" && grep -q "\"reason\":\"invalid_json\"" "$2/events.jsonl" && ! grep -q "\"phase\":\"settled\"" "$2/events.jsonl"' _ "$badjson_rc" "$N165/native/badjson/run"
+t "#165-3 kill CLI:failed 非零+stderr 尾+零 settled；窗口外状态可区分" bash -c '
+  [ "$1" -ne 0 ] && grep -q "\"phase\":\"failed\"" "$2/events.jsonl" && grep -q "fixture native killed" "$2/events.jsonl" &&
+  ! grep -q "\"phase\":\"settled\"" "$2/events.jsonl" && grep -q "^failed " "$2/status"' _ "$killed_rc" "$N165/native/killed/run"
+t "#165-3 首个合法 init 超时:有界失败+零 settled" bash -c '
+  [ "$1" -ne 0 ] && grep -q "\"reason\":\"init_timeout\"" "$2/events.jsonl" && ! grep -q "\"phase\":\"settled\"" "$2/events.jsonl"' _ "$timeout_rc" "$N165/native/timeout/run"
+t "#165-3 init/session_id 与 result/subtype 必需；缺任一均非零且零 settled" bash -c '
+  [ "$1" -ne 0 ] && [ "$2" -ne 0 ] && ! grep -q "\"phase\":\"settled\"" "$3/events.jsonl" && ! grep -q "\"phase\":\"settled\"" "$4/events.jsonl"' \
+  _ "$missing_init_rc" "$missing_result_rc" "$N165/native/missing-init/run" "$N165/native/missing-result/run"
+t "#165-3 版本漂移只警一次且不阻断 settled" bash -c '
+  [ "$1" -eq 0 ] && [ "$(grep -c "协议版本漂移" "$2")" -eq 1 ] && grep -q "\"cli_version\":\"9.9.9\"" "$3/events.jsonl" && grep -q "\"phase\":\"settled\"" "$3/events.jsonl"' \
+  _ "$drift_rc" "$N165/native-board.md" "$N165/native/drift/run"
+
+sed -n '/^tool_native_parse()/,/^}/p' "$LANE" > "$N165/native-parse.sh"
+t "#165-3 pid/session 绑定:同 session 后续放行；第二 init/错 pid/错 session/跨 run 重复均拒" env T="$N165" bash -c '
+  board(){ printf "%s\n" "$*" >> "$T/parse-board"; }
+  source "$T/native-parse.sh"
+  prep(){ mkdir -p "$1"; : > "$1/raw.jsonl"; : > "$1/events.jsonl"; : > "$1/status"; }
+  init(){ printf "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"%s\",\"claude_code_version\":\"2.1.241\"}" "$1"; }
+  prep "$T/bind/run"; tool_native_parse "$T/bind/run" w 100 100 /tmp "$(init S1)" || exit 1
+  tool_native_parse "$T/bind/run" w 100 100 /tmp "{\"type\":\"assistant\",\"session_id\":\"S1\",\"message\":{\"content\":[]}}" || exit 2
+  tool_native_parse "$T/bind/run" w 100 100 /tmp "$(init S1)" && exit 3
+  tool_native_parse "$T/bind/run" w 100 101 /tmp plain && exit 4
+  tool_native_parse "$T/bind/run" w 100 100 /tmp "{\"type\":\"assistant\",\"session_id\":\"WRONG\",\"message\":{\"content\":[]}}" && exit 5
+  prep "$T/cross/r1"; prep "$T/cross/r2"; tool_native_parse "$T/cross/r1" w 200 200 /tmp "$(init SX)" || exit 6
+  tool_native_parse "$T/cross/r2" w 201 201 /tmp "$(init SX)" && exit 7
+  [ "$(grep -c protocol_unknown "$T/bind/run/events.jsonl")" -ge 3 ] && grep -q "duplicate_session_across_run" "$T/cross/r2/events.jsonl"'
+t "#165-3 settled 与报告契约彻底分离；失败零 retry；看板仍唯一经 board()" bash -c '
+  status="$(sed -n "/^tool_native_status()/,/^}/p" "'$LANE'")"
+  native="$(sed -n "/^tool_native_parse()/,/^}/p;/^tool_native_status()/,/^}/p;/^tool_native_launch()/,/^}/p" "'$LANE'")"
+  ! grep -q "工具件完成" <<< "$status" && ! grep -qi "retry" <<< "$native" && [ "$(grep -cF ">> \"\$BOARD\"" "'$LANE'")" -eq 1 ]'
+rm -rf "$N165"
 rm -rf "$W165"
 
 

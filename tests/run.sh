@@ -2366,6 +2366,34 @@ t "判活:ev 与 wd 不串味" bash -c '
   source "'"$VLAF"'"; ! printf "/bin/bash /x/laixin-lane ev-loop\n" | loop_alive_filter wd-loop'
 t "判活:grep 自身命令行不自匹配(前缀 (^|/)bash 即防线)" bash -c '
   source "'"$VLAF"'"; ! printf "grep -qE (^|/)bash[^:]*laixin-lane wd-loop( |$)\n" | loop_alive_filter wd-loop'
+# loop_alive_filter 的小输入断言覆盖不了 pipefail × grep -q 的 SIGPIPE 病灶：真实 ps 输出足够大时，
+# 匹配越早，上游越会在 grep 提前退出后继续写并以 141 结束。用大流 ps 桩固定复现，且正反向都测。
+t "判活:大流上游下 ev/wd 各连续 10 次认活(pipefail)" bash -c '
+  set -o pipefail
+  source "'"$VLAF"'"
+  ps(){
+    awk "BEGIN {
+      print \"/bin/bash /Users/x/.local/bin/laixin-lane ev-loop\"
+      print \"/bin/bash /Users/x/.local/bin/laixin-lane wd-loop\"
+      for (i=0; i<20000; i++) print \"python filler-process-\" i
+    }"
+  }
+  i=0
+  while [ "$i" -lt 10 ]; do
+    ev_alive || exit 1
+    wd_alive || exit 1
+    i=$((i+1))
+  done'
+t "判活:大流上游无循环时 ev/wd 都判死(防恒真)" bash -c '
+  set -o pipefail
+  source "'"$VLAF"'"
+  ps(){ awk "BEGIN { for (i=0; i<20000; i++) print \"python filler-process-\" i }"; }
+  ! ev_alive && ! wd_alive'
+t "pipefail:merged 大串不经管道喂 grep -q(探针先过阳性)" bash -c '
+  pat="printf .*[$]merged.*[|][[:space:]]*grep -q"
+  known="printf x \"\$merged\" | grep -q x"
+  [ "$(grep -Ec "$pat" <<< "$known")" -eq 1 ] || exit 2
+  ! grep -E "$pat" "$1" >/dev/null' _ "$LANE"
 tout "判活:文案⛔ 写死探针实现(实现换了文案会骗人)" "ps 认解释器行" bash -c '
   grep "事件总线已在跑" "'"$LANE"'"'
 rm -rf "$VLA"

@@ -1620,10 +1620,10 @@ cmd_audit_queue(){  # 台账巡检(2026-08-18 优化#13):排队/验收中节片�
       # #15 分级(2026-08-19):强嫌疑=「合并 <片名>」紧邻(看板合并记录的成文格式,pipeline 卡已钉);
       # 弱嫌疑=片名仅作子串出现在含「合并」的叙述里——交叉引用越多误报越多,而看板详细恰是纪律要求
       # ⇒ 检查器噪声必须与想鼓励的行为同向。⛔ 不拿误报换漏报:弱嫌疑仍列名,只是降级为一行速核。
-      if printf '%s\n' "$merged" | grep -qE -- "合并 ?${name}"; then
+      if grep -qE -- "合并 ?${name}" <<< "$merged"; then
         echo "🔴 「${sec}」节陈旧行强嫌疑:「${name}」有格式合并记录『合并 ${name} …』——人工核实后按台账律第 3 条整行移出"
         n=$((n+1))
-      elif printf '%s\n' "$merged" | grep -qF -- "$name"; then
+      elif grep -qF -- "$name" <<< "$merged"; then
         weak="${weak}「${name}」"
         wn=$((wn+1))
       fi
@@ -1694,10 +1694,11 @@ cmd_audit_pages(){  # 底册复查提醒(#五-19,2026-08-19 停工B段批四):�
       [ -n "$name" ] || continue
       [ "${#name}" -ge 3 ] || continue                  # 太短的名当子串必然误命中(audit-queue 同款下限)
       trigs=$((trigs+1))
-      if printf '%s\n' "$merged" | grep -qF -- "合并 $name" || printf '%s\n' "$merged" | grep -qF -- "合并$name"; then
+      if grep -qF -- "合并 $name" <<< "$merged" ||
+         grep -qF -- "合并$name" <<< "$merged"; then
         echo "🔴 底册复查提醒:「${page}」的复查触发片「${name}」已见格式合并记录——人工核实后复走查该页并更新底册状态(🔁→✅)"
         n=$((n+1))
-      elif printf '%s\n' "$merged" | grep -qF -- "$name"; then
+      elif grep -qF -- "$name" <<< "$merged"; then
         weak="${weak}「${page}←${name}」"; wn=$((wn+1))
       fi
     done < <(printf '%s\n' "$focus" | tr -d ' *' | sed 's/([^)]*)//g; s/([^)]*)//g' | tr ';;,,+·' '\n')
@@ -3467,7 +3468,8 @@ ev_ack_overdue(){  # M1 纯判定:stdin=pending 台账(epoch|slug|状态),$1=当
 #   自己那个 claude 进程(当日三方对称实证:dispatch/relay/11B 各自都缺自己),relay 正是
 #   因此把污染误判成「没复现」。
 # 判据与取数分离 ⇒ loop_alive_filter 可直接喂行测两个方向(真循环必中 · deny 形态必不中)。
-loop_alive_filter(){ grep -qE "(^|/)bash[^:]*laixin-lane $1( |$)"; }
+# ⛔ grep -q:大流 ps 仍在写时会吃 SIGPIPE,pipefail 遂把「匹配」反转成失败;完整消费 stdin。
+loop_alive_filter(){ grep -E "(^|/)bash[^:]*laixin-lane $1( |$)" >/dev/null; }
 ev_alive(){ ps -eo command= 2>/dev/null | loop_alive_filter ev-loop; }
 wd_alive(){ ps -eo command= 2>/dev/null | loop_alive_filter wd-loop; }
 loop_pids(){  # <wd-loop|ev-loop> → stdout=真循环 pid 列表。**与 loop_alive_filter 同一判据(逐行喂它),⛔ 另写正则**

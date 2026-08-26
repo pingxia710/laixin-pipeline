@@ -3747,14 +3747,59 @@ t "chrome-up --dry:目标 a/b/dispatch/verify-窗/m-窗 各解析到固定端口
   v="$($e "$1" chrome-up verify-x-y --dry 2>&1)"; grep -qE "端口=9[3-9][0-9][0-9]" <<< "$v" && grep -q "tmux窗=chrome-" <<< "$v" || exit 4
   m="$($e "$1" chrome-up m-z --dry 2>&1)"; grep -qE "端口=9[3-9][0-9][0-9]" <<< "$m" || exit 5
   p="$($e "$1" chrome-up a --port 9555 --dry 2>&1)"; grep -q "端口=9555" <<< "$p" || exit 6
+  pe="$($e "$1" chrome-up --port=9556 --dry 2>&1)"; grep -q "端口=9556" <<< "$pe" && ! grep -q "verify---port" <<< "$pe" || exit 7
   x="$($e "$1" chrome-up "" --dry 2>&1)"; [ $? -ne 0 ]' _ "$LANE"
+t "chrome-up --help:打印用法且前后 CDP 进程数不变(⛔ 把 --help 当目标起 Chrome)" bash -c '
+  root="$2"; mkdir -p "$root/home" "$root/kb" "$root/repo"
+  before="$(pgrep -f -- "--remote-debugging-port=" | wc -l)"
+  out="$(env HOME="$root/home" LAIXIN_SESSION=lx-chrome-help-$$ LAIXIN_BOARD="$root/board.md" LAIXIN_KB="$root/kb" LAIXIN_REPO="$root/repo" LAIXIN_CHROME_BIN=/no/such/chrome "$1" chrome-up --help 2>&1)"; rc=$?
+  after="$(pgrep -f -- "--remote-debugging-port=" | wc -l)"
+  [ "$rc" -eq 0 ] && grep -q "用法:laixin-lane chrome-up" <<< "$out" && [ "$before" = "$after" ] && ! tmux has-session -t lx-chrome-help-$$ 2>/dev/null' _ "$LANE" "$TCH"
 t "chrome-up 实体:tmux 服务端托管(new-window chrome-<端口>)⛔ nohup/裸 &;就绪判据=/json/version;url 写回 EV_DIR/cdp;chrome-down 杀窗+cdp_sweep+清 url" bash -c '
   u="$(sed -n "/^cmd_chrome_up()/,/^}$/p" "$1")"; d="$(sed -n "/^cmd_chrome_down()/,/^}$/p" "$1")"
   grep -q "tmux new-window -d -t \"\$SESSION\" -n \"\$cw\"" <<< "$u" && ! grep -q "nohup" <<< "$u" && grep -q "/json/version" <<< "$u" && grep -q "EV_DIR/cdp" <<< "$u" &&
   grep -q "tmux kill-window -t \"\$SESSION:\$cw\"" <<< "$d" && grep -q "cdp_sweep \"\$p\"" <<< "$d" && grep -q "rm -f \"\$EV_DIR/cdp/" <<< "$d"' _ "$LANE"
-# 🔴 2026-08-23 监测破案:本行原漏沙盒 LAIXIN_BOARD ⇒ 每跑一遍套件往生产看板写一条假清理记录(当日 46 条,来源「手工」;
-#   与 #165 漏真窗同族=夹具沙盒不全)。凡夹具调用会 board 的子命令,LAIXIN_BOARD 必随 LAIXIN_SESSION 一起接管。
-tout "chrome-down:目标无窗时幂等(端口 sweep 照跑不报错)〔看板已沙盒——此前每跑一遍套件污染生产看板一条〕" "已关" env LAIXIN_SESSION=lx-nowin-$$ LAIXIN_BOARD=/tmp/lx-cdown-board-$$.md "$LANE" chrome-down a --port 9599
+mkdir -p "$TCH/fakebin" "$TCH/home" "$TCH/kb" "$TCH/repo"
+cat > "$TCH/fakebin/pgrep" <<'SH'
+#!/bin/bash
+[ "${FAKE_PROBE_BROKEN:-}" != 1 ] || exit 2
+[ -s "${FAKE_CDP_STATE:?}" ] || exit 1
+cat "$FAKE_CDP_STATE"
+if [ -s "$FAKE_CDP_STATE.settling" ]; then : > "$FAKE_CDP_STATE"; : > "$FAKE_CDP_STATE.settling"; fi
+SH
+cat > "$TCH/fakebin/pkill" <<'SH'
+#!/bin/bash
+[ -s "${FAKE_CDP_STATE:?}" ] || exit 1
+if [ "${FAKE_SWEEP_STUCK:-}" = 1 ]; then :
+elif [ "${FAKE_SWEEP_DELAY:-}" = 1 ]; then printf '1\n' > "$FAKE_CDP_STATE.settling"
+else : > "$FAKE_CDP_STATE"
+fi
+exit 0
+SH
+chmod +x "$TCH/fakebin/pgrep" "$TCH/fakebin/pkill"
+# 🔴 2026-08-23 监测破案:原夹具漏沙盒 LAIXIN_BOARD ⇒ 每跑一遍套件往生产看板写一条假清理记录(当日 46 条)。
+#   本组同时接管 HOME/SESSION/BOARD/KB/REPO,并用状态桩让 before/after 两读数可反证,⛔ 触碰真 Chrome。
+t "chrome-down:无→无按读数报未动作;--port=N 解析到 N(⛔ 哈希成目标端口、⛔ 恒真已关)" bash -c '
+  root="$2"; state="$root/cdp-empty"; : > "$state"
+  out="$(env PATH="$root/fakebin:$PATH" FAKE_CDP_STATE="$state" HOME="$root/home" LAIXIN_SESSION=lx-chrome-down-$$ LAIXIN_BOARD="$root/board-empty.md" LAIXIN_KB="$root/kb" LAIXIN_REPO="$root/repo" "$1" chrome-down --port=9295 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q "端口 9295 未发现在跑实例,未动作" <<< "$out" && ! grep -q "已关" <<< "$out" && grep -q "未发现在跑实例,未动作" "$root/board-empty.md"' _ "$LANE" "$TCH"
+t "chrome-down:有→无按 before-after 报实际关闭数;目标 + --port N 仍解析 N" bash -c '
+  root="$2"; state="$root/cdp-running"; printf "101\n102\n" > "$state"
+  out="$(env PATH="$root/fakebin:$PATH" FAKE_CDP_STATE="$state" HOME="$root/home" LAIXIN_SESSION=lx-chrome-down-$$ LAIXIN_BOARD="$root/board-closed.md" LAIXIN_KB="$root/kb" LAIXIN_REPO="$root/repo" "$1" chrome-down a --port 9295 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q "端口 9295 实际关闭了 2 个进程" <<< "$out" && [ ! -s "$state" ] && grep -q "实际关闭了 2 个进程" "$root/board-closed.md"' _ "$LANE" "$TCH"
+t "chrome-down:Chrome 退出中的短暂有→有会有界复探到无(⛔ 把终态取早误报关闭失败)" bash -c '
+  root="$2"; state="$root/cdp-settling"; printf "111\n112\n" > "$state"
+  out="$(env PATH="$root/fakebin:$PATH" FAKE_CDP_STATE="$state" FAKE_SWEEP_DELAY=1 HOME="$root/home" LAIXIN_SESSION=lx-chrome-down-$$ LAIXIN_BOARD="$root/board-settling.md" LAIXIN_KB="$root/kb" LAIXIN_REPO="$root/repo" "$1" chrome-down --port=9295 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q "实际关闭了 2 个进程" <<< "$out" && [ ! -s "$state" ]' _ "$LANE" "$TCH"
+t "chrome-down:有→有输出关闭失败并非零,仍完成 url 清理(⛔ die 在结论前)" bash -c '
+  root="$2"; state="$root/cdp-stuck"; printf "201\n" > "$state"; mkdir -p "$root/home/.laixin-events.d/cdp"; printf x > "$root/home/.laixin-events.d/cdp/port-9295.url"
+  out="$(env PATH="$root/fakebin:$PATH" FAKE_CDP_STATE="$state" FAKE_SWEEP_STUCK=1 HOME="$root/home" LAIXIN_SESSION=lx-chrome-down-$$ LAIXIN_BOARD="$root/board-stuck.md" LAIXIN_KB="$root/kb" LAIXIN_REPO="$root/repo" "$1" chrome-down --port=9295 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "关闭失败.*动作前 1 个.*动作后仍有 1 个" <<< "$out" && grep -q "关闭失败" "$root/board-stuck.md" && [ ! -e "$root/home/.laixin-events.d/cdp/port-9295.url" ]' _ "$LANE" "$TCH"
+t "chrome-down:探针损坏显式失败(⛔ 冒充端口无实例)" bash -c '
+  root="$2"; state="$root/cdp-broken"; : > "$state"
+  out="$(env PATH="$root/fakebin:$PATH" FAKE_CDP_STATE="$state" FAKE_PROBE_BROKEN=1 HOME="$root/home" LAIXIN_SESSION=lx-chrome-down-$$ LAIXIN_BOARD="$root/board-broken.md" LAIXIN_KB="$root/kb" LAIXIN_REPO="$root/repo" "$1" chrome-down --port=9295 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "探针失败" <<< "$out" && ! grep -q "未发现在跑实例" <<< "$out"' _ "$LANE" "$TCH"
+tfail "chrome-down --port 缺值明确报错(⛔ 当目标名哈希)" "需要端口" env PATH="$TCH/fakebin:$PATH" FAKE_CDP_STATE="$TCH/cdp-empty" HOME="$TCH/home" LAIXIN_SESSION=lx-chrome-down-$$ LAIXIN_BOARD="$TCH/board-invalid.md" LAIXIN_KB="$TCH/kb" LAIXIN_REPO="$TCH/repo" "$LANE" chrome-down --port
 t "doctor §4 报无主 tmux 托管 Chrome;宪法头第 12 条含 chrome-up 句(方案窗口给句);帮助与分发齐" bash -c '
   grep -q "tmux 托管 headless Chrome 有 \${_orph} 个无主" "$1" && grep -q "^#   laixin-lane chrome-up" "$1" && grep -qE "^  chrome-(up|down|list)\)" "$1" &&
   m="$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/prompt/来信平台-prompt宪法头模板.md"; { [ ! -f "$m" ] || grep -q "一律用 \`laixin-lane chrome-up <轨>\`" "$m"; }' _ "$LANE"

@@ -64,11 +64,11 @@
 #   laixin-lane prompt-list          在跑写单窗清单
 #   laixin-lane codex-tier [normal|fast|status]
 #                                    11B/11C 新起 Codex 窗的用量档;默认 normal(普通),不改全局 Codex 设置
-#   laixin-lane chrome-up <a|b|c|dispatch|verify名|片名|m名> [--port N] [--dry]
+#   laixin-lane chrome-up [<a|b|c|dispatch|verify名|片名|m名>] [--port N|--port=N] [--dry]
 #                                    #42(2026-08-23 方案窗口裁 A):走查用 headless Chrome 由 **tmux 服务端托管**(窗 chrome-<端口>)⇒ 跨命令边界存活,
 #                                    ⛔ 在 shell 工具里裸起/nohup &(命令结束即被回收);端口按目标固定(与 BU_CDP_URL 同源),url 写回 ~/.laixin-events.d/cdp/<窗名>.url;
 #                                    使用方仍是起与关的责任方:用毕 chrome-down <目标>(fresh/down/vdown/m-down 的 cdp_sweep 仍兜底)
-#   laixin-lane chrome-down <目标> [--port N]   关该目标的 headless Chrome(杀 tmux 窗 + 按端口 sweep + 清 url 文件)
+#   laixin-lane chrome-down [<目标>] [--port N|--port=N]   关该目标/端口的 headless Chrome(杀 tmux 窗 + 按端口 sweep + 清 url 文件)
 #   laixin-lane chrome-list          在跑 chrome-<端口> 窗及归属(无主=轨/窗已收而 Chrome 还活着)
 #   laixin-lane watchdog start|stop|status   看门狗:派工窗口死了自动重起,叫不醒先戳后换
 #   laixin-lane claim [--force]      认领派工权(接管派工角色时第一件事;send 会自动续期)
@@ -6075,16 +6075,25 @@ cdp_target_resolve(){  # <a|b|c|dispatch|verify名|片名|m名|件名> → stdou
   [ -n "$w" ] && [ -n "$p" ] || return 1
   printf '%s %s' "$w" "$p"
 }
-cmd_chrome_up(){  # <目标> [--port N] [--dry]
-  local t="${1:-}"; shift || true; local port_opt="" dry=""
-  while [ $# -gt 0 ]; do case "$1" in --port) port_opt="${2:?--port 需要端口}"; shift 2 ;; --dry) dry=1; shift ;; *) die "未知参数:$1(用法:laixin-lane chrome-up <a|b|c|dispatch|verify名|片名|m名> [--port N] [--dry])" ;; esac; done
-  [ -n "$t" ] || die "chrome-up 需要目标:a|b|c|dispatch|verify名|片名|m名(端口按目标固定派生,与该窗 BU_CDP_URL 同源;或 --port N)"
-  local w p; read -r w p <<< "$(cdp_target_resolve "$t" 2>/dev/null || true)"
+cmd_chrome_up(){  # [<目标>] [--port N|--port=N] [--dry]
+  local t="" port_opt="" dry=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) echo "用法:laixin-lane chrome-up [<a|b|c|dispatch|verify名|片名|m名>] [--port N|--port=N] [--dry]"; return 0 ;;
+      --port) [ $# -ge 2 ] || die "--port 需要端口"; port_opt="$2"; shift 2 ;;
+      --port=*) port_opt="${1#--port=}"; [ -n "$port_opt" ] || die "--port= 需要端口"; shift ;;
+      --dry) dry=1; shift ;;
+      --*) die "未知参数:$1(用法:laixin-lane chrome-up [<目标>] [--port N|--port=N] [--dry])" ;;
+      *) [ -z "$t" ] || die "chrome-up 只能有一个目标(多余参数:$1)"; t="$1"; shift ;;
+    esac
+  done
+  [ -n "$t" ] || [ -n "$port_opt" ] || die "chrome-up 需要目标或 --port N(目标:a|b|c|dispatch|verify名|片名|m名)"
+  local w="" p=""; [ -z "$t" ] || read -r w p <<< "$(cdp_target_resolve "$t" 2>/dev/null || true)"
   [ -n "$port_opt" ] && p="$port_opt"
   [ -n "$p" ] || die "解析不出目标「${t}」的端口——目标写法:a|b|c|dispatch|verify-<片>|<片名>|m-<件>|<件名>,或显式 --port N"
-  local cw="chrome-${p}" url="http://127.0.0.1:${p}" uf="$EV_DIR/cdp/${w:-port-$p}.url"
+  local label="${t:-port-$p}" down_arg="${t:---port=$p}" cw="chrome-${p}" url="http://127.0.0.1:${p}" uf="$EV_DIR/cdp/${w:-port-$p}.url"
   if [ -n "$dry" ]; then
-    echo "[dry] 目标=${t} 窗=${w:-?} 端口=${p} tmux窗=${cw} url文件=${uf} chrome=${CHROME_BIN}"
+    echo "[dry] 目标=${label} 窗=${w:-?} 端口=${p} tmux窗=${cw} url文件=${uf} chrome=${CHROME_BIN}"
     if curl -s -m 2 "$url/json/version" >/dev/null 2>&1; then
       echo "[dry] 端口占用:🔴 ${p} **已有 CDP 在听** ⇒ 真跑**直接复用 ⛔ 起新的 ⛔ pkill**"
     else
@@ -6104,29 +6113,65 @@ cmd_chrome_up(){  # <目标> [--port N] [--dry]
     tmux new-window -d -t "$SESSION" -n "$cw" "exec \"$CHROME_BIN\" --headless=new --remote-debugging-port=${p} --user-data-dir=\"${ud}\" --no-first-run about:blank >/dev/null 2>&1"
     local i=0; until curl -s -m 1 "$url/json/version" >/dev/null 2>&1 || [ "$i" -ge 10 ]; do sleep 1; i=$((i+1)); done
     if ! curl -s -m 2 "$url/json/version" >/dev/null 2>&1; then
-      board "$(caller_src)" "⛔ chrome-up ${t} 端口 ${p} 10s 未就绪(tmux 窗 ${cw})——peek: tmux capture-pane -p -t $SESSION:$cw"
+      board "$(caller_src)" "⛔ chrome-up ${label} 端口 ${p} 10s 未就绪(tmux 窗 ${cw})——peek: tmux capture-pane -p -t $SESSION:$cw"
       die "端口 ${p} 10s 内未见 /json/version——Chrome 未起来;看现场:tmux capture-pane -p -t $SESSION:$cw"
     fi
   fi
   mkdir -p "$EV_DIR/cdp"; printf '%s\n' "$url" > "$uf"
-  board "$(caller_src)" "chrome-up ${t}:headless Chrome 由 tmux 托管于窗 ${cw}(端口 ${p},跨命令边界存活;url 写回 ${uf});用毕 laixin-lane chrome-down ${t}"
+  board "$(caller_src)" "chrome-up ${label}:headless Chrome 由 tmux 托管于窗 ${cw}(端口 ${p},跨命令边界存活;url 写回 ${uf});用毕 laixin-lane chrome-down ${down_arg}"
   echo "✅ CDP 就绪:${url}(tmux 窗 ${cw};url 文件 ${uf})"
-  echo "   自证❶ 另起一条命令读:curl -s ${url}/json/version | head -1;用毕:laixin-lane chrome-down ${t}"
+  echo "   自证❶ 另起一条命令读:curl -s ${url}/json/version | head -1;用毕:laixin-lane chrome-down ${down_arg}"
   return 0
 }
-cmd_chrome_down(){  # <目标> [--port N]
-  local t="${1:-}"; shift || true; local port_opt=""
-  while [ $# -gt 0 ]; do case "$1" in --port) port_opt="${2:?--port 需要端口}"; shift 2 ;; *) die "未知参数:$1" ;; esac; done
-  [ -n "$t" ] || die "chrome-down 需要目标(同 chrome-up)"
-  local w p; read -r w p <<< "$(cdp_target_resolve "$t" 2>/dev/null || true)"; [ -n "$port_opt" ] && p="$port_opt"
+cdp_process_count(){  # <端口> → stdout=匹配 cdp_sweep 杀进程模式的进程数;非零退出=探针损坏
+  local out="" rc=0 n=0 pid
+  command -v pgrep >/dev/null 2>&1 || return 2
+  out="$(pgrep -f -- "--remote-debugging-port=$1" 2>/dev/null)" || rc=$?
+  case "$rc" in 0) ;; 1) printf '0'; return 0 ;; *) return "$rc" ;; esac
+  while IFS= read -r pid; do [ -n "$pid" ] && n=$((n+1)); done <<< "$out"
+  printf '%d' "$n"
+}
+cmd_chrome_down(){  # [<目标>] [--port N|--port=N]
+  local t="" port_opt=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) echo "用法:laixin-lane chrome-down [<目标>] [--port N|--port=N]"; return 0 ;;
+      --port) [ $# -ge 2 ] || die "--port 需要端口"; port_opt="$2"; shift 2 ;;
+      --port=*) port_opt="${1#--port=}"; [ -n "$port_opt" ] || die "--port= 需要端口"; shift ;;
+      --*) die "未知参数:$1(用法:laixin-lane chrome-down [<目标>] [--port N|--port=N])" ;;
+      *) [ -z "$t" ] || die "chrome-down 只能有一个目标(多余参数:$1)"; t="$1"; shift ;;
+    esac
+  done
+  [ -n "$t" ] || [ -n "$port_opt" ] || die "chrome-down 需要目标或 --port N"
+  local w="" p=""; [ -z "$t" ] || read -r w p <<< "$(cdp_target_resolve "$t" 2>/dev/null || true)"; [ -n "$port_opt" ] && p="$port_opt"
   [ -n "$p" ] || die "解析不出目标「${t}」的端口(或 --port N)"
-  local cw="chrome-${p}"
+  local label="${t:-port-$p}" cw="chrome-${p}" before after outcome result=0
+  before="$(cdp_process_count "$p")" || die "端口 ${p} 的 CDP 进程探针失败(pgrep 不可用或执行出错),未动作"
   tmux kill-window -t "$SESSION:$cw" 2>/dev/null && echo "已关 tmux 窗 ${cw}" || true
   cdp_sweep "$p"
+  if ! after="$(cdp_process_count "$p")"; then
+    outcome="关闭后探针失败,无法确认是否已关"; result=1
+  else
+    local i=0
+    while [ "$before" -gt 0 ] && [ "$after" -gt 0 ] && [ "$i" -lt 10 ]; do
+      sleep 0.1; i=$((i+1))
+      if ! after="$(cdp_process_count "$p")"; then outcome="关闭后探针失败,无法确认是否已关"; result=1; break; fi
+    done
+    if [ "$result" -eq 0 ]; then
+      if [ "$before" -eq 0 ] && [ "$after" -eq 0 ]; then outcome="未发现在跑实例,未动作"
+      elif [ "$before" -gt 0 ] && [ "$after" -eq 0 ]; then outcome="实际关闭了 ${before} 个进程"
+      else outcome="关闭失败:动作前 ${before} 个进程,动作后仍有 ${after} 个"; result=1
+      fi
+    fi
+  fi
   rm -f "$EV_DIR/cdp/${w:-port-$p}.url" 2>/dev/null || true
-  board "$(caller_src)" "chrome-down ${t}:端口 ${p} 的 headless Chrome 已关(tmux 窗 ${cw} 已收;url 文件已清)"
-  echo "✅ 端口 ${p} 已关(自证❷:curl -s -m 1 http://127.0.0.1:${p}/json/version 应连不上)"
-  return 0
+  board "$(caller_src)" "chrome-down ${label}:端口 ${p} ${outcome}(tmux 窗 ${cw} 已收;url 文件已清)"
+  if [ "$result" -eq 0 ]; then
+    [ "$before" -eq 0 ] && echo "ℹ️ 端口 ${p} ${outcome}" || echo "✅ 端口 ${p} ${outcome}"
+  else
+    echo "⛔ 端口 ${p} ${outcome}" >&2
+  fi
+  return "$result"
 }
 cmd_chrome_list(){  # 在跑的 chrome-<端口> 窗 + 该端口归谁(a/b/c/dispatch/verify/m 窗派生反查);归不出=无主
   tmux has-session -t "$SESSION" 2>/dev/null || { echo "会话 $SESSION 不存在"; return 0; }

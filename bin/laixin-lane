@@ -848,6 +848,7 @@ cmd_down() {
   [ -n "$lane" ] || die "down 需要轨道名"
   has_window "$lane" || { echo "$(win "$lane") 本就不存在"; return 0; }
   tmux kill-window -t "$(target "$lane")"
+  native_tmux_cleanup_root "$(lane_native_root "$lane")"
   cdp_sweep "$(cdp_port_lane "$lane")"
   board "lane-$lane" "关闭"
   echo "$(win "$lane") 已关闭"
@@ -5326,6 +5327,8 @@ tool_native_status() {  # launched|read|finalize <run_dir> ...
       local run="$1" window="$2" pid="$3" cwd="$4" version="$5"
       local event
       printf '%s\n' "$pid" > "$run/pid"
+      printf '%s\n' "$window" > "$run/window"
+      printf '%s\n' "$native_engine" > "$run/engine"
       printf '%s\n' "$version" > "$run/fixture-version"
       event="$(python3 - "$window" "$pid" "$cwd" "$version" "$native_engine" <<'PY'
 import json, sys
@@ -5355,6 +5358,13 @@ PY
             if ! kill -0 "$pid" 2>/dev/null; then
               printf 'failed 1 process_gone\n' > "$run/status.new.$$"
               mv "$run/status.new.$$" "$run/status"
+              if [ ! -e "$run/alerted" ]; then
+                touch "$run/alerted"
+                local window engine
+                window="$(cat "$run/window" 2>/dev/null || echo '?')"
+                engine="$(cat "$run/engine" 2>/dev/null || echo "$native_engine")"
+                board "tool-native" "🔴 ${window} ${engine} print failed(reason=process_gone;exit=1);原生进程已消失、窗已回收；证据=${run}"
+              fi
             fi
             ;;
         esac
@@ -5597,6 +5607,37 @@ native_print_active() {  # <native根目录>
   [ "$(cat "$1/transport" 2>/dev/null || true)" = print ]
 }
 
+native_tmux_start() {  # <run_dir> <cwd> <launch>；独立 server 继承当前 shell，绝不改默认 tmux
+  local run="$1" cwd="$2" launch="$3" tmp socket session wrapped
+  tmp="/tmp/laixin-native-${run##*/}"; socket="native"; session="native"
+  mkdir -p "$tmp" || return 1
+  printf '%s\n' "$tmp" > "$run/tmux-tmpdir"
+  printf '%s\n' "$socket" > "$run/tmux-socket"
+  printf '%s\n' "$session" > "$run/tmux-session"
+  printf -v wrapped '%s; native_rc=$?; : > %q; TMUX_TMPDIR=%q tmux -L %q kill-server >/dev/null 2>&1; exit $native_rc' \
+    "$launch" "$run/tmux-cleaned" "$tmp" "$socket"
+  TMUX_TMPDIR="$tmp" tmux -L "$socket" new-session -d -s "$session" -c "$cwd" "$wrapped"
+}
+
+native_tmux_cleanup() {  # <run_dir>；仅清自己的 socket，不碰默认 tmux server
+  local run="$1" tmp socket
+  tmp="$(cat "$run/tmux-tmpdir" 2>/dev/null || true)"
+  socket="$(cat "$run/tmux-socket" 2>/dev/null || true)"
+  [ -n "$tmp" ] && [ -n "$socket" ] || return 0
+  TMUX_TMPDIR="$tmp" tmux -L "$socket" kill-server >/dev/null 2>&1 || true
+  [ -e "$run/tmux-cleaned" ] || : > "$run/tmux-cleaned"
+}
+
+native_tmux_cleanup_root() {  # <native根目录>；回收后让 running 账降级并回传 board
+  local root="$1" run
+  [ -d "$root" ] || return 0
+  for run in "$root"/*; do
+    [ -d "$run" ] || continue
+    native_tmux_cleanup "$run"
+    tool_native_status read "$run" >/dev/null || true
+  done
+}
+
 native_run_start() {  # <window> <native根目录> <brief文件> <cwd> <BU> <port> [resume-thread] [mcp-keep|__all__]
   local window="$1" root="$2" brief="$3" cwd="$4" bu="$5" port="$6" resume_thread="${7:-}" mcp_keep="${8:-__all__}"
   local run run_id lane_self launch
@@ -5612,7 +5653,7 @@ native_run_start() {  # <window> <native根目录> <brief文件> <cwd> <BU> <por
     "$bu" "http://127.0.0.1:$port" \
     "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" \
     "$lane_self" "$window" "$run" "$run/brief.txt" "$cwd" "$bu" "$port" "$resume_thread" "$mcp_keep"
-  tmux send-keys -t "$SESSION:$window" "$launch" C-m || return 1
+  native_tmux_start "$run" "$cwd" "$launch" || return 1
   printf '%s\n' "$run"
 }
 
@@ -5897,7 +5938,15 @@ EOF
   fi
   tmux new-window -t "$SESSION" -n "$w" -c "$dir_r"
   sleep 0.5
-  tmux send-keys -t "$SESSION:$w" "$launch" C-m
+  # print transport 的默认窗只作回收载体；native runner 必须在独立 server 内继承当前环境。
+  if [ "$TOOL_TRANSPORT" = "print" ]; then
+    native_tmux_start "$native_run" "$dir_r" "$launch" || {
+      tmux kill-window -t "$SESSION:$w" 2>/dev/null || true
+      die "$w print 隔离 tmux server 起窗失败；默认载体已回收"
+    }
+  else
+    tmux send-keys -t "$SESSION:$w" "$launch" C-m
+  fi
   # print transport begin:只读 native status，⛔ pane/capture/dialog 判定。
   if [ "$TOOL_TRANSPORT" = "print" ]; then
     local state="" state_head="" waited=0
@@ -5943,6 +5992,7 @@ cmd_tool_down() {  # <件名>
     echo "$w 本就不存在"; return 0
   fi
   tmux kill-window -t "$SESSION:$w" 2>/dev/null || true
+  native_tmux_cleanup_root "$EV_DIR/native/$w"
   cdp_sweep "$(cdp_port_verify "$w")" 2>/dev/null || true
   board "$(caller_src)" "回收 11B/11C 开发维护窗 $w(件=${item};⚠️ worktree 需另行 git worktree remove)"
   echo "已回收 $w(worktree 未动——合并后再 git -C $TOOL_REPO worktree remove <路径>)"
@@ -7463,6 +7513,7 @@ cmd_vdown() {
   tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" \
     || { echo "$w 本就不存在"; return 0; }
   tmux kill-window -t "$SESSION:$w"
+  native_tmux_cleanup_root "$EV_DIR/native/$w"
   cdp_sweep "$(cdp_port_verify "$w")"
   board "$(caller_src)" "回收验收窗口 $w"   # #57:同上,来源=执行方
   echo "$w 已回收"

@@ -4329,9 +4329,24 @@ t "#165-4 print 分支用 native 账续轮，TUI 读屏判据只留在回退分�
 t "#165-4 native print 把 BU 通道注入窗内启动串" bash -c '
   T="$(mktemp -d)"; mkdir -p "$T/root" "$T/wt"; printf x > "$T/brief"
   sed -n "/^native_run_start()/,/^}/p" "'$LANE'" > "$T/f.sh"; source "$T/f.sh"
-  tmux(){ printf "%s\\n" "$*" > "$T/tmux"; }; SESSION=s BOARD="$T/board" KB="$T/kb" DEFAULT_DIR="$T/repo" TOOL_REPO="$T/tool" LANE_SWITCH_DIR="$T/sw"
+  tmux(){ printf "%s\\n" "$*" > "$T/tmux"; }; native_tmux_start(){ tmux -L native new-session "$@"; }; SESSION=s BOARD="$T/board" KB="$T/kb" DEFAULT_DIR="$T/repo" TOOL_REPO="$T/tool" LANE_SWITCH_DIR="$T/sw"
   native_run_start lane-a "$T/root" "$T/brief" "$T/wt" lane-a 9231 >/dev/null
-  ok=0; grep -Fq "BU_NAME=lane-a" "$T/tmux" && grep -Fq "BU_CDP_URL=http://127.0.0.1:9231" "$T/tmux" || ok=1; rm -rf "$T"; exit "$ok"'
+  ok=0; grep -Fq "BU_NAME=lane-a" "$T/tmux" && grep -Fq "BU_CDP_URL=http://127.0.0.1:9231" "$T/tmux" && grep -Fq -- "-L native new-session" "$T/tmux" || ok=1; rm -rf "$T"; exit "$ok"'
+t "#165-4 native print 每 run 用独立 TMUX_TMPDIR、继承当前环境且回收 server" bash -c '
+  T="$(mktemp -d)"; sed -n "/^native_tmux_start()/,/^}/p;/^native_tmux_cleanup()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
+  mkdir "$T/run"; launch="printf %s \"\$HTTP_PROXY\" > \"$T/proxy\"; sleep 30"
+  HTTP_PROXY=print-isolated native_tmux_start "$T/run" "$T" "$launch" || exit 1
+  tmp="$(cat "$T/run/tmux-tmpdir")"
+  for n in $(seq 1 30); do TMUX_TMPDIR="$tmp" tmux -L native has-session -t native 2>/dev/null && break; sleep 0.1; done
+  TMUX_TMPDIR="$tmp" tmux -L native has-session -t native 2>/dev/null || { rm -rf "$T"; exit 2; }
+  [ "$(cat "$T/proxy")" = print-isolated ] || { native_tmux_cleanup "$T/run"; rm -rf "$T"; exit 3; }
+  native_tmux_cleanup "$T/run"
+  ! TMUX_TMPDIR="$tmp" tmux -L native has-session -t native 2>/dev/null && [ -e "$T/run/tmux-cleaned" ]; rc=$?
+  rm -rf "$T"; exit "$rc"'
+t "#165-4 tool-up 的 print native runner 走隔离 server，默认窗只作回收载体" bash -c '
+  seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"
+  grep -q "native_tmux_start \"\$native_run\" \"\$dir_r\" \"\$launch\"" <<< "$seg" &&
+  grep -q "默认窗只作回收载体" <<< "$seg"'
 t "#165-4 BU 自检只接受 native shell 的精确通道输出，缺失或错值必失败" bash -c '
   T="$(mktemp -d)"; sed -n "/^native_bu_self_check()/,/^}/p" "'$LANE'" > "$T/f.sh"; source "$T/f.sh"
   mkdir -p "$T/run"; python3 - "$T/run/events.jsonl" <<"PY"
@@ -4342,9 +4357,10 @@ PY
   native_bu_self_check "$T/run" lane-a 9231 && ! native_bu_self_check "$T/run" lane-b 9231; rc=$?; rm -rf "$T"; exit "$rc"'
 t "#165-4 tmux 回收杀掉 native 进程后，read 不得把旧账读成 running" bash -c '
   T="$(mktemp -d)"; sed -n "/^tool_native_status()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
-  mkdir -p "$T/run"; printf "running stale-thread\\n" > "$T/run/status"
+  board(){ printf "| 00-00 00:00 | %s | %s |\\n" "$1" "$2" >> "$T/board"; }
+  mkdir -p "$T/run"; printf "running stale-thread\\n" > "$T/run/status"; printf tool-test > "$T/run/window"; printf codex > "$T/run/engine"
   sleep 30 & p=$!; kill "$p"; wait "$p" 2>/dev/null || true; printf "%s\\n" "$p" > "$T/run/pid"
-  out="$(tool_native_status read "$T/run")"; grep -q "^failed 1 process_gone" <<< "$out" && grep -qx "failed 1 process_gone" "$T/run/status"; rc=$?; rm -rf "$T"; exit "$rc"'
+  out="$(tool_native_status read "$T/run")"; grep -q "^failed 1 process_gone" <<< "$out" && grep -qx "failed 1 process_gone" "$T/run/status" && awk -F"|" "\$3 ~ /^ tool-native \$/ && \$4 ~ /process_gone/ { found=1 } END { exit !found }" "$T/board"; rc=$?; rm -rf "$T"; exit "$rc"'
 t "#165-4 print bootstrap 在接受任务前执行并核 BU 自检" bash -c '
   f="$(sed -n "/^native_print_bootstrap()/,/^}/p" "'$LANE'")"
   grep -q "native_bu_self_check" <<< "$f" && grep -q "BU_CDP_URL" <<< "$f"'

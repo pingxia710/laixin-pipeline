@@ -5344,6 +5344,21 @@ PY
       ;;
     read)
       local run="$1"
+      # tmux 回收会直接杀掉 tool-native-run，来不及走 finalize；只信旧的 running
+      # 会把已死进程伪装成活窗。PID 不在是可判的失败，保留原账供回退验尸。
+      if [ -s "$run/status" ] && grep -q '^running ' "$run/status"; then
+        local pid=""
+        pid="$(cat "$run/pid" 2>/dev/null || true)"
+        case "$pid" in
+          ''|*[!0-9]*) ;;
+          *)
+            if ! kill -0 "$pid" 2>/dev/null; then
+              printf 'failed 1 process_gone\n' > "$run/status.new.$$"
+              mv "$run/status.new.$$" "$run/status"
+            fi
+            ;;
+        esac
+      fi
       if [ -s "$run/status" ]; then
         cat "$run/status"
         if grep -q '^failed ' "$run/status"; then

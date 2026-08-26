@@ -4340,6 +4340,11 @@ json.dump({"phase":"tool_finished", "item_type":"command_execution", "exit_code"
            "aggregated_output":"lane-a\nhttp://127.0.0.1:9231\n"}, open(sys.argv[1], "w"))
 PY
   native_bu_self_check "$T/run" lane-a 9231 && ! native_bu_self_check "$T/run" lane-b 9231; rc=$?; rm -rf "$T"; exit "$rc"'
+t "#165-4 tmux 回收杀掉 native 进程后，read 不得把旧账读成 running" bash -c '
+  T="$(mktemp -d)"; sed -n "/^tool_native_status()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
+  mkdir -p "$T/run"; printf "running stale-thread\\n" > "$T/run/status"
+  sleep 30 & p=$!; kill "$p"; wait "$p" 2>/dev/null || true; printf "%s\\n" "$p" > "$T/run/pid"
+  out="$(tool_native_status read "$T/run")"; grep -q "^failed 1 process_gone" <<< "$out" && grep -qx "failed 1 process_gone" "$T/run/status"; rc=$?; rm -rf "$T"; exit "$rc"'
 t "#165-4 print bootstrap 在接受任务前执行并核 BU 自检" bash -c '
   f="$(sed -n "/^native_print_bootstrap()/,/^}/p" "'$LANE'")"
   grep -q "native_bu_self_check" <<< "$f" && grep -q "BU_CDP_URL" <<< "$f"'

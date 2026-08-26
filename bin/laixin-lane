@@ -889,12 +889,20 @@ with open(f,encoding="utf-8",errors="ignore") as fh:
 if not last: print("该 transcript 无 usage 记录:"+os.path.basename(f)); sys.exit(0)
 cur=last.get("input_tokens",0)+last.get("cache_read_input_tokens",0)+last.get("cache_creation_input_tokens",0)
 pct=cur/win*100
+# 2026-08-26 第三十四任修:显示与判据必须同源——原先显示用 {:.1f} 四舍五入、判据用未舍入值,
+#   实撞:显示 65.0% 而同屏打印「🟢 <65% 正常工作区间」(真值 64.9x)⇒ 恰好卡线时让人以为在绿区。
+#   改法=先舍入再判,宁早勿晚(65.0 一定进黄区)。
+pct=round(pct,1)
 bar="█"*int(pct//5)+"░"*(20-int(pct//5))
 print(f"会话 {os.path.basename(f)[:8]}… [{chan(f)}]  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
 # ⚠️ 闸门线双真相源:此处 75/65 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
 # 必须同步(一个 bash 一个 python,跨语言共用常量的代价大于收益)。改一处就改另一处。
+# 🔴 2026-08-26 第三十四任标注:75/65 两个数是**约定 ⛔ 实测** —— 同文件里别的阈值标了出处
+#   (如 EV_ACK 45min「30-60 区间中值,方案 log:29」),这两个数一处出处都没有。
+#   条文层权威位=知识库 4-开发层/来信平台-开发协作流程.md「换班闸门判据」节(2026-08-26 立)。
+#   ⚠️ ≥75 硬闸门不动(上下文压缩会丢信息,机理为真);改的只是 65-75 那一档的处置方式。
 if   pct>=75: print("🔴 ≥75% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
-elif pct>=65: print("🟡 65-75%:进入交班准备区,别再开新调查;手上这片收尾就交班")
+elif pct>=65: print("🟡 65-75%:按件判 ⛔ 一刀切——问「这件有无『失败形态与当前状态匹配』的判断项」;有→拆该项交余量足的窗口、其余照做;无→照接")
 else:         print("🟢 <65%:正常工作区间")
 # 2026-08-23 双阈(方案窗口第二十三任裁):占比仍是主判据;绝对余量下限叠加——有值(env LAIXIN_CTX_ABS_MIN > 开关文件 ctx-abs-min)即硬阈,无值=提示态
 rem=win-cur; absmin=(os.environ.get("CTX_ABS_MIN") or "").strip()

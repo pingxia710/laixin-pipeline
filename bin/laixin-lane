@@ -3129,7 +3129,7 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
   # 失败样本=11B pingxia-37 晨退无接班登记零告警,靠 relay 人工 ListAgents 发现——tmux 外窗口无看门狗,
   # 「窗口崩了」与「窗口安静」在一切机器眼里同形。射程=注册表「当前在班」表里 tmux 外的席位;
   # tmux 托管席(单元格含「看门狗托管」)由看门狗管,本函数跳过;标「待接」不算死(交接中属正常)。
-  # 判活=名下有 sessions/*.json 且其 pid 的 socket 存在且 updatedAt 距今 < 45 分钟(三跳逐跳可见,通则五)。
+  # 判活=名下有 sessions/*.json 且其 pid 的 socket 存在，且心跳 < 45 分钟或同一进程仍活。
   local reg="${1:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-窗口角色注册表.md}"
   # 🔴 sessions 目录按通道枚举(2026-08-23 首发级:此前写死 ~/.claude-b/sessions ⇒ 账号软切换后 .claude-official 上每个 tmux 外席位必被判死——
   #   当日方案窗口第二十三任被误报三次;创始人「接下来要经常换」⇒ 每切一次撞一次)。LAIXIN_CC_SESS 仍可显式指定单目录(测试/回切);
@@ -3162,7 +3162,7 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
       fi
     done
     [ "$_talive" = 1 ] && continue
-    local hit=0 j pid upd now
+    local hit=0 j pid upd now proc_start ps_start proc_epoch ps_epoch
     now="$(date +%s)"
     local _sd
     for _sd in $sess_dirs; do for j in "$_sd"/*.json; do
@@ -3172,6 +3172,12 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
       [ -S "${LAIXIN_CC_SOCKS:-/tmp/cc-socks}/$pid.sock" ] || continue
       upd="$(grep -oE '"updatedAt":[0-9]+' "$j" | grep -oE '[0-9]+' | head -1)"
       [ -n "$upd" ] && [ $(( now - upd/1000 )) -lt 2700 ] && { hit=1; break; }
+      # procStart 是 UTC 而未带时区；归一到 epoch 后与本机 ps 的启动时刻比对，防 PID 复用。
+      proc_start="$(grep -oE '"procStart"[[:space:]]*:[[:space:]]*"[^"]+"' "$j" | sed -E 's/.*"([^"]+)"$/\1/' | head -1)"
+      ps_start="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/  *$//')"
+      proc_epoch="$(TZ=UTC LC_ALL=C date -j -f '%a %b %e %T %Y' "$proc_start" +%s 2>/dev/null || true)"
+      ps_epoch="$(LC_ALL=C date -j -f '%a %b %e %T %Y' "$ps_start" +%s 2>/dev/null || true)"
+      [ -n "$proc_epoch" ] && [ "$proc_epoch" = "$ps_epoch" ] && { hit=1; break; }
     done; [ "$hit" = 1 ] && break; done
     [ "$hit" = 1 ] || printf '%s|%s|注册表标在班但无活会话(socket 缺或心跳超 45 分钟;已枚举全部通道 sessions)\n' "$role" "$name"
   done

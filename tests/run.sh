@@ -2568,6 +2568,35 @@ t "#130 tmux 无此窗 ⇒ 仍走心跳判如实报(失效可见性不降)" bash
   rm -f /tmp/lx-sl2-fn.sh /tmp/lx-sl2-reg.md
   grep -q "no-such-win-zz" <<< "$out"'
 
+# ── #130-tmux 外活席:空闲不等于崩；procStart 对 ps lstart 防 PID 复用 ──
+T130E="$(mktemp -d)"
+sed -n "/^seat_liveness()/,/^}/p" "$LANE" > "$T130E/sl.sh"
+mkdir -p "$T130E/home/.claude-test/sessions" "$T130E/socks"
+sleep 900 & T130E_LIVE=$!
+sleep 900 & T130E_REUSED=$!
+T130E_START="$(LC_ALL=C ps -o lstart= -p "$T130E_LIVE" | sed 's/^ *//; s/  *$//')"
+T130E_EPOCH="$(LC_ALL=C date -j -f '%a %b %e %T %Y' "$T130E_START" +%s)"
+T130E_PROC_START="$(TZ=UTC LC_ALL=C date -r "$T130E_EPOCH" '+%a %b %e %T %Y')"
+T130E_DEAD=999999
+while kill -0 "$T130E_DEAD" 2>/dev/null; do T130E_DEAD=$((T130E_DEAD+1)); done
+printf '{"name":"seatlive-live","updatedAt":0,"procStart":"%s"}\n' "$T130E_PROC_START" > "$T130E/home/.claude-test/sessions/$T130E_LIVE.json"
+printf '{"name":"seatlive-reused","updatedAt":0,"procStart":"Thu Jan  1 00:00:00 1970"}\n' > "$T130E/home/.claude-test/sessions/$T130E_REUSED.json"
+printf '{"name":"seatlive-dead","updatedAt":0,"procStart":"Thu Jan  1 00:00:00 1970"}\n' > "$T130E/home/.claude-test/sessions/$T130E_DEAD.json"
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$T130E/socks/$T130E_LIVE.sock"
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$T130E/socks/$T130E_REUSED.sock"
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$T130E/socks/$T130E_DEAD.sock"
+printf '| **活席** | **`seatlive-live`**(**在班**) | — | 任 | 时 | 人 |\n' > "$T130E/live.md"
+printf '| **复用席** | **`seatlive-reused`**(**在班**) | — | 任 | 时 | 人 |\n' > "$T130E/reused.md"
+printf '| **死席** | **`seatlive-dead`**(**在班**) | — | 任 | 时 | 人 |\n' > "$T130E/dead.md"
+t "#130 tmux 外活席:socket+同一进程活而心跳过期 ⇒ 不报" env HOME="$T130E/home" LAIXIN_CC_SESS="$T130E/home/.claude-test/sessions" LAIXIN_CC_SOCKS="$T130E/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=seatlive-none bash -c '
+  source "$1/sl.sh"; out="$(seat_liveness "$1/live.md")"; [ -z "$out" ]' _ "$T130E"
+t "#130 tmux 外 PID 复用:socket+别的活进程 ⇒ 仍报" env HOME="$T130E/home" LAIXIN_CC_SESS="$T130E/home/.claude-test/sessions" LAIXIN_CC_SOCKS="$T130E/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=seatlive-none bash -c '
+  source "$1/sl.sh"; out="$(seat_liveness "$1/reused.md")"; grep -q "seatlive-reused" <<< "$out"' _ "$T130E"
+t "#130 tmux 外真死席:socket+死 PID ⇒ 仍报" env HOME="$T130E/home" LAIXIN_CC_SESS="$T130E/home/.claude-test/sessions" LAIXIN_CC_SOCKS="$T130E/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=seatlive-none bash -c '
+  source "$1/sl.sh"; out="$(seat_liveness "$1/dead.md")"; grep -q "seatlive-dead" <<< "$out"' _ "$T130E"
+kill "$T130E_LIVE" "$T130E_REUSED" 2>/dev/null || true
+rm -rf "$T130E"
+
 t "#108-fix 提及型不误报:窗口条目里提及他窗口交班的句子不算交班条" bash -c 'source /tmp/lx-hb-fn.sh 2>/dev/null || awk "/^handover_unpaired\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-hb-fn.sh && source /tmp/lx-hb-fn.sh; printf "%s\n" "| 08-20 10:40 | 方案窗口 | dispatch 41 交班三件处置:①CDP skill 片 |" "| 08-20 11:15 | 方案窗口 | 收口读数入账 方案窗口第十五任真正收摊,第十六任在班 |" > /tmp/lx-hb-b.md; printf "## 占位\n" > /tmp/lx-hb-p.md; [ -z "$(handover_unpaired /tmp/lx-hb-b.md /tmp/lx-hb-p.md)" ]'
 t "#108-fix 真交班条仍报:正文开头形态命中" bash -c 'source /tmp/lx-hb-fn.sh; printf "%s\n" "| 08-20 10:58 | 方案窗口 | 方案窗口第十五任 pingxia-8a 交班(date 10:58 实测封班) |" > /tmp/lx-hb-b.md; printf "## 占位\n" > /tmp/lx-hb-p.md; handover_unpaired /tmp/lx-hb-b.md /tmp/lx-hb-p.md | grep -q 第十五任'
 t "#105 E2E 反向:不带该开关即不命中(绊线钉住开关不许丢)" bash -c 'source "'"$V16F2"'"; ! git -C "'"$V105"'" log --name-only --format= HEAD~1..HEAD | ev_material_filter >/dev/null'

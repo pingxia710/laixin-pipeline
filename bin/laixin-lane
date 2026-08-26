@@ -3,14 +3,15 @@
 # 用法:
 #   laixin-lane up <a|b|c> [--dir DIR]   确保该轨窗口存在并启动引擎(a/b=codex;c=kimi/K3 前端位,#60②;默认 DIR=~/来信平台)
 #                                    C 轨起窗前预写 kimi 信任记录免 trust 对话框(#68);该目录有 project 级 MCP 配置则拒绝起窗
-#   laixin-lane fresh <a|b|c> [--dir DIR]  重启该轨(down+up,全新上下文;每片派工前用;**c 必须 --dir**=每片独立 worktree)
+#   laixin-lane fresh <a|b|c> [--dir DIR] [--transport tui|print]
+#                                    重启该轨(down+up,全新上下文;每片派工前用;**c 必须 --dir**=每片独立 worktree)
 #   laixin-lane send <a|b|c> <文本>  向该轨输入框粘贴文本并回车(多行走 stdin)
 #   laixin-lane peek <a|b|c> [N]     看该轨最近 N 行输出(默认 60)
 #   laixin-lane log <文本>           手工追加一条事件到流水线看板(供各窗口记录)
 #   laixin-lane status               各轨窗格状态
 #   laixin-lane attach [a|b|c]       进入会话观看(人用;Ctrl-b d 退出)
 #   laixin-lane down <a|b|c>         关闭该轨窗口
-#   laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径 [--to 派工窗口名]
+#   laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径 [--to 派工窗口名] [--transport tui|print]
 #                                    起一次性验收窗口(验完即弃);派工窗口用。引擎=LAIXIN_VERIFY_ENGINE
 #                                    (codex|claude,默认 codex,#60①):codex 回执走落盘契约(末行
 #                                    【验收回执】,events 投递),claude 路径原样保留(SendMessage 回执)
@@ -89,7 +90,7 @@
 #   laixin-lane doctor               体检:skill 落位/命令/知识库/拓扑/发车位/已知工程债
 #   laixin-lane stats                流水线节奏(静默占比)+队列燃料+片级周期
 #   laixin-lane events start|stop|status  事件总线:交付与卡住事件投递进派工窗口(dispatch 自动带起)
-#   laixin-lane verify-from <报告> --prompt P [--to X] [--dry]  解析报告末行起验收(防手抄 hash 错)
+#   laixin-lane verify-from <报告> --prompt P [--to X] [--transport tui|print] [--dry]  解析报告末行起验收(防手抄 hash 错)
 #   laixin-lane next-migration       下一可用迁移号(未合并分支/未提交文件也占号,全都扫)
 #   laixin-lane next-worktree        下一可用 B/C 轨 worktree 号(#60② C 轨同法)
 #   laixin-lane handoff              生成交接包客观半部(判断仍须人写并标明)
@@ -524,12 +525,23 @@ cmd_fresh() {
   [ -n "$lane" ] || die "fresh 需要轨道名"
   # 先验参数再动窗口(2026-08-18 二十四任实撞:--dir 目录不存在时窗口已被杀才报错,
   # lane 凭空消失被事件总线当「Codex 已死」告警)——破坏性动作前置校验,⛔ 杀了再验
-  local _a _prev="" _hasdir=""
-  for _a in "$@"; do
-    if [ "$_prev" = "--dir" ]; then [ -d "$_a" ] || die "目录不存在:$_a(窗口未动;先 git worktree add 再 fresh)"; fi
-    [ "$_a" = "--dir" ] && _hasdir=1
-    _prev="$_a"
+  local _hasdir="" _transport_opt="" _dirarg
+  local -a _up_args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir)
+        _dirarg="${2:?--dir 需要路径}"
+        [ -d "$_dirarg" ] || die "目录不存在:$_dirarg(窗口未动;先 git worktree add 再 fresh)"
+        _hasdir=1; _up_args+=(--dir "$_dirarg"); shift 2 ;;
+      --transport)
+        _transport_opt="${2:?--transport 需要 tui|print}"; shift 2 ;;
+      *) _up_args+=("$1"); shift ;;
+    esac
   done
+  local transport; transport="$(lane_transport_resolve "$_transport_opt")" || die "未知 transport:${_transport_opt}(只接受 tui|print;参数 > LAIXIN_LANE_TRANSPORT > $LANE_SWITCH_DIR/lane-transport > tui)"
+  if [ "$transport" = "print" ] && [ "$(lane_engine "$lane")" != "codex" ]; then
+    die "${lane} 不是 Codex 轨，print 只覆盖 lane-a/lane-b；窗口未动"
+  fi
   # #60②:C 轨同 B 轨形态——每片独立 worktree,fresh c **必须 --dir**(机器执法 ⛔ 靠自觉):
   # 不带 --dir 会落默认主树,与 A 轨对写同一工作树=「两轨对写同一文件」同族事故;窗口未动先拒
   if [ "$lane" = "c" ] && [ -z "$_hasdir" ]; then
@@ -542,7 +554,15 @@ cmd_fresh() {
     sleep 0.3
   fi
   rm -f "$EV_PROMPT_DIR/lane-$lane" 2>/dev/null || true
-  cmd_up "$lane" "$@"
+  if [ "$transport" = "print" ]; then
+    lane_native_fresh "$lane" "${_up_args[@]}"
+  else
+    # native 账只归 Codex lane；Kimi 的 TUI 路径保持 cmd_up 原样。
+    if [ "$(lane_engine "$lane")" = "codex" ]; then
+      native_transport_set "$(lane_native_root "$lane")" tui
+    fi
+    cmd_up "$lane" "${_up_args[@]}"
+  fi
 }
 
 # #40:send 被吞检测本体(独立成函数可独测)。⚖️ 裁定已定:⛔ 放宽判据 ⛔ 提高阈值——
@@ -687,6 +707,17 @@ cmd_send() {
   local _prompt
   _prompt="$(grep -oE '/[^[:space:]]*[Pp]rompt[^[:space:]]*\.md' <<< "$text" | head -1 || true)"
   [ -z "$_prompt" ] || ev_prompt_set "lane-$lane" "$_prompt" || true
+  local _native_root; _native_root="$(lane_native_root "$lane")"
+  if native_print_active "$_native_root"; then
+    native_print_resume "$(win "$lane")" "$_native_root" "$text" \
+      || die "$(win "$lane") print 续轮失败；native 账保留，回退请 fresh $lane --transport tui"
+    lock_write
+    local _native_head; _native_head="$(echo "$text" | head -1 | cut -c1-80)"
+    board "lane-$lane" "← 收到:${_native_head}"
+    echo "已发送到 $(win "$lane")(${_native_head}…)"
+    echo "(print native 账已接受该轮；终态只认 native status，⛔ 用读屏判送达)"
+    return 0
+  fi
   # #163 落地校验:投递**前**取基线(⛔ 事后拿绝对计数——同串历史可能已有 N 次,重投场景必然)
   local _feat _base
   _feat="$(printf '%s' "$text" | inject_features)"
@@ -3784,11 +3815,12 @@ cmd_next_worktree(){  # B/C 轨 worktree 编号:已注册的 + 目录残留的�
 
 cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗口——防手抄 hash 笔误,顺带机器校验交付契约
   local report="${1:-}"; shift || true
-  [ -n "$report" ] || die "用法:laixin-lane verify-from <交付报告路径> --prompt <路径> [--to X] [--dry]"
-  local prompt="" to="" dry="" allow_stale=""
+  [ -n "$report" ] || die "用法:laixin-lane verify-from <交付报告路径> --prompt <路径> [--to X] [--transport tui|print] [--dry]"
+  local prompt="" to="" dry="" allow_stale="" transport=""
   while [ $# -gt 0 ]; do case "$1" in
     --prompt) prompt="${2:?}"; shift 2 ;;
     --to)     to="${2:?}"; shift 2 ;;
+    --transport) transport="${2:?}"; shift 2 ;;
     --dry)    dry=1; shift ;;
     --allow-stale) allow_stale=1; shift ;;
     *) die "未知参数:$1" ;;
@@ -3849,7 +3881,7 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
   if [ -n "$zerocommit" ]; then
     die "⛔ 拒绝交接(#23):$commit 相对 main 零 commit,验收方拿到与 main 等同的树零物可验——若确是停车,按停车报告流程走"
   fi
-  cmd_verify "$slice" --branch "$branch" --commit "$commit" --report "$report" --prompt "$prompt" ${to:+--to "$to"}
+  cmd_verify "$slice" --branch "$branch" --commit "$commit" --report "$report" --prompt "$prompt" ${to:+--to "$to"} ${transport:+--transport "$transport"}
 }
 
 cmd_handoff(){  # 交接包客观半部机器生成;判断留给人写并须标明是判断
@@ -5065,6 +5097,15 @@ if engine == "codex":
             reject("thread_missing_thread_id", raw_type)
             raise SystemExit
         if bound:
+            resuming = (root / "resume-thread").exists()
+            if resuming and thread_id == bound:
+                (root / "accepted").write_text(thread_id + "\n")
+                emit("events", [envelope("accepted", raw_type, session_id=thread_id,
+                                         thread_id=thread_id, thread=obj, resumed=True)])
+                raise SystemExit
+            if resuming:
+                reject("resume_thread_mismatch", raw_type)
+                raise SystemExit
             reject("second_thread", raw_type)
             raise SystemExit
         registry = root.parent / "sessions"
@@ -5424,8 +5465,8 @@ PY
   esac
 }
 
-tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
-  local window="$1" run="$2" prompt="$3" cwd="$4" bu="$5" port="$6"
+tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port> [resume-thread] [mcp-keep|__all__]
+  local window="$1" run="$2" prompt="$3" cwd="$4" bu="$5" port="$6" resume_thread="${7:-}" mcp_keep="${8:-__unset__}"
   local native_engine="${LAIXIN_TOOL_NATIVE_ENGINE:-claude}"
   local fixture_version="${LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION:-2.1.241}"
   [ "$native_engine" != codex ] || fixture_version="${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}"
@@ -5437,8 +5478,32 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
   local fifo="$run/stdout.pipe"; rm -f "$fifo"; mkfifo "$fifo"
   local brief; brief="$(<"$prompt")"
   if [ "$native_engine" = codex ]; then
-    codex exec --json --sandbox workspace-write -C "$cwd" "$brief" \
-      > "$fifo" 2> "$run/stderr.log" </dev/null &
+    local mcp_off=""
+    if [ "$mcp_keep" != "__unset__" ]; then
+      [ "$mcp_keep" = "__all__" ] && mcp_keep=""
+      mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
+    fi
+    if [ -n "$mcp_off" ]; then
+      local -a mcp_args
+      read -r -a mcp_args <<< "$mcp_off"
+      if [ -n "$resume_thread" ]; then
+        printf '%s\n' "$resume_thread" > "$run/resume-thread"
+        printf '%s\n' "$resume_thread" > "$run/bound-session"
+        codex exec resume --json "${mcp_args[@]}" "$resume_thread" "$brief" \
+          > "$fifo" 2> "$run/stderr.log" </dev/null &
+      else
+        codex exec --json --sandbox workspace-write -C "$cwd" "${mcp_args[@]}" "$brief" \
+          > "$fifo" 2> "$run/stderr.log" </dev/null &
+      fi
+    elif [ -n "$resume_thread" ]; then
+      printf '%s\n' "$resume_thread" > "$run/resume-thread"
+      printf '%s\n' "$resume_thread" > "$run/bound-session"
+      codex exec resume --json "$resume_thread" "$brief" \
+        > "$fifo" 2> "$run/stderr.log" </dev/null &
+    else
+      codex exec --json --sandbox workspace-write -C "$cwd" "$brief" \
+        > "$fifo" 2> "$run/stderr.log" </dev/null &
+    fi
   else
     ensure_headless_settings
     BU_NAME="$bu" BU_CDP_URL="http://127.0.0.1:$port" \
@@ -5495,6 +5560,148 @@ PY
   rm -f "$fifo"
   tool_native_status finalize "$run" "$window" "$pid" "$cwd" "$cli_rc" || final_rc=$?
   return "$final_rc"
+}
+
+lane_transport_resolve() {  # <参数值> → tui|print；参数 > env > switch 文件 > tui
+  local transport="${1:-}"
+  [ -n "$transport" ] || transport="${LAIXIN_LANE_TRANSPORT:-}"
+  if [ -z "$transport" ] && [ -s "$LANE_SWITCH_DIR/lane-transport" ]; then
+    transport="$(head -1 "$LANE_SWITCH_DIR/lane-transport" | tr -d '[:space:]')"
+  fi
+  transport="${transport:-tui}"
+  case "$transport" in tui|print) printf '%s\n' "$transport" ;; *) printf '%s\n' "$transport"; return 1 ;; esac
+}
+
+native_transport_set() {  # <native根目录> <tui|print>；留存旧 run，不删证据
+  local root="$1" transport="$2"
+  mkdir -p "$root" || return 1
+  printf '%s\n' "$transport" > "$root/transport"
+}
+
+native_print_active() {  # <native根目录>
+  [ "$(cat "$1/transport" 2>/dev/null || true)" = print ]
+}
+
+native_run_start() {  # <window> <native根目录> <brief文件> <cwd> <BU> <port> [resume-thread] [mcp-keep|__all__]
+  local window="$1" root="$2" brief="$3" cwd="$4" bu="$5" port="$6" resume_thread="${7:-}" mcp_keep="${8:-__all__}"
+  local run run_id lane_self launch
+  [ -f "$brief" ] || return 1
+  mkdir -p "$root" || return 1
+  run_id="$(date '+%Y%m%d-%H%M%S')-$$-$RANDOM"
+  run="$root/$run_id"
+  mkdir "$run" || return 1
+  cp "$brief" "$run/brief.txt" || return 1
+  lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+  printf -v launch 'env HOME=%q CODEX_HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q BU_NAME=%q BU_CDP_URL=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q %q %q' \
+    "$HOME" "${CODEX_HOME:-$HOME/.codex}" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" \
+    "$bu" "http://127.0.0.1:$port" \
+    "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" \
+    "$lane_self" "$window" "$run" "$run/brief.txt" "$cwd" "$bu" "$port" "$resume_thread" "$mcp_keep"
+  tmux send-keys -t "$SESSION:$window" "$launch" C-m || return 1
+  printf '%s\n' "$run"
+}
+
+native_run_wait() {  # <run> <accepted|settled> [timeout秒]；只读 native 账
+  local run="$1" want="$2" timeout="${3:-95}" waited=0 state head
+  while [ "$waited" -lt "$timeout" ]; do
+    state="$(tool_native_status read "$run")"
+    head="${state%%$'\n'*}"
+    case "$head" in
+      failed\ *) printf '%s\n' "$state" >&2; return 1 ;;
+      settled\ *) return 0 ;;
+      running\ *) [ "$want" = accepted ] && return 0 ;;
+    esac
+    sleep 1; waited=$((waited + 1))
+  done
+  printf 'native 账 %s 在 %ss 内未到 %s(当前:%s)\n' "$run" "$timeout" "$want" "${head:-missing}" >&2
+  return 1
+}
+
+native_bu_self_check() {  # <run> <BU_NAME> <CDP_port>；只认 Codex 原生事件中的 shell 输出
+  local events="$1/events.jsonl" bu="$2" url="http://127.0.0.1:$3"
+  python3 - "$events" "$bu" "$url" <<'PY'
+import json, sys
+
+events, expected_name, expected_url = sys.argv[1:]
+try:
+    rows = [json.loads(line) for line in open(events, errors="replace") if line.strip()]
+except OSError as exc:
+    print(f"BU 自检读账失败:{exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+for row in rows:
+    if row.get("phase") != "tool_finished" or row.get("item_type") != "command_execution":
+        continue
+    if row.get("exit_code") != 0:
+        continue
+    output = row.get("aggregated_output")
+    if isinstance(output, str) and output.splitlines() == [expected_name, expected_url]:
+        raise SystemExit(0)
+
+print("BU 自检失败:窗内未读到匹配的 BU_NAME/BU_CDP_URL；native 账已留存", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
+native_print_bootstrap() {  # <window> <native根目录> <cwd> <BU> <port> [mcp-keep]
+  local window="$1" root="$2" cwd="$3" bu="$4" port="$5" mcp_keep="${6:-__all__}"
+  local bootstrap="$root/bootstrap.txt" run
+  native_transport_set "$root" print || return 1
+  printf '%s\n' "$cwd" > "$root/cwd"
+  printf '%s\n' "$bu" > "$root/bu"
+  printf '%s\n' "$port" > "$root/port"
+  printf '%s\n' "$mcp_keep" > "$root/mcp-keep"
+  cat > "$bootstrap" <<'EOF'
+You are a development lane. First use the shell tool exactly once to run:
+printf '%s\n%s\n' "$BU_NAME" "$BU_CDP_URL"
+Do not edit files. After that command, reply only READY and end this run.
+EOF
+  run="$(native_run_start "$window" "$root" "$bootstrap" "$cwd" "$bu" "$port" "" "$mcp_keep")" || return 1
+  printf '%s\n' "$run" > "$root/current"
+  native_run_wait "$run" settled 120 || return 1
+  native_bu_self_check "$run" "$bu" "$port"
+}
+
+native_print_resume() {  # <window> <native根目录> <正文>；同一 thread 的下一轮
+  local window="$1" root="$2" text="$3"
+  local current state thread cwd bu port mcp_keep brief run
+  current="$(cat "$root/current" 2>/dev/null || true)"
+  [ -n "$current" ] || { echo "native 账缺 current:$root" >&2; return 1; }
+  state="$(tool_native_status read "$current")"
+  case "${state%%$'\n'*}" in settled\ *) : ;; *) printf 'native 上一轮未终态，不能 resume:%s\n' "$state" >&2; return 1 ;; esac
+  thread="$(tail -1 "$root/sessions" 2>/dev/null || true)"
+  cwd="$(cat "$root/cwd" 2>/dev/null || true)"; bu="$(cat "$root/bu" 2>/dev/null || true)"; port="$(cat "$root/port" 2>/dev/null || true)"
+  mcp_keep="$(cat "$root/mcp-keep" 2>/dev/null || echo __all__)"
+  [ -n "$thread" ] && [ -n "$cwd" ] && [ -n "$bu" ] && [ -n "$port" ] || { echo "native 账缺续轮元数据:$root" >&2; return 1; }
+  brief="$root/resume-$RANDOM.txt"
+  printf '%s' "$text" > "$brief"
+  run="$(native_run_start "$window" "$root" "$brief" "$cwd" "$bu" "$port" "$thread" "$mcp_keep")" || { rm -f "$brief"; return 1; }
+  rm -f "$brief"
+  printf '%s\n' "$run" > "$root/current"
+  native_run_wait "$run" accepted 95
+}
+
+lane_native_root() { printf '%s/native/lane-%s\n' "$EV_DIR" "$1"; }
+
+lane_native_fresh() {  # <lane> [cmd_up 参数]；print 的就绪与判活只认 native 账
+  local lane="$1"; shift
+  local dir="$DEFAULT_DIR" mcp_keep="" root w bu port
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) dir="${2:?--dir 需要路径}"; shift 2 ;;
+      --with-mcp) mcp_keep="${mcp_keep:+$mcp_keep }${2:?--with-mcp 需要服务名}"; shift 2 ;;
+      *) die "未知参数:$1" ;;
+    esac
+  done
+  [ -d "$dir" ] || die "目录不存在:$dir"
+  ensure_session
+  w="$(win "$lane")"; bu="lane-$lane"; port="$(cdp_port_lane "$lane")"; root="$(lane_native_root "$lane")"
+  tmux new-window -t "$SESSION" -n "$w" -c "$dir"
+  native_print_bootstrap "$w" "$root" "$dir" "$bu" "$port" "${mcp_keep:-__all__}" \
+    || die "$w print 未就绪；native 账保留，回退请 fresh $lane --transport tui"
+  board "lane-$lane" "启动 codex @ $dir"
+  echo "$w 已在 $dir 启动 codex。观看:laixin-lane attach $lane"
+  echo "(print native 账已完成就绪轮；后续 send 走同一 thread 的 exec resume)"
 }
 
 cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--engine codex|claude] [--transport tui|print] [--with-mcp 名]... [--dry]
@@ -6992,7 +7199,7 @@ vwin() {  # 验收窗口名(片名里 tmux 目标语法有意义的字符一律�
 cmd_verify() {
   local slice="${1:-}"; shift || true
   [ -n "$slice" ] || die "verify 需要片名:laixin-lane verify <片名> --branch B --commit C --report 路径 --prompt 路径"
-  local branch="" commit="" report="" prompt="" dir="$HOME" to="" nosend=""
+  local branch="" commit="" report="" prompt="" dir="$HOME" to="" nosend="" transport_opt=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-send) nosend=1; shift ;;   # 起窗后停在未派单态(2026-08-23 待定轨件:派单前检查/模型档设置此前无执行点,两次挡住正当需求);派单=laixin-lane vsend <片名>
@@ -7002,6 +7209,7 @@ cmd_verify() {
       --prompt) prompt="${2:?--prompt 需要 prompt 路径}"; shift 2 ;;
       --dir)    dir="${2:?--dir 需要路径}"; shift 2 ;;
       --to)     to="${2:?--to 需要派工窗口的会话名}"; shift 2 ;;
+      --transport) transport_opt="${2:?--transport 需要 tui|print}"; shift 2 ;;
       *) die "未知参数:$1" ;;
     esac
   done
@@ -7011,15 +7219,20 @@ cmd_verify() {
   [ -f "$prompt" ] || die "prompt 不存在:$prompt"
   # #60① 引擎校验在动窗口**之前**(破坏性动作前置校验,同 fresh --dir 一课):值打错不该留下半个死窗口
   case "$VERIFY_ENGINE" in codex|claude) : ;; *) die "未知验收引擎:$VERIFY_ENGINE(LAIXIN_VERIFY_ENGINE 只接受 codex|claude)" ;; esac
+  local VERIFY_TRANSPORT
+  VERIFY_TRANSPORT="$(lane_transport_resolve "$transport_opt")" || die "未知 transport:${VERIFY_TRANSPORT}(只接受 tui|print;参数 > LAIXIN_LANE_TRANSPORT > $LANE_SWITCH_DIR/lane-transport > tui)"
+  [ "$VERIFY_TRANSPORT" != print ] || [ "$VERIFY_ENGINE" = codex ] || die "verify print 只覆盖 Codex；claude 保留 TUI，窗口未动"
 
   local w; w="$(vwin "$slice")"
   local slug_e; slug_e="$(echo "$slice" | tr ' /' '--' | cut -c1-24)"
   local evid="$EVID_ROOT/$slug_e"
   mkdir -p "$evid"
+  local native_root="$EV_DIR/native/$w"
   ensure_session
   if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w"; then
     die "$w 已存在——同一片不重复起验收窗口(整改重验请先 laixin-lane vdown $slice)"
   fi
+  native_transport_set "$native_root" "$VERIFY_TRANSPORT" || die "native 账目录创建失败:$native_root"
 
   tmux new-window -t "$SESSION" -n "$w" -c "$dir"
   mkdir -p "$EV_DIR"
@@ -7036,6 +7249,10 @@ cmd_verify() {
   local bu port; bu="v$(printf '%s' "$w" | cksum | awk '{print $1}')"
   port="$(cdp_port_verify "$w")"
   local receipt="$KB/4-开发层/记录/${slice}-验收回执.md"
+  if [ "$VERIFY_TRANSPORT" = print ]; then
+    native_print_bootstrap "$w" "$native_root" "$dir" "$bu" "$port" __all__ \
+      || die "$w print 未就绪；native 账保留，回退请 laixin-lane vdown $slice 后 verify --transport tui"
+  fi
   local msg
   if [ "$VERIFY_ENGINE" = "claude" ]; then
   local allow deny
@@ -7094,10 +7311,12 @@ EOF
   # ②回执从 SendMessage 改**落盘契约**(codex 无 SendMessage):<片名>-验收回执.md 末行行首【验收回执】,
   #   events 复用交付监听同机制投递 dispatch;③红线约束进指令本体——codex 无 disallowedTools 等价物,
   #   ⛔ push/merge/reset --hard/动 lane 靠指令明写+dispatch 合并侧校验(evidence 复查+merge-guard)兜底。
-  local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
-  tmux send-keys -t "$SESSION:$w" "$(codex_launch_cmd "$bu" "$port" "$_mcp_off")" C-m
-  vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-v $slice 40"
-  sleep 1
+  if [ "$VERIFY_TRANSPORT" = tui ]; then
+    local _mcp_off; _mcp_off="$(lane_mcp_off_flags "")"
+    tmux send-keys -t "$SESSION:$w" "$(codex_launch_cmd "$bu" "$port" "$_mcp_off")" C-m
+    vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-v $slice 40"
+    sleep 1
+  fi
 
   # 交接只传客观信息;五项客观信息与 claude 版完全同构(片名/prompt/分支/commit/报告路径)
   msg="$(cat <<EOF
@@ -7155,6 +7374,15 @@ EOF
     echo "$w 已起,**未派单**(--no-send)。核完环境/模型档后派单:laixin-lane vsend $slice;看现场:laixin-lane peek-v $slice 30"
     return 0
   fi
+  if [ "$VERIFY_TRANSPORT" = print ]; then
+    native_print_resume "$w" "$native_root" "$msg" \
+      || die "$w print 派单失败；native 账保留，回退请 laixin-lane vdown $slice 后 verify --transport tui"
+    board "$(caller_src)" "起验收窗口 $w ← $slice($branch $commit)引擎=$VERIFY_ENGINE"
+    echo "$w 已起并派单(引擎=$VERIFY_ENGINE)。复核:laixin-lane peek-v $slice 30 / 观看:laixin-lane attach"
+    echo "回执契约:$receipt 末行行首【验收回执】——事件总线监听落盘并投递 dispatch(#60①,⛔ 等 SendMessage)。"
+    echo "print native 账:${native_root}（判活与终态不读 pane）"
+    return 0
+  fi
   printf '%s' "$msg" | tmux load-buffer -b laixin-vmsg -
   tmux paste-buffer -p -b laixin-vmsg -t "$SESSION:$w"
   tmux delete-buffer -b laixin-vmsg
@@ -7191,6 +7419,15 @@ cmd_vsend() {  # <片名> —— 把 verify --no-send 落盘的派单正文原�
   local w; w="$(vwin "$slice")"; local f="$EV_DIR/vbrief/$w.md"
   [ -f "$f" ] || die "未找到 $w 的未派单正文($f)——它不是 --no-send 起的,或已派过(vsend 派后即删)"
   tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$w" || die "$w 不在跑(验收窗已收?)——vsend 只派给在跑的窗"
+  local native_root="$EV_DIR/native/$w"
+  if native_print_active "$native_root"; then
+    native_print_resume "$w" "$native_root" "$(cat "$f")" \
+      || die "$w print 派单失败；native 账保留，回退请 laixin-lane vdown $slice 后 verify --transport tui"
+    rm -f "$f"
+    board "$(caller_src)" "vsend→验收窗口 $w:派单正文已派出(此前 --no-send 未派单态)"
+    echo "$w 已派单(来自 --no-send 落盘正文；print native 账判活)。复核:laixin-lane peek-v $slice 30"
+    return 0
+  fi
   printf '%s' "$(cat "$f")" | tmux load-buffer -b laixin-vmsg -
   tmux paste-buffer -p -b laixin-vmsg -t "$SESSION:$w"
   tmux delete-buffer -b laixin-vmsg

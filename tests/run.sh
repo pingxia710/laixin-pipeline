@@ -4173,6 +4173,19 @@ sleep 0.2
 codex_quiet_two="$(head -1 "$N165/native-codex/quiet/run/status")"
 wait "$codex_quiet_pid"; codex_quiet_rc=$?
 
+resume165_root="$N165/native-codex/resume"
+mkdir -p "$resume165_root/boot" "$resume165_root/turn"
+env HOME="$N165/home" PATH="$N165/fakebin:$PATH" LAIXIN_TOOL_NATIVE_ENGINE=codex \
+  LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=fixture-codex LAIXIN_BOARD="$N165/native-codex-board.md" \
+  FAKE_CODEX_ARGS="$resume165_root/boot/args" FAKE_CODEX_THREAD=thread-resume \
+  "$LANE" tool-native-run native-resume "$resume165_root/boot" "$N165/p.md" "$N165/wt" bu 9999 > "$N165/resume-boot.out" 2>&1
+resume_boot_rc=$?
+env HOME="$N165/home" PATH="$N165/fakebin:$PATH" LAIXIN_TOOL_NATIVE_ENGINE=codex \
+  LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=fixture-codex LAIXIN_BOARD="$N165/native-codex-board.md" \
+  FAKE_CODEX_ARGS="$resume165_root/turn/args" FAKE_CODEX_THREAD=thread-resume \
+  "$LANE" tool-native-run native-resume "$resume165_root/turn" "$N165/p.md" "$N165/wt" bu 9999 thread-resume __all__ > "$N165/resume-turn.out" 2>&1
+resume_turn_rc=$?
+
 t "#165-3 普通前置行 raw+notice 双留且后续可 settled；prompt 是单 argv、stdin=EOF" bash -c '
   [ "$1" -eq 0 ] && grep -Fxq "wrapper readiness line" "$2/raw.jsonl" && grep -q "\"phase\":\"notice\"" "$2/events.jsonl" &&
   grep -q "\"phase\":\"settled\"" "$2/events.jsonl" && grep -Fxq "probe fixture prompt" "$2/args"' _ "$normal_rc" "$N165/native/normal/run"
@@ -4253,6 +4266,18 @@ t "#165-3 codex 未知/坏 JSON 均 raw 留账+protocol_unknown+零 settled" bas
 t "#165-3 codex 长静默期间两读都是 running，终态后才 settled" bash -c '
   [ "$1" -eq 0 ] && grep -q "^running" <<< "$2" && grep -q "^running" <<< "$3" && grep -q "^settled 0" "$4/status"' \
   _ "$codex_quiet_rc" "$codex_quiet_one" "$codex_quiet_two" "$N165/native-codex/quiet/run"
+t "#165-3 codex resume 同一 thread 再次 accepted，固定官方 resume argv 且零 sandbox" python3 - "$resume_boot_rc" "$resume_turn_rc" "$resume165_root" <<'PY'
+import json, sys
+boot_rc, turn_rc = map(int, sys.argv[1:3])
+root = sys.argv[3]
+assert boot_rc == turn_rc == 0
+args = open(root + "/turn/args").read().splitlines()
+assert args[0:3] == ["exec", "resume", "--json"]
+assert "thread-resume" in args and "--sandbox" not in args
+events = [json.loads(line) for line in open(root + "/turn/events.jsonl")]
+assert any(e["phase"] == "accepted" and e.get("resumed") is True and e["thread_id"] == "thread-resume" for e in events)
+assert open(root + "/turn/accepted").read().strip() == "thread-resume"
+PY
 
 sed -n '/^tool_native_parse()/,/^}/p' "$LANE" > "$N165/native-parse.sh"
 t "#165-3 pid/session 绑定:同 session 后续放行；第二 init/错 pid/错 session/跨 run 重复均拒" env T="$N165" bash -c '
@@ -4280,10 +4305,48 @@ t "#165-3 codex thread 绑定:持久化、第二 thread/跨 run 重复拒绝，�
   tool_native_parse "$T/codex-cross/r2" w 302 302 /tmp "$(thread CX)" && exit 5
   prep "$T/codex-before/run"; tool_native_parse "$T/codex-before/run" w 303 303 /tmp "{\"type\":\"turn.started\"}" && exit 6
   grep -q second_thread "$T/codex-bind/run/events.jsonl" && grep -q duplicate_session_across_run "$T/codex-cross/r2/events.jsonl" && grep -q event_before_thread "$T/codex-before/run/events.jsonl"'
+t "#165-3 codex resume 只放行同一 thread，错 thread 仍是协议错误" env T="$N165" bash -c '
+  board(){ :; }; export LAIXIN_TOOL_NATIVE_ENGINE=codex
+  source "$T/native-parse.sh"
+  prep(){ mkdir -p "$1"; : > "$1/raw.jsonl"; : > "$1/events.jsonl"; : > "$1/status"; }
+  prep "$T/codex-resume/ok"; printf C1 > "$T/codex-resume/ok/bound-session"; : > "$T/codex-resume/ok/resume-thread"
+  tool_native_parse "$T/codex-resume/ok" w 401 401 /tmp "{\"type\":\"thread.started\",\"thread_id\":\"C1\"}" || exit 1
+  prep "$T/codex-resume/bad"; printf C1 > "$T/codex-resume/bad/bound-session"; : > "$T/codex-resume/bad/resume-thread"
+  tool_native_parse "$T/codex-resume/bad" w 402 402 /tmp "{\"type\":\"thread.started\",\"thread_id\":\"C2\"}" && exit 2
+  grep -q "resumed.*true" "$T/codex-resume/ok/events.jsonl" && grep -q resume_thread_mismatch "$T/codex-resume/bad/events.jsonl"'
+t "#165-4 lane transport 优先级与 print 入口同源，C 轨在动窗前拒绝" bash -c '
+  T="$(mktemp -d)"; mkdir -p "$T/sw"; sed -n "/^lane_transport_resolve()/,/^}/p" "'$LANE'" > "$T/f.sh"; source "$T/f.sh"
+  LANE_SWITCH_DIR="$T/sw"; printf print > "$T/sw/lane-transport"
+  a="$(lane_transport_resolve print)"; b="$(LAIXIN_LANE_TRANSPORT=tui lane_transport_resolve "")"; c="$(lane_transport_resolve "")"; : > "$T/sw/lane-transport"; d="$(lane_transport_resolve "")"
+  f="$(sed -n "/^cmd_fresh()/,/^}/p" "'$LANE'")"; rm -rf "$T"
+  [ "$a" = print ] && [ "$b" = tui ] && [ "$c" = print ] && [ "$d" = tui ] && grep -q "lane_native_fresh" <<< "$f" && grep -q "不是 Codex 轨" <<< "$f"'
+t "#165-4 Kimi 的 TUI 回退保持 cmd_up 原路径，零 native 账写入" bash -c '
+  f="$(sed -n "/^cmd_fresh()/,/^}/p" "'$LANE'")"
+  compact="$(tr "\\n" " " <<< "$f")"; grep -q "lane_engine.*codex.*native_transport_set" <<< "$compact"'
+t "#165-4 print 分支用 native 账续轮，TUI 读屏判据只留在回退分支" bash -c '
+  fresh="$(sed -n "/^cmd_fresh()/,/^}/p" "'$LANE'")"; send="$(sed -n "/^cmd_send()/,/^}/p" "'$LANE'")"; verify="$(sed -n "/^cmd_verify()/,/^}/p" "'$LANE'")"
+  grep -q "lane_native_fresh" <<< "$fresh" && grep -q "native_print_resume" <<< "$send" && grep -q "native_print_bootstrap" <<< "$verify" && grep -q "native_print_resume" <<< "$verify"'
+t "#165-4 native print 把 BU 通道注入窗内启动串" bash -c '
+  T="$(mktemp -d)"; mkdir -p "$T/root" "$T/wt"; printf x > "$T/brief"
+  sed -n "/^native_run_start()/,/^}/p" "'$LANE'" > "$T/f.sh"; source "$T/f.sh"
+  tmux(){ printf "%s\\n" "$*" > "$T/tmux"; }; SESSION=s BOARD="$T/board" KB="$T/kb" DEFAULT_DIR="$T/repo" TOOL_REPO="$T/tool" LANE_SWITCH_DIR="$T/sw"
+  native_run_start lane-a "$T/root" "$T/brief" "$T/wt" lane-a 9231 >/dev/null
+  ok=0; grep -Fq "BU_NAME=lane-a" "$T/tmux" && grep -Fq "BU_CDP_URL=http://127.0.0.1:9231" "$T/tmux" || ok=1; rm -rf "$T"; exit "$ok"'
+t "#165-4 BU 自检只接受 native shell 的精确通道输出，缺失或错值必失败" bash -c '
+  T="$(mktemp -d)"; sed -n "/^native_bu_self_check()/,/^}/p" "'$LANE'" > "$T/f.sh"; source "$T/f.sh"
+  mkdir -p "$T/run"; python3 - "$T/run/events.jsonl" <<"PY"
+import json, sys
+json.dump({"phase":"tool_finished", "item_type":"command_execution", "exit_code":0,
+           "aggregated_output":"lane-a\nhttp://127.0.0.1:9231\n"}, open(sys.argv[1], "w"))
+PY
+  native_bu_self_check "$T/run" lane-a 9231 && ! native_bu_self_check "$T/run" lane-b 9231; rc=$?; rm -rf "$T"; exit "$rc"'
+t "#165-4 print bootstrap 在接受任务前执行并核 BU 自检" bash -c '
+  f="$(sed -n "/^native_print_bootstrap()/,/^}/p" "'$LANE'")"
+  grep -q "native_bu_self_check" <<< "$f" && grep -q "BU_CDP_URL" <<< "$f"'
 t "#165-3 settled 与报告契约彻底分离；失败零 retry；看板仍唯一经 board()" bash -c '
   status="$(sed -n "/^tool_native_status()/,/^}/p" "'$LANE'")"
   native="$(sed -n "/^tool_native_parse()/,/^}/p;/^tool_native_status()/,/^}/p;/^tool_native_launch()/,/^}/p" "'$LANE'")"
-  ! grep -q "工具件完成" <<< "$status" && ! grep -qiE "retry|resume" <<< "$native" && [ "$(grep -cF ">> \"\$BOARD\"" "'$LANE'")" -eq 1 ]'
+  ! grep -q "工具件完成" <<< "$status" && ! grep -qi "retry" <<< "$native" && grep -q "codex exec resume" <<< "$native" && [ "$(grep -cF ">> \"\$BOARD\"" "'$LANE'")" -eq 1 ]'
 rm -rf "$N165"
 rm -rf "$W165"
 

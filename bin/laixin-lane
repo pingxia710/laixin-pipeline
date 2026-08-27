@@ -5535,19 +5535,19 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
       if [ -n "$resume_thread" ]; then
         printf '%s\n' "$resume_thread" > "$run/resume-thread"
         printf '%s\n' "$resume_thread" > "$run/bound-session"
-        codex exec resume --json "${model_args[@]}" "${mcp_args[@]}" "$resume_thread" "$brief" \
+        codex exec resume --json ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$resume_thread" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       else
-        codex exec --json --sandbox workspace-write -C "$cwd" "${model_args[@]}" "${mcp_args[@]}" "$brief" \
+        codex exec --json --sandbox workspace-write -C "$cwd" ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       fi
     elif [ -n "$resume_thread" ]; then
       printf '%s\n' "$resume_thread" > "$run/resume-thread"
       printf '%s\n' "$resume_thread" > "$run/bound-session"
-      codex exec resume --json "${model_args[@]}" "$resume_thread" "$brief" \
+      codex exec resume --json ${model_args[@]+"${model_args[@]}"} "$resume_thread" "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     else
-      codex exec --json --sandbox workspace-write -C "$cwd" "${model_args[@]}" "$brief" \
+      codex exec --json --sandbox workspace-write -C "$cwd" ${model_args[@]+"${model_args[@]}"} "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     fi
   else

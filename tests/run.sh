@@ -3782,18 +3782,26 @@ t "prompt-rescan --all:扫 prompt/ 目录近 N 天全部(含 nofp ⇒ 2 份失�
   out="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-rescan --all --days 1 2>&1)"; grep -q "扫 3 份 prompt,2 份有引用失准" <<< "$out"' _ "$TRS" "$LANE"
 rm -rf "$TRS"
 
-# ── 分支命名闸(2026-08-23;版本流卡 A-4 单点源):prompt-lint 分支名校验 + kickoff 卡第 7 条 ───────────────
-TBN="$(mktemp -d)"; mkdir -p "$TBN/kb/索引" "$TBN/repo"; printf '裁定池\n' > "$TBN/kb/索引/wiki-裁定池总表.md"; printf '红线\n' > "$TBN/kb/索引/wiki-红线清单.md"
-printf '分支:`v02-frontend-nickname-guard`\n' > "$TBN/good.md"
-printf '**分支名**:`verify-v02-x-y`\n' > "$TBN/bad1.md"
-printf '分支：`advisor-next-milestone`\n' > "$TBN/bad2.md"
-printf '分支:`V02-Frontend_x`\n' > "$TBN/bad3.md"
+# ── 分支命名闸(2026-08-27;按 worktree 三仓分流，⛔ 按 prompt 所在 KB) ───────────────
+TBN="$(mktemp -d)"; TOOLROOT="$TBN/home/Developer/laixin-pipeline"; TOOLWT="$TBN/tool-wt"
+mkdir -p "$TBN/kb/索引" "$TBN/repo" "$TOOLROOT" "$TBN/home/钓不钓" "$TBN/unknown"
+printf '裁定池\n' > "$TBN/kb/索引/wiki-裁定池总表.md"; printf '红线\n' > "$TBN/kb/索引/wiki-红线清单.md"
+git init -q -b main "$TOOLROOT"; git -C "$TOOLROOT" config user.email t@t; git -C "$TOOLROOT" config user.name t
+printf 'x\n' > "$TOOLROOT/x"; git -C "$TOOLROOT" add x; git -C "$TOOLROOT" commit -qm init; git -C "$TOOLROOT" worktree add -q -b lint "$TOOLWT"
+printf '**worktree**:`%s`\n**分支**:`v02-frontend-x`\n' "$TBN/repo" > "$TBN/product-good.md"
+printf '**worktree**:`%s`\n**分支**:`mvp-x-y`\n' "$TBN/repo" > "$TBN/product-bad.md"
+printf '**worktree**:`%s`\n**分支**:`tool-x`\n' "$TOOLWT" > "$TBN/tool-good.md"
+printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$TOOLWT" > "$TBN/tool-bad.md"
+printf '**worktree**:`%s`\n**分支**:`mvp-x-y`\n' "$TBN/home/钓不钓" > "$TBN/fish-good.md"
+printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$TBN/home/钓不钓" > "$TBN/fish-bad.md"
+printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$TBN/unknown" > "$TBN/unknown.md"
 printf '没有分支声明的宪法头 prompt\n【交付完成】x y\n' > "$TBN/nodecl.md"
-t "prompt-lint 分支名:v02-<域>-<slug> 过;verify 前缀/旧式短名/大写下划线 ⇒ ❌ 分支名不合规;宪法头 prompt 未声明只 ⚠️" bash -c '
-  e="env LAIXIN_KB=$1/kb LAIXIN_REPO=$1/repo"
-  a="$($e "$2" prompt-lint "$1/good.md" 2>&1)"; ! grep -q "分支名不合规" <<< "$a" || { echo "$a"; exit 1; }
-  for f in bad1 bad2 bad3; do b="$($e "$2" prompt-lint "$1/$f.md" 2>&1)"; grep -q "❌ 分支名不合规" <<< "$b" || { echo "$f: $b"; exit 2; }; done
-  c="$($e "$2" prompt-lint "$1/nodecl.md" 2>&1)"; grep -q "⚠️ prompt 未见「分支」" <<< "$c" && ! grep -q "❌ 分支名不合规" <<< "$c"' _ "$TBN" "$LANE"
+t "prompt-lint 按 worktree 三仓分流:三种正确名过、跨仓体例红、未知仓显式提示、未声明仍只提示" bash -c '
+  run(){ env HOME="$1/home" LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-lint "$1/$3.md" 2>&1; }
+  for f in product-good tool-good fish-good; do out="$(run "$1" "$2" "$f")"; rc=$?; [ "$rc" -eq 0 ] && ! grep -q "分支名不合规" <<< "$out" || { echo "$f:$out"; exit 1; }; done
+  for f in product-bad tool-bad fish-bad; do out="$(run "$1" "$2" "$f")"; rc=$?; [ "$rc" -ne 0 ] && grep -q "❌ 分支名不合规" <<< "$out" || { echo "$f:$out"; exit 2; }; done
+  out="$(run "$1" "$2" unknown)"; rc=$?; [ "$rc" -eq 0 ] && grep -q "⚠️ 分支名仓判别未命中" <<< "$out" || { echo "$out"; exit 3; }
+  out="$(run "$1" "$2" nodecl)"; grep -q "⚠️ prompt 未见「分支」" <<< "$out" && ! grep -q "❌ 分支名不合规" <<< "$out"' _ "$TBN" "$LANE"
 t "kickoff 卡:发车闸门第 7 条分支命名闸在,指向版本流卡 A-4 单点源" bash -c 'grep -q "^7\. \*\*分支命名闸" "$1/skills/laixin-kickoff/SKILL.md" && grep -q "版本流卡 A-4 为单点源" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TBN"
 
@@ -4773,6 +4781,29 @@ sgrep "print 分支配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(⛔ 吃全局默�
 sgrep "print 分支沙盒可写根透传(KB 交付面)" 'sandbox_workspace_write.writable_roots=[$_wr_json]'
 sgrep "native_run_start 透传模型参数到 codex exec" 'model_args+=(-m "$LAIXIN_NATIVE_CODEX_MODEL")'
 sgrep "print 分支走隔离 server(照 tool-up 同法)" 'die "$w print 隔离 tmux server 起窗失败;默认载体已回收"'
+# transport 是写单窗的运行账，不是 dry 文案；真走 cmd_prompt_up 的两条分支，以隔离桩代替 tmux/CLI。
+PTB="$(mktemp -d)"; PTBF="$PTB/prompt-ledger.sh"
+sed -n "/^native_transport_set()/,/^}/p" "$LANE" > "$PTBF"
+sed -n "/^cmd_prompt_up()/,/^}/p" "$LANE" >> "$PTBF"
+run_prompt_transport(){
+  local transport="$1"
+  env HOME="$PTB/home" bash -c '
+    T="$1"; F="$2"; transport="$3"; source "$F"
+    KB="$T/kb"; EV_DIR="$T/events-$transport"; SESSION=prompt-ledger; BOARD="$T/board.md"; DEFAULT_DIR="$T/repo"; TOOL_REPO="$T/tool"
+    LANE_SWITCH_DIR="$T/sw"; CLAUDE_LAUNCHER=claude; TOOL_CLAUDE_MODEL=claude; HEADLESS_SETTINGS="$T/headless.json"
+    PROMPT_LANE_MODEL=gpt-5.6-sol; PROMPT_LANE_EFFORT=xhigh
+    mkdir -p "$KB" "$EV_DIR" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" "$HOME"; printf "底稿\n" > "$T/pack.md"
+    pwin(){ printf "prompt-ledger\n"; }; cdp_port_verify(){ printf "9555\n"; }; lane_mcp_off_flags(){ :; }
+    agent_launch_cmd(){ printf "%s" "$3"; }; codex_service_tier_flag(){ :; }; lane_transport_resolve(){ printf "%s\n" "${1:-tui}"; }
+    ensure_session(){ :; }; oneshot_port_clash(){ :; }; native_tmux_start(){ :; }; tool_native_status(){ printf "running fixture\n"; }
+    tmux(){ :; }; vwait_ready_codex(){ :; }; m_self_attest_model(){ printf "gpt-5.6-sol xhigh\n"; }; confirm_briefed(){ :; }
+    board(){ :; }; caller_src(){ printf "test\n"; }; sleep(){ :; }
+    cmd_prompt_up ledger --pack "$T/pack.md" --transport "$transport" >/dev/null
+    [ "$(cat "$EV_DIR/native/prompt-ledger/transport")" = "$transport" ]' _ "$PTB" "$PTBF" "$transport"
+}
+t "prompt-up print:原生根账 transport=print(回退此写入即红)" run_prompt_transport print
+t "prompt-up tui:原生根账 transport=tui(与 lane 同法，⛔ 留旧 print 账)" run_prompt_transport tui
+rm -rf "$PTB"
 
 # ③ 契约与落位
 tout "交付契约=记录/写单-<片名>-报告.md 末行【写单完成】" "记录/写单-t3-报告.md 末行【写单完成】t3" \

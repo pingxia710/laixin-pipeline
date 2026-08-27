@@ -1280,7 +1280,7 @@ TABLE="${LAIXIN_TABLE:-$KB/4-开发层/来信平台-执行总表.md}"
 cmd_prompt_lint() {
   local f="${1:-}"; [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane prompt-lint <prompt文件>"
   LX_KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}" LX_REPO="$DEFAULT_DIR" python3 - "$f" <<'PYEOF'
-import os, re, sys
+import os, re, subprocess, sys
 f = sys.argv[1]
 txt = open(f, encoding="utf-8").read()
 kb, repo = os.environ["LX_KB"], os.environ["LX_REPO"]
@@ -1356,16 +1356,53 @@ if "【交付完成】" in txt:
                        ("单列「文案口径」节", "宪法第 9 条下缺 2026-08-23 文案口径节硬项——重抄模板宪法头(⛔ 自拟措辞)")):
         if need not in txt: errs.append(f"宪法头缺句: {need} —— {hint}")
         else: oks += 1
-# 2026-08-23 分支命名闸(待定轨「kickoff 卡补片分支命名闸」+「prompt-lint 增片分支名校验」;判据单点源=版本流卡 A-4 `v0y-<域>-<slug>`):
-#   prompt 里声明的分支名(「分支」字样后首个反引号串)必须匹配 ^v0[0-9]+-[a-z0-9]+-[a-z0-9-]+$;带 worktree/verify 前缀或旧式短名即红。
-#   起分支由开发方按 prompt 执行 ⇒ prompt-lint 在发车前核声明值=派工闸本体;未声明分支名只提示(有的 prompt 让开发方按卡自取)。
-_br = re.search(r'分支[^\n`]{0,12}`([^`\n]{1,80})`', txt)
+# 2026-08-27 分支命名闸:规则取 prompt 的 worktree/--dir 指向的仓，⛔ 取 prompt 落在哪个 KB。
+#   worktree 可落任意路径，故先取 Git common-dir 的主仓根；未能分流必须明示，⛔ 静默沿用产品仓规则。
+def prompt_worktree(txt):
+    for pat in (r'\*\*worktree\*\*\s*[:：]\s*`([^`\n]+)`',
+                r'(?im)^\s*(?:[-*]\s*)?worktree\s*[:：]\s*`([^`\n]+)`',
+                r'--dir\s+`?([^`\s]+)`?'):
+        m = re.search(pat, txt)
+        if m: return m.group(1).strip()
+    return None
+
+def common_repo_root(path):
+    path = os.path.realpath(os.path.expanduser(path))
+    try:
+        common = subprocess.check_output(
+            ["git", "-C", path, "rev-parse", "--git-common-dir"],
+            text=True, stderr=subprocess.DEVNULL).strip()
+        if common:
+            return os.path.dirname(os.path.realpath(common if os.path.isabs(common) else os.path.join(path, common)))
+    except OSError:
+        pass
+    except subprocess.CalledProcessError:
+        pass
+    return path
+
+branch_rules = (
+    (os.path.realpath(repo), ("产品仓", r'v0[0-9]+-[a-z0-9]+-[a-z0-9-]+', "v0y-<域>-<slug>")),
+    (os.path.realpath(os.path.expanduser("~/Developer/laixin-pipeline")), ("工具仓", r'tool-[a-z0-9]+(?:-[a-z0-9]+)*', "tool-<slug>")),
+    (os.path.realpath(os.path.expanduser("~/钓不钓")), ("钓不钓仓", r'mvp-[a-z0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*', "mvp-<域>-<slug>")),
+)
+_br = re.search(r'\*\*分支(?:名)?\*\*\s*[:：]\s*`([^`\n]{1,80})`', txt) \
+      or re.search(r'(?im)^\s*(?:[-*]\s*)?分支(?:名)?\s*[:：]\s*`([^`\n]{1,80})`', txt)
 if _br:
     _bn = _br.group(1).strip()
-    if re.fullmatch(r'v0[0-9]+-[a-z0-9]+-[a-z0-9-]+', _bn): oks += 1
-    else: errs.append(f"分支名不合规: `{_bn}`(版本流卡 A-4 要求 v0y-<域>-<slug>,如 v02-frontend-nickname-guard;⛔ worktree/verify 前缀 ⛔ 旧式短名 ⛔ 大写/下划线)")
+    _worktree = prompt_worktree(txt)
+    if not _worktree:
+        warns.append(f"分支名仓判别未命中: prompt 未见 worktree/--dir，未校验 `{_bn}`(补工作树指针，⛔ 静默按产品仓放行)")
+    else:
+        _root = common_repo_root(_worktree)
+        _rule = next((rule for root, rule in branch_rules if root == _root), None)
+        if not _rule:
+            warns.append(f"分支名仓判别未命中: worktree `{_worktree}` → `{_root}`，未校验 `{_bn}`(只识别产品仓/工具仓/钓不钓仓，⛔ 静默放行)")
+        elif re.fullmatch(_rule[1], _bn):
+            oks += 1
+        else:
+            errs.append(f"分支名不合规: `{_bn}`({_rule[0]}要求 {_rule[2]};⛔ 跨仓体例 ⛔ 大写/下划线)")
 elif "【交付完成】" in txt:
-    warns.append("prompt 未见「分支」+反引号形式的分支名声明——kickoff 卡要求 prompt 必含分支名(v0y-<域>-<slug>,版本流卡 A-4)")
+    warns.append("prompt 未见「分支」+反引号形式的分支名声明——kickoff 卡要求 prompt 必含分支名")
 pool = read(os.path.join(kb, "索引/wiki-裁定池总表.md"))
 redl = read(os.path.join(kb, "索引/wiki-红线清单.md"))
 if not pool: errs.append("裁定池总表读不到(核对 LAIXIN_KB)")
@@ -6594,13 +6631,14 @@ EOF
   fi
   local clash; clash="$(oneshot_port_clash "$port")"
   [ -z "$clash" ] || die "⛔ CDP 端口 $port 与在跑一次性窗 $clash 撞车——改片名再起"
-  local native_run=""
+  local native_root="$EV_DIR/native/$w" native_run=""
+  native_transport_set "$native_root" "$PROMPT_TRANSPORT" \
+    || die "写单窗 transport 账写入失败:$native_root/transport"
   if [ "$PROMPT_TRANSPORT" = "print" ]; then
     # 照 tool-up print 同法:官方 exec JSON 于隔离 server;配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(创始人配型令)
     local run_id lane_self
     run_id="$(date '+%Y%m%d-%H%M%S')-$$"
-    native_run="$EV_DIR/native/$w/$run_id"
-    mkdir -p "$EV_DIR/native/$w"
+    native_run="$native_root/$run_id"
     mkdir "$native_run" || die "native run 账目录创建失败:$native_run"
     printf '%s' "$msg" > "$native_run/brief.txt"
     lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"

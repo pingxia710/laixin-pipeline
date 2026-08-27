@@ -5517,6 +5517,10 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
   : > "$run/raw.jsonl"; : > "$run/events.jsonl"; : > "$run/stderr.log"; : > "$run/status"
   local fifo="$run/stdout.pipe"; rm -f "$fifo"; mkfifo "$fifo"
   local brief; brief="$(<"$prompt")"
+  # cwd 非 git 仓(如写单/验收引导的 $HOME)时,codex exec 需官方参数跳 git 仓检查,否则 init_missing
+  # (2026-08-27 实撞:verify print 于 $HOME 崩「Not inside a trusted directory and --skip-git-repo-check was not specified」,lane-a 于 worktree 成——差异即 cwd 是否 git 仓)
+  local -a repo_args=()
+  git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || repo_args=(--skip-git-repo-check)
   # 模型钉入透传(写单窗族需钉配型;env 空=原行为,tool 件不受影响)
   local -a model_args=()
   if [ -n "${LAIXIN_NATIVE_CODEX_MODEL:-}" ]; then
@@ -5538,7 +5542,7 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
         codex exec resume --json ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$resume_thread" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       else
-        codex exec --json --sandbox workspace-write -C "$cwd" ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$brief" \
+        codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       fi
     elif [ -n "$resume_thread" ]; then
@@ -5547,7 +5551,7 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
       codex exec resume --json ${model_args[@]+"${model_args[@]}"} "$resume_thread" "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     else
-      codex exec --json --sandbox workspace-write -C "$cwd" ${model_args[@]+"${model_args[@]}"} "$brief" \
+      codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${model_args[@]+"${model_args[@]}"} "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     fi
   else

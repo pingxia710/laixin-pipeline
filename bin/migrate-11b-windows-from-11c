@@ -1,0 +1,60 @@
+#!/bin/bash
+# 将误建在 11C 会话内的 11B 窗迁回 laixin；默认只演练，实际迁移须显式 --apply。
+set -euo pipefail
+
+from="${LAIXIN_11C_SESSION:-laixin-11c}"
+to="${LAIXIN_SESSION:-laixin}"
+apply=0
+
+case "${1:-}" in
+  ""|--dry-run) ;;
+  --apply) apply=1 ;;
+  *) echo "用法:$0 [--dry-run|--apply]" >&2; exit 2 ;;
+esac
+
+[ "$from" != "$to" ] || { echo "源和目标会话相同:$from" >&2; exit 2; }
+
+is_11b_window(){
+  case "$1" in
+    lane-a|lane-b|lane-c|dispatch|relay|events|watchdog|verify-*|m-*|tool-*|prompt-*|chrome-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if ! tmux has-session -t "=$from" 2>/dev/null; then
+  echo "源会话不存在:$from；无需迁移"
+  exit 0
+fi
+
+windows=()
+while IFS= read -r win; do
+  is_11b_window "$win" && windows+=("$win")
+done < <(tmux list-windows -t "=$from" -F '#{window_name}')
+
+if [ "${#windows[@]}" -eq 0 ]; then
+  echo "源会话 $from 没有可迁移的 11B 窗"
+  exit 0
+fi
+
+if tmux has-session -t "=$to" 2>/dev/null; then
+  target_windows="$(tmux list-windows -t "=$to" -F '#{window_name}')"
+  for win in "${windows[@]}"; do
+    if grep -Fqx "$win" <<< "$target_windows"; then
+      echo "目标会话已有同名窗口:$to:$win；零迁移" >&2
+      exit 1
+    fi
+  done
+fi
+
+if [ "$apply" -eq 0 ]; then
+  if ! tmux has-session -t "=$to" 2>/dev/null; then echo "[dry-run] 创建 $to:hub"; fi
+  for win in "${windows[@]}"; do echo "[dry-run] 迁移 $from:$win → $to"; done
+  echo "[dry-run] 保留 11C 窗(hub/dispatch-11c/seat-*/scribe-*)"
+  exit 0
+fi
+
+tmux has-session -t "=$to" 2>/dev/null || tmux new-session -d -s "$to" -n hub
+for win in "${windows[@]}"; do
+  tmux move-window -s "=$from:$win" -t "=$to:"
+  echo "已迁移 $from:$win → $to"
+done

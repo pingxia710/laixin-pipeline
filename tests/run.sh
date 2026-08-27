@@ -3,6 +3,7 @@
 # 用法:bash tests/run.sh   (在任何目录均可;依赖真仓库的部分只做只读操作)
 set -uo pipefail
 LANE="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-lane"
+MIGRATE="$(cd "$(dirname "$0")/.." && pwd)/bin/migrate-11b-windows-from-11c"
 PASS=0; FAIL=0
 # 🔴 套件判据必须只依赖被测对象,⛔ 依赖调用者所在窗口/环境(2026-08-22 实撞:dispatch 窗口里跑本套件,shell 带着
 #   LAIXIN_WINDOW / TMUX_PANE ⇒ 来源推断类 3 条 + 1 条误红,而干净 shell 全绿——「同一套测试两处两种结果」)。
@@ -39,6 +40,31 @@ tfail(){ # tfail <名字> <期望错误子串> <命令...> —— 命令须失�
 
 echo "== 1. 语法与用法 =="
 t "bash -n 语法" bash -n "$LANE"
+t "tmux 会话目标精确匹配(前缀误命中为阳性对照；迁移只干跑)" bash -c '
+  set -e
+  root="$(mktemp -d)"; sock="tmux-exact-$$"; tmux_bin="$(command -v tmux)"
+  cleanup(){ "$tmux_bin" -L "$sock" kill-server >/dev/null 2>&1 || true; rm -rf "$root"; }
+  trap cleanup EXIT
+  mkdir "$root/bin"
+  printf "%s\\n" "#!/bin/sh" "exec \"\$TMUX_EXACT_BIN\" -L \"\$TMUX_EXACT_SOCKET\" \"\$@\"" > "$root/bin/tmux"
+  chmod +x "$root/bin/tmux"
+  export TMUX_EXACT_BIN="$tmux_bin" TMUX_EXACT_SOCKET="$sock" PATH="$root/bin:$PATH"
+  tmux -f /dev/null new-session -d -s laixin-11c -n hub
+  tmux has-session -t laixin
+  ! tmux has-session -t =laixin
+  ! tmux has-session -t =laixin:hub
+  out="$(LAIXIN_SESSION=laixin "$1" status)"; grep -q "会话 laixin 不存在" <<< "$out"
+  tmux -f /dev/null new-session -d -s laixin -n hub
+  tmux has-session -t =laixin
+  tmux has-session -t =laixin:hub
+  out="$(LAIXIN_SESSION=laixin "$1" status)"; grep -q "hub" <<< "$out"
+  tmux new-window -d -t =laixin-11c -n lane-a
+  tmux new-window -d -t =laixin-11c -n scribe-11c-only
+  out="$(LAIXIN_SESSION=laixin-dst LAIXIN_11C_SESSION=laixin-11c "$2" --dry-run)"
+  grep -q "迁移 laixin-11c:lane-a → laixin-dst" <<< "$out"
+  grep -q "保留 11C 窗" <<< "$out"
+  ! tmux has-session -t =laixin-dst
+  ! grep -Eq "tmux [^#]*-t \\\"\\\$SESSION|\\\"\\\$SESSION:" "$1"' _ "$LANE" "$MIGRATE"
 tout "用法列出全部命令" "daily-report" "$LANE"
 
 echo "== 2. 只读命令跑通(真环境,零副作用) =="
@@ -2267,7 +2293,8 @@ EOF
 tout "#60②:无 C 行且 lane-c 未起 → 报绿含三轨读数(可选轨不误伤)" "A 行 0 / B 行 0 / C 行 0" \
   env LAIXIN_SESSION=bogus-c60 LAIXIN_KB="$C60/kb" "$LANE" audit-queue
 # ⭐ doctor 拓扑/watchdog status:lane-c 存在性=可选,不起是 ℹ️/未起 ⛔ wrn
-tout "#60②:doctor 拓扑节报 lane-c 可选轨(两态都含「可选轨」)" "可选轨" "$LANE" doctor
+tout "#60②:doctor 拓扑节报 lane-c 可选轨(两态都含「可选轨」)" "可选轨" \
+  env LAIXIN_SESSION=laixin-11c "$LANE" doctor
 tout "#60②:watchdog status 报 lane-c 未起=可选 ⛔ 与 a/b 同文案" "lane-c:未起(可选轨" \
   env LAIXIN_SESSION=bogus-c60 "$LANE" watchdog status
 t "#60②:doctor lane-c 未起 ⛔ 计入 warn(a/b 缺席才是 wrn)" bash -c '
@@ -3789,8 +3816,8 @@ t "chrome-up --help:打印用法且前后 CDP 进程数不变(⛔ 把 --help 当
   [ "$rc" -eq 0 ] && grep -q "用法:laixin-lane chrome-up" <<< "$out" && [ "$before" = "$after" ] && ! tmux has-session -t lx-chrome-help-$$ 2>/dev/null' _ "$LANE" "$TCH"
 t "chrome-up 实体:tmux 服务端托管(new-window chrome-<端口>)⛔ nohup/裸 &;就绪判据=/json/version;url 写回 EV_DIR/cdp;chrome-down 杀窗+cdp_sweep+清 url" bash -c '
   u="$(sed -n "/^cmd_chrome_up()/,/^}$/p" "$1")"; d="$(sed -n "/^cmd_chrome_down()/,/^}$/p" "$1")"
-  grep -q "tmux new-window -d -t \"\$SESSION\" -n \"\$cw\"" <<< "$u" && ! grep -q "nohup" <<< "$u" && grep -q "/json/version" <<< "$u" && grep -q "EV_DIR/cdp" <<< "$u" &&
-  grep -q "tmux kill-window -t \"\$SESSION:\$cw\"" <<< "$d" && grep -q "cdp_sweep \"\$p\"" <<< "$d" && grep -q "rm -f \"\$EV_DIR/cdp/" <<< "$d"' _ "$LANE"
+  grep -q "tmux new-window -d -t \"=\$SESSION\" -n \"\$cw\"" <<< "$u" && ! grep -q "nohup" <<< "$u" && grep -q "/json/version" <<< "$u" && grep -q "EV_DIR/cdp" <<< "$u" &&
+  grep -q "tmux kill-window -t \"=\$SESSION:\$cw\"" <<< "$d" && grep -q "cdp_sweep \"\$p\"" <<< "$d" && grep -q "rm -f \"\$EV_DIR/cdp/" <<< "$d"' _ "$LANE"
 mkdir -p "$TCH/fakebin" "$TCH/home" "$TCH/kb" "$TCH/repo"
 cat > "$TCH/fakebin/pgrep" <<'SH'
 #!/bin/bash
@@ -4023,7 +4050,7 @@ t "#165-2 默认引擎=codex(⛔ 开关缺失时静默变别的)" bash -c '
   T="$(mktemp -d)"; echo x > "$T/p.md"
   # 用真工具仓自身当 --dir:它会被 ⛔主树 那条拦下,但**引擎解析在更前面**,所以 dry 头行仍能验默认引擎;
   # ⛔ 拿 mktemp 目录当 --dir(它连 git 工作树都不是,会先被那条拦掉,验不到引擎)
-  out="$(LAIXIN_TOOL_ENGINE= "'"$LANE"'" tool-up t1652 --prompt "$T/p.md" --dir "$(cd "$(dirname "'"$LANE"'")/.." && pwd)" --dry 2>&1 || true)"
+  out="$(LAIXIN_TOOL_ENGINE= LAIXIN_SWITCH_DIR="$T/switch" "'"$LANE"'" tool-up t1652 --prompt "$T/p.md" --dir "$(cd "$(dirname "'"$LANE"'")/.." && pwd)" --dry 2>&1 || true)"
   rm -rf "$T"
   # 默认路线的证据:要么 dry 打出「引擎=codex(默认)」,要么被主树那条拦下(说明走到了引擎之后的校验)
   grep -qE "引擎=codex\(默认\)|不得落工具仓主树" <<< "$out"' 

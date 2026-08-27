@@ -254,6 +254,44 @@ tfail "kb-commit 拒旗标" "不收旗标" env LAIXIN_VAULT="$TMPV" "$LANE" kb-c
 tout "kb-commit 无变更时不报错" "无变更可提交" env LAIXIN_VAULT="$TMPV" "$LANE" kb-commit "test: again" a.md
 rm -rf "$TMPV"
 tfail "fresh --dir 目录不存在时先报错不杀窗" "窗口未动" "$LANE" fresh a --dir /nonexistent-dir-test-6f
+tout "migrate 源会话不存在时不触发 bash 3.2 的中文变量吞并" "源会话不存在:lx-migrate-no-source-$$；无需迁移" \
+  env TMUX= LAIXIN_11C_SESSION="lx-migrate-no-source-$$" "$MIGRATE" --dry-run
+FRESH6F="$(mktemp -d)"
+sed -n "/^cmd_fresh()/,/^}/p" "$LANE" > "$FRESH6F/fresh.sh"
+t "fresh 裸调用在 bash 3.2 set -u 下启动成功，旧窗只在新窗启动后才回收" bash -uc '
+  T="$1"; source "$2"
+  SESSION=fresh6f; EV_PROMPT_DIR="$T/prompts"; printf "lane-a\\n" > "$T/windows"
+  die(){ return 1; }; win(){ printf "lane-%s" "$1"; }; target(){ printf "=%s:%s" "$SESSION" "$(win "$1")"; }
+  has_window(){ grep -Fqx "$(win "$1")" "$T/windows"; }; lane_transport_resolve(){ printf tui; }; lane_engine(){ printf codex; }
+  lane_native_root(){ printf "%s/native" "$T"; }; native_transport_set(){ :; }; cdp_sweep(){ :; }; board(){ :; }
+  tmux(){
+    case "$1" in
+      rename-window) old="${3##*:}"; new="$4"; awk -v o="$old" -v n="$new" "{if(\$0==o) print n; else print}" "$T/windows" > "$T/next"; mv "$T/next" "$T/windows"; printf "rename:%s:%s\\n" "$old" "$new" >> "$T/log" ;;
+      kill-window) old="${3##*:}"; awk -v o="$old" "\$0!=o" "$T/windows" > "$T/next"; mv "$T/next" "$T/windows"; printf "kill:%s\\n" "$old" >> "$T/log" ;;
+    esac
+  }
+  cmd_up(){ printf "lane-a\\n" >> "$T/windows"; printf "start\\n" >> "$T/log"; }
+  cmd_fresh a
+  start="$(grep -n "^start$" "$T/log" | cut -d: -f1)"; kill="$(grep -n "^kill:" "$T/log" | cut -d: -f1)"
+  [ -n "$start" ] && [ -n "$kill" ] && [ "$start" -lt "$kill" ] && grep -Fqx lane-a "$T/windows" && [ "$(wc -l < "$T/windows" | tr -d " ")" = 1 ]
+' _ "$FRESH6F" "$FRESH6F/fresh.sh"
+t "fresh 启动失败后恢复原窗，失败不毁轨" bash -uc '
+  T="$1"; source "$2"
+  SESSION=fresh6f; EV_PROMPT_DIR="$T/prompts"; printf "lane-a\\n" > "$T/windows"; : > "$T/log"
+  die(){ return 1; }; win(){ printf "lane-%s" "$1"; }; target(){ printf "=%s:%s" "$SESSION" "$(win "$1")"; }
+  has_window(){ grep -Fqx "$(win "$1")" "$T/windows"; }; lane_transport_resolve(){ printf tui; }; lane_engine(){ printf codex; }
+  lane_native_root(){ printf "%s/native" "$T"; }; native_transport_set(){ :; }; cdp_sweep(){ :; }; board(){ :; }
+  tmux(){
+    case "$1" in
+      rename-window) old="${3##*:}"; new="$4"; awk -v o="$old" -v n="$new" "{if(\$0==o) print n; else print}" "$T/windows" > "$T/next"; mv "$T/next" "$T/windows"; printf "rename:%s:%s\\n" "$old" "$new" >> "$T/log" ;;
+      kill-window) old="${3##*:}"; awk -v o="$old" "\$0!=o" "$T/windows" > "$T/next"; mv "$T/next" "$T/windows"; printf "kill:%s\\n" "$old" >> "$T/log" ;;
+    esac
+  }
+  cmd_up(){ return 1; }
+  if cmd_fresh a --dir "$T"; then exit 1; fi
+  grep -Fqx lane-a "$T/windows" && [ "$(wc -l < "$T/windows" | tr -d " ")" = 1 ] && ! grep -q "^kill:" "$T/log"
+' _ "$FRESH6F" "$FRESH6F/fresh.sh"
+rm -rf "$FRESH6F"
 TMPM="$(mktemp -d)"
 sed -n "/^lane_mcp_off_flags/,/^}/p" "$LANE" > "$TMPM/fn.sh"; source "$TMPM/fn.sh"
 tout "MCP 关闭清单默认含 aliyun-readonly" "aliyun-readonly" lane_mcp_off_flags ""

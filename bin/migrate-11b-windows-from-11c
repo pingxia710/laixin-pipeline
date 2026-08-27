@@ -22,7 +22,7 @@ is_11b_window(){
 }
 
 if ! tmux has-session -t "=$from" 2>/dev/null; then
-  echo "源会话不存在:$from；无需迁移"
+  echo "源会话不存在:${from}；无需迁移"
   exit 0
 fi
 
@@ -40,7 +40,7 @@ if tmux has-session -t "=$to" 2>/dev/null; then
   target_windows="$(tmux list-windows -t "=$to" -F '#{window_name}')"
   for win in "${windows[@]}"; do
     if grep -Fqx "$win" <<< "$target_windows"; then
-      echo "目标会话已有同名窗口:$to:$win；零迁移" >&2
+      echo "目标会话已有同名窗口:$to:${win}；零迁移" >&2
       exit 1
     fi
   done

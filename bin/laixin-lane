@@ -547,22 +547,34 @@ cmd_fresh() {
   if [ "$lane" = "c" ] && [ -z "$_hasdir" ]; then
     die "fresh c 必须带 --dir <worktree路径>(C 轨每片独立 worktree,同 B 轨形态;先 laixin-lane next-worktree 取号 + git worktree add,再 fresh c --dir。窗口未动)"
   fi
+  # bash 3.2 的 set -u 不允许直接展开空数组；起窗失败时旧窗须可恢复。
+  local _oldwin="" _start_rc=0
   if has_window "$lane"; then
-    tmux kill-window -t "$(target "$lane")"
-    cdp_sweep "$(cdp_port_lane "$lane")"
-    board "lane-$lane" "重启(全新上下文)"
-    sleep 0.3
+    _oldwin="$(win "$lane")-fresh-old-$RANDOM"
+    tmux rename-window -t "$(target "$lane")" "$_oldwin"
   fi
-  rm -f "$EV_PROMPT_DIR/lane-$lane" 2>/dev/null || true
   if [ "$transport" = "print" ]; then
-    lane_native_fresh "$lane" "${_up_args[@]}"
+    ( lane_native_fresh "$lane" ${_up_args[@]+"${_up_args[@]}"} ) || _start_rc=$?
   else
     # native 账只归 Codex lane；Kimi 的 TUI 路径保持 cmd_up 原样。
-    if [ "$(lane_engine "$lane")" = "codex" ]; then
-      native_transport_set "$(lane_native_root "$lane")" tui
-    fi
-    cmd_up "$lane" "${_up_args[@]}"
+    ( if [ "$(lane_engine "$lane")" = "codex" ]; then
+        native_transport_set "$(lane_native_root "$lane")" tui
+      fi
+      cmd_up "$lane" ${_up_args[@]+"${_up_args[@]}"} ) || _start_rc=$?
   fi
+  if [ "$_start_rc" -ne 0 ]; then
+    if [ -n "$_oldwin" ]; then
+      has_window "$lane" && tmux kill-window -t "$(target "$lane")"
+      tmux rename-window -t "=$SESSION:$_oldwin" "$(win "$lane")"
+    fi
+    return "$_start_rc"
+  fi
+  if [ -n "$_oldwin" ]; then
+    tmux kill-window -t "=$SESSION:$_oldwin"
+    cdp_sweep "$(cdp_port_lane "$lane")"
+    board "lane-$lane" "重启(全新上下文)"
+  fi
+  rm -f "$EV_PROMPT_DIR/lane-$lane" 2>/dev/null || true
 }
 
 # #40:send 被吞检测本体(独立成函数可独测)。⚖️ 裁定已定:⛔ 放宽判据 ⛔ 提高阈值——
@@ -2599,9 +2611,7 @@ def _blocked(cells,st):
     #   内容列写的是射程说明(无前置词)⇒ stats 报「✅ 可立即发车: 1」。
     #   ⚠️ 这不是新病,是 2026-08-13「油表虚高」那条老病**从状态列这一侧仍然敞着的入口**;
     #   失败面=偏高与真有燃料**在输出上完全同形** ⇒ 夜间无人值守会据它发一个发不出去的片。
-    # 🔴 第二条入口(同族):`⛔` 判据与**台账第 7 律**(表格行一律不用 ⛔,改中文否定词)**要求相反**
-    #   ⇒ 守纪律的人写的行**永远命不中它**;而不知道还有第二条正则的人会以为自己已经标了阻塞。
-    #   ⇒ 本次补**中文否定词族**,让「按纪律写的阻塞标记」真的能被判出来。
+    # `⛔` 是通用行文记号，单独出现不含前置语义；只认下面的窄词族。
     # ⚠️ **词族按真库实测选,⛔ 凭感觉扩**(2026-08-23 当轮两次抽查,484 行执行总表):
     #   · 宽词族 `候|待|等` 状态列命中 **107 行(22%)** ⇒ **弃**(会把大量正常行判成阻塞);
     #   · `阻塞|挂起|停车` 状态列命中 22 行,抽样**全是历史记录**(「三次停车之后落地」「停车动词位」统计条)
@@ -2611,7 +2621,6 @@ def _blocked(cells,st):
     #   · 窄词族命中 1 行=实撞那条 ⇒ **取**。
     pre=cells[2] if len(cells)>=4 else ''
     both=pre+' \n '+st                      # 两列同权:依赖写在哪一列都该被看见
-    if '⛔' in both: return True
     if re.search(r'已解除|已合入|已满足|已齐|前置已|零前置|无前置',both): return False
     if re.search(r'(前置|等|待).*(合入|定稿|待拆|裁定|细化)',both): return True
     if re.search(r'不可立即发车|不可发车|暂不可发|不能发车|前置未解|前置未满足',both): return True

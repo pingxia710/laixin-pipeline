@@ -4766,7 +4766,7 @@ tout "显式 --transport print ⇒ dry 报 print" "transport=print" \
 tout "显式 --transport tui ⇒ dry 报 tui(回退路径)" "transport=tui" \
   "$LANE" prompt-up t2p --pack "$PK" --transport tui --dry
 tout "env LAIXIN_LANE_TRANSPORT=print ⇒ dry 报 print(写单窗归 lane 面 ⛔ 第三开关面)" "transport=print" \
-  env LAIXIN_LANE_TRANSPORT=print "$LANE" prompt-up t2p --pack "$PK" --transport "" --dry
+  env LAIXIN_LANE_TRANSPORT=print "$LANE" prompt-up t2p --pack "$PK" --dry
 "$LANE" prompt-up t2p --pack "$PK" --transport nope --dry >/dev/null 2>&1; rc2p=$?
 t "未知 transport ⇒ 非零退出〔rc=${rc2p}〕" [ "$rc2p" -ne 0 ]
 sgrep "print 分支配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(⛔ 吃全局默认)" 'LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_BOARD_SRC=prompt-native'

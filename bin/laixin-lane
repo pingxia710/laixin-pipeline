@@ -5556,6 +5556,8 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
   local brief; brief="$(<"$prompt")"
   # cwd 非 git 仓(如写单/验收引导的 $HOME)时,codex exec 需官方参数跳 git 仓检查,否则 init_missing
   # (2026-08-27 实撞:verify print 于 $HOME 崩「Not inside a trusted directory and --skip-git-repo-check was not specified」,lane-a 于 worktree 成——差异即 cwd 是否 git 仓)
+  # 四个 exec 分支全覆盖:非 resume 两支带 -C+repo_args;resume 两支带 repo_args(resume 无 -C,实测 codex exec resume --help 无该参,继承 cwd)——
+  # lane resume 继承 cwd=worktree 恰好合法故从未暴露,verify resume 继承 $HOME 才崩(同形第五族:路径合法≠路径正确)
   local -a repo_args=()
   git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || repo_args=(--skip-git-repo-check)
   # 模型钉入透传(写单窗族需钉配型;env 空=原行为,tool 件不受影响)
@@ -5589,7 +5591,7 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
       if [ -n "$resume_thread" ]; then
         printf '%s\n' "$resume_thread" > "$run/resume-thread"
         printf '%s\n' "$resume_thread" > "$run/bound-session"
-        codex exec resume --json ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$resume_thread" "$brief" \
+        codex exec resume --json ${repo_args[@]+"${repo_args[@]}"} ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$resume_thread" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       else
         codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${sbx_args[@]+"${sbx_args[@]}"} ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$brief" \
@@ -5598,7 +5600,7 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
     elif [ -n "$resume_thread" ]; then
       printf '%s\n' "$resume_thread" > "$run/resume-thread"
       printf '%s\n' "$resume_thread" > "$run/bound-session"
-      codex exec resume --json ${model_args[@]+"${model_args[@]}"} "$resume_thread" "$brief" \
+      codex exec resume --json ${repo_args[@]+"${repo_args[@]}"} ${model_args[@]+"${model_args[@]}"} "$resume_thread" "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     else
       codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${sbx_args[@]+"${sbx_args[@]}"} ${model_args[@]+"${model_args[@]}"} "$brief" \

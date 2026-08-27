@@ -5527,6 +5527,19 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
     model_args+=(-m "$LAIXIN_NATIVE_CODEX_MODEL")
     [ -z "${LAIXIN_NATIVE_CODEX_EFFORT:-}" ] || model_args+=(-c "model_reasoning_effort=\"$LAIXIN_NATIVE_CODEX_EFFORT\"")
   fi
+  # 沙盒可写根追加(2026-08-27 实撞:工具件 print 于 workspace-write 沙盒「改得了码交不了活」——
+  # 禁写 KB 报告/看板、禁 commit 外联路径;对照=同件 TUI 全套跑完 ⇒ 差在传输沙盒。逗号分隔多根;env 空=原行为)
+  local -a sbx_args=()
+  if [ -n "${LAIXIN_NATIVE_WRITABLE_ROOTS:-}" ]; then
+    local _wr_json="" _wr_p
+    local _wr_oldIFS="$IFS"; IFS=','
+    for _wr_p in $LAIXIN_NATIVE_WRITABLE_ROOTS; do
+      [ -n "$_wr_p" ] || continue
+      _wr_json="${_wr_json:+$_wr_json,}\"$_wr_p\""
+    done
+    IFS="$_wr_oldIFS"
+    [ -z "$_wr_json" ] || sbx_args=(-c "sandbox_workspace_write.writable_roots=[$_wr_json]")
+  fi
   if [ "$native_engine" = codex ]; then
     local mcp_off=""
     if [ "$mcp_keep" != "__unset__" ]; then
@@ -5542,7 +5555,7 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
         codex exec resume --json ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$resume_thread" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       else
-        codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$brief" \
+        codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${sbx_args[@]+"${sbx_args[@]}"} ${model_args[@]+"${model_args[@]}"} "${mcp_args[@]}" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       fi
     elif [ -n "$resume_thread" ]; then
@@ -5551,7 +5564,7 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
       codex exec resume --json ${model_args[@]+"${model_args[@]}"} "$resume_thread" "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     else
-      codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${model_args[@]+"${model_args[@]}"} "$brief" \
+      codex exec --json --sandbox workspace-write -C "$cwd" ${repo_args[@]+"${repo_args[@]}"} ${sbx_args[@]+"${sbx_args[@]}"} ${model_args[@]+"${model_args[@]}"} "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     fi
   else
@@ -5673,10 +5686,10 @@ native_run_start() {  # <window> <native根目录> <brief文件> <cwd> <BU> <por
   mkdir "$run" || return 1
   cp "$brief" "$run/brief.txt" || return 1
   lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
-  printf -v launch 'env HOME=%q CODEX_HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q BU_NAME=%q BU_CDP_URL=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q %q %q' \
+  printf -v launch 'env HOME=%q CODEX_HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q BU_NAME=%q BU_CDP_URL=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_WRITABLE_ROOTS=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q %q %q' \
     "$HOME" "${CODEX_HOME:-$HOME/.codex}" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" \
     "$bu" "http://127.0.0.1:$port" \
-    "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" \
+    "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" "$KB" \
     "$lane_self" "$window" "$run" "$run/brief.txt" "$cwd" "$bu" "$port" "$resume_thread" "$mcp_keep"
   native_tmux_start "$run" "$cwd" "$launch" || return 1
   printf '%s\n' "$run"
@@ -5956,9 +5969,9 @@ EOF
     mkdir "$native_run" || die "native run 账目录创建失败:$native_run"
     printf '%s' "$msg" > "$native_run/brief.txt"
     lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
-    printf -v launch 'env HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q LAIXIN_CLAUDE_LAUNCHER=%q LAIXIN_TOOL_CLAUDE_MODEL=%q LAIXIN_HEADLESS_SETTINGS=%q LAIXIN_TOOL_NATIVE_ENGINE=%q LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q' \
+    printf -v launch 'env HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q LAIXIN_CLAUDE_LAUNCHER=%q LAIXIN_TOOL_CLAUDE_MODEL=%q LAIXIN_HEADLESS_SETTINGS=%q LAIXIN_TOOL_NATIVE_ENGINE=%q LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_WRITABLE_ROOTS=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q' \
       "$HOME" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" "$CLAUDE_LAUNCHER" "$TOOL_CLAUDE_MODEL" "$HEADLESS_SETTINGS" \
-      "$TOOL_ENGINE" "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION:-2.1.241}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" \
+      "$TOOL_ENGINE" "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_CLAUDE_FIXTURE_VERSION:-2.1.241}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" "$KB" \
       "$lane_self" "$w" "$native_run" "$native_run/brief.txt" "$dir_r" "$bu" "$port"
   fi
   tmux new-window -t "=$SESSION" -n "$w" -c "$dir_r"
@@ -6591,10 +6604,10 @@ EOF
     mkdir "$native_run" || die "native run 账目录创建失败:$native_run"
     printf '%s' "$msg" > "$native_run/brief.txt"
     lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
-    printf -v launch 'env HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q LAIXIN_CLAUDE_LAUNCHER=%q LAIXIN_TOOL_CLAUDE_MODEL=%q LAIXIN_HEADLESS_SETTINGS=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_BOARD_SRC=prompt-native %q tool-native-run %q %q %q %q %q %q' \
+    printf -v launch 'env HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q LAIXIN_CLAUDE_LAUNCHER=%q LAIXIN_TOOL_CLAUDE_MODEL=%q LAIXIN_HEADLESS_SETTINGS=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_NATIVE_WRITABLE_ROOTS=%q LAIXIN_BOARD_SRC=prompt-native %q tool-native-run %q %q %q %q %q %q' \
       "$HOME" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" "$CLAUDE_LAUNCHER" "$TOOL_CLAUDE_MODEL" "$HEADLESS_SETTINGS" \
       "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" \
-      "$PROMPT_LANE_MODEL" "$PROMPT_LANE_EFFORT" \
+      "$PROMPT_LANE_MODEL" "$PROMPT_LANE_EFFORT" "$KB" \
       "$lane_self" "$w" "$native_run" "$native_run/brief.txt" "$HOME" "$bu" "$port"
   fi
   # cwd=$HOME:写单窗零改码,读 KB+仓(仓一律 ref 级)⛔ worktree。codex 信任读数仅供参考 ⛔ 据 rc=1 拒起

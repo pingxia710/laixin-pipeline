@@ -5517,6 +5517,12 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
   : > "$run/raw.jsonl"; : > "$run/events.jsonl"; : > "$run/stderr.log"; : > "$run/status"
   local fifo="$run/stdout.pipe"; rm -f "$fifo"; mkfifo "$fifo"
   local brief; brief="$(<"$prompt")"
+  # 模型钉入透传(写单窗族需钉配型;env 空=原行为,tool 件不受影响)
+  local -a model_args=()
+  if [ -n "${LAIXIN_NATIVE_CODEX_MODEL:-}" ]; then
+    model_args+=(-m "$LAIXIN_NATIVE_CODEX_MODEL")
+    [ -z "${LAIXIN_NATIVE_CODEX_EFFORT:-}" ] || model_args+=(-c "model_reasoning_effort=\"$LAIXIN_NATIVE_CODEX_EFFORT\"")
+  fi
   if [ "$native_engine" = codex ]; then
     local mcp_off=""
     if [ "$mcp_keep" != "__unset__" ]; then
@@ -5529,19 +5535,19 @@ tool_native_launch() {  # <window> <run_dir> <prompt> <cwd> <BU_NAME> <CDP_port>
       if [ -n "$resume_thread" ]; then
         printf '%s\n' "$resume_thread" > "$run/resume-thread"
         printf '%s\n' "$resume_thread" > "$run/bound-session"
-        codex exec resume --json "${mcp_args[@]}" "$resume_thread" "$brief" \
+        codex exec resume --json "${model_args[@]}" "${mcp_args[@]}" "$resume_thread" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       else
-        codex exec --json --sandbox workspace-write -C "$cwd" "${mcp_args[@]}" "$brief" \
+        codex exec --json --sandbox workspace-write -C "$cwd" "${model_args[@]}" "${mcp_args[@]}" "$brief" \
           > "$fifo" 2> "$run/stderr.log" </dev/null &
       fi
     elif [ -n "$resume_thread" ]; then
       printf '%s\n' "$resume_thread" > "$run/resume-thread"
       printf '%s\n' "$resume_thread" > "$run/bound-session"
-      codex exec resume --json "$resume_thread" "$brief" \
+      codex exec resume --json "${model_args[@]}" "$resume_thread" "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     else
-      codex exec --json --sandbox workspace-write -C "$cwd" "$brief" \
+      codex exec --json --sandbox workspace-write -C "$cwd" "${model_args[@]}" "$brief" \
         > "$fifo" 2> "$run/stderr.log" </dev/null &
     fi
   else
@@ -6502,14 +6508,17 @@ pwin() {  # 片名 → prompt-<slug>(转义规则与 mwin/vwin 逐字同款—�
 cmd_prompt_up() {
   local item="${1:-}"; shift || true
   [ -n "$item" ] || die "prompt-up 需要片名:laixin-lane prompt-up <片名> --pack <底稿.md> [--dry]"
-  local pack="" dry=""
+  local pack="" dry="" _transport_opt=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pack) pack="${2:?--pack 需要底稿路径}"; shift 2 ;;
+      --transport) _transport_opt="${2:?--transport 需要 tui|print}"; shift 2 ;;
       --dry)  dry=1; shift ;;
       *) die "未知参数:$1" ;;
     esac
   done
+  # 写单窗归 lane 面(与开发轨/验收窗同一开关,⛔ 添第三个开关面——2026-08-27「开关是复数」实撞的对策)
+  local PROMPT_TRANSPORT; PROMPT_TRANSPORT="$(lane_transport_resolve "$_transport_opt")" || die "未知 transport:${_transport_opt}(只接受 tui|print)"
   # 校验全部在动窗口之前(#60① 一课:拒绝时 ⛔ 留半个死窗口)
   [ -n "$pack" ] || die "prompt-up 必须 --pack <底稿.md>(方案包/裁定/台账登记的指针或本体——写单窗的射程只来自底稿 ⛔ 自拟;没有底稿=缺策划托底,先点名方案窗口 ⛔ 硬派)"
   [ -f "$pack" ] || die "底稿不存在:$pack"
@@ -6550,6 +6559,7 @@ EOF
 )"
   if [ -n "$dry" ]; then
     echo "[dry] 窗口=$w cwd=$HOME BU_NAME=$bu 端口=$port 配型=${PROMPT_LANE_MODEL} ${PROMPT_LANE_EFFORT}(钉,创始人 2026-08-23 配型令)"
+    echo "[dry] transport=${PROMPT_TRANSPORT}(参数 > LAIXIN_LANE_TRANSPORT > lane-transport 开关 > tui;print=官方 exec JSON 于隔离 server,配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入)"
     echo "[dry] 同件拦截:$(dry_win_clash "$w")"
     echo "[dry] 起动串:$launch"
     echo "[dry] 交付契约:$report 末行【写单完成】${item}(停车=【写单停车】${item} <缺口>)"
@@ -6567,10 +6577,49 @@ EOF
   fi
   local clash; clash="$(oneshot_port_clash "$port")"
   [ -z "$clash" ] || die "⛔ CDP 端口 $port 与在跑一次性窗 $clash 撞车——改片名再起"
+  local native_run=""
+  if [ "$PROMPT_TRANSPORT" = "print" ]; then
+    # 照 tool-up print 同法:官方 exec JSON 于隔离 server;配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(创始人配型令)
+    local run_id lane_self
+    run_id="$(date '+%Y%m%d-%H%M%S')-$$"
+    native_run="$EV_DIR/native/$w/$run_id"
+    mkdir -p "$EV_DIR/native/$w"
+    mkdir "$native_run" || die "native run 账目录创建失败:$native_run"
+    printf '%s' "$msg" > "$native_run/brief.txt"
+    lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+    printf -v launch 'env HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q LAIXIN_CLAUDE_LAUNCHER=%q LAIXIN_TOOL_CLAUDE_MODEL=%q LAIXIN_HEADLESS_SETTINGS=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_BOARD_SRC=prompt-native %q tool-native-run %q %q %q %q %q %q' \
+      "$HOME" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" "$CLAUDE_LAUNCHER" "$TOOL_CLAUDE_MODEL" "$HEADLESS_SETTINGS" \
+      "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" \
+      "$PROMPT_LANE_MODEL" "$PROMPT_LANE_EFFORT" \
+      "$lane_self" "$w" "$native_run" "$native_run/brief.txt" "$HOME" "$bu" "$port"
+  fi
   # cwd=$HOME:写单窗零改码,读 KB+仓(仓一律 ref 级)⛔ worktree。codex 信任读数仅供参考 ⛔ 据 rc=1 拒起
   # (实证:relay-once/书记员 cwd=$HOME 从不弹框);真撞信任框由 vwait_ready_codex 的 fail-closed 分支拦。
   tmux new-window -t "=$SESSION" -n "$w" -c "$HOME"
   sleep 0.5
+  if [ "$PROMPT_TRANSPORT" = "print" ]; then
+    # 默认窗只作回收载体;runner 在独立 server 内继承当前环境(照 tool-up print 同法)
+    native_tmux_start "$native_run" "$HOME" "$launch" || {
+      tmux kill-window -t "=$SESSION:$w" 2>/dev/null || true
+      die "$w print 隔离 tmux server 起窗失败;默认载体已回收"
+    }
+    local pstate="" pstate_head="" pwaited=0
+    while [ "$pwaited" -lt 95 ]; do
+      pstate="$(tool_native_status read "$native_run")"
+      pstate_head="${pstate%%$'\n'*}"
+      case "$pstate_head" in
+        running\ *|settled\ *) break ;;
+        failed\ *) die "$w codex print 启动失败,窗已保留。${pstate}" ;;
+      esac
+      sleep 1; pwaited=$((pwaited + 1))
+    done
+    case "$pstate_head" in running\ *|settled\ *) : ;; *) die "$w codex print 90s 内未见合法原生接受事件,窗已保留。${pstate}" ;; esac
+    board "$(caller_src)" "起写单窗 $w ← 片「${item}」(底稿 $pack;transport print;配型=启动参数钉入 ${PROMPT_LANE_MODEL} ${PROMPT_LANE_EFFORT}〔native 权威面=启动参数+rollout ⛔ 横幅〕;native账 ${native_run};BU=$bu 端口=$port;件毕即收)"
+    echo "$w 已起并派底稿(transport=print;配型钉 ${PROMPT_LANE_MODEL} ${PROMPT_LANE_EFFORT} 经启动参数)。"
+    echo "   native 账:${native_run}(终态只认原生 terminal;settled ≠【写单完成】)"
+    echo "交付契约:$report 末行行首【写单完成】${item}(停车=【写单停车】)——事件总线投给派工窗口走 Gate2;件毕:laixin-lane prompt-down $item"
+    return 0
+  fi
   tmux send-keys -t "=$SESSION:$w" "$launch" C-m
   vwait_ready_codex "$w" || die "$w 启动超时(90s 未见 codex 就绪横幅)。查看:laixin-lane peek-prompt $item 40"
   # 配型自证(照 m-up 自证①,但比对对象=钉的档 ⛔ 全局默认):模型不对就 ⛔ 把任务交给它

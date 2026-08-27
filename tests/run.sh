@@ -4760,6 +4760,19 @@ tout "起动串显式带 -m 与 effort(⛔ 吃全局默认——与 M 轨相反,
 tout "env LAIXIN_PROMPT_LANE_MODEL 可换档" "codex -m gpt-5.6-terra" \
   env LAIXIN_PROMPT_LANE_MODEL=gpt-5.6-terra "$LANE" prompt-up t2 --pack "$PK" --dry
 
+# ②-bis 写单窗 print 通道(2026-08-27 创始人「全部局4」令;用例内显式钉 transport ⛔ 吃机器开关——测试密闭性规矩)
+tout "显式 --transport print ⇒ dry 报 print" "transport=print" \
+  "$LANE" prompt-up t2p --pack "$PK" --transport print --dry
+tout "显式 --transport tui ⇒ dry 报 tui(回退路径)" "transport=tui" \
+  "$LANE" prompt-up t2p --pack "$PK" --transport tui --dry
+tout "env LAIXIN_LANE_TRANSPORT=print ⇒ dry 报 print(写单窗归 lane 面 ⛔ 第三开关面)" "transport=print" \
+  env LAIXIN_LANE_TRANSPORT=print "$LANE" prompt-up t2p --pack "$PK" --transport "" --dry
+"$LANE" prompt-up t2p --pack "$PK" --transport nope --dry >/dev/null 2>&1; rc2p=$?
+t "未知 transport ⇒ 非零退出〔rc=${rc2p}〕" [ "$rc2p" -ne 0 ]
+sgrep "print 分支配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(⛔ 吃全局默认)" 'LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_BOARD_SRC=prompt-native'
+sgrep "native_run_start 透传模型参数到 codex exec" 'model_args+=(-m "$LAIXIN_NATIVE_CODEX_MODEL")'
+sgrep "print 分支走隔离 server(照 tool-up 同法)" 'die "$w print 隔离 tmux server 起窗失败;默认载体已回收"'
+
 # ③ 契约与落位
 tout "交付契约=记录/写单-<片名>-报告.md 末行【写单完成】" "记录/写单-t3-报告.md 末行【写单完成】t3" \
   "$LANE" prompt-up t3 --pack "$PK" --dry

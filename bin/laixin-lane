@@ -125,6 +125,13 @@ set -euo pipefail
 [ -f "$HOME/.config/laixin-lane/config" ] && . "$HOME/.config/laixin-lane/config"
 SESSION="${LAIXIN_SESSION:-laixin}"
 DEFAULT_DIR="${LAIXIN_REPO:-$HOME/来信平台}"
+# 已登记仓的路径、显示名与分支规则族只在这里登记；prompt-lint 与 verify-from 共用。
+KNOWN_REPO_ENTRIES=(
+  "产品仓|product|$DEFAULT_DIR"
+  "工具仓|tool|$HOME/Developer/laixin-pipeline"
+  "钓不钓仓|mvp|$HOME/钓不钓"
+  "基座仓|mvp|$HOME/钓不钓-基座"
+)
 BOARD="${LAIXIN_BOARD:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md}"
 # 流水线 Claude 窗口的模型**显式钉死**(2026-08-13):不继承 settings.json 全局默认——
 # 谁在方案窗口 /model 换模型并"保存为默认",都不该静默改变验收/派工的模型与成本(实撞:切 Fable 5 后
@@ -1279,11 +1286,12 @@ TABLE="${LAIXIN_TABLE:-$KB/4-开发层/来信平台-执行总表.md}"
 #   (备注格引被替换旧句是记录惯例——旧句恰是最像「你以为的那句」的伪锚)单独点名。
 cmd_prompt_lint() {
   local f="${1:-}"; [ -n "$f" ] && [ -f "$f" ] || die "用法:laixin-lane prompt-lint <prompt文件>"
-  LX_KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}" LX_REPO="$DEFAULT_DIR" python3 - "$f" <<'PYEOF'
+  LX_KB="${LAIXIN_KB:-$HOME/Obsidian/项目入口/来信平台/知识库}" LX_REPO="$DEFAULT_DIR" python3 - "$f" "${KNOWN_REPO_ENTRIES[@]}" <<'PYEOF'
 import os, re, subprocess, sys
 f = sys.argv[1]
 txt = open(f, encoding="utf-8").read()
 kb, repo = os.environ["LX_KB"], os.environ["LX_REPO"]
+known_repos = [entry.split("|", 2) for entry in sys.argv[2:]]
 errs, oks = [], 0
 
 def read(p):
@@ -1380,11 +1388,16 @@ def common_repo_root(path):
         pass
     return path
 
-branch_rules = (
-    (os.path.realpath(repo), ("产品仓", r'v0[0-9]+-[a-z0-9]+-[a-z0-9-]+', "v0y-<域>-<slug>")),
-    (os.path.realpath(os.path.expanduser("~/Developer/laixin-pipeline")), ("工具仓", r'tool-[a-z0-9]+(?:-[a-z0-9]+)*', "tool-<slug>")),
-    (os.path.realpath(os.path.expanduser("~/钓不钓")), ("钓不钓仓", r'mvp-[a-z0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*', "mvp-<域>-<slug>")),
-)
+branch_patterns = {
+    "product": (r'v0[0-9]+-[a-z0-9]+-[a-z0-9-]+', "v0y-<域>-<slug>"),
+    "tool": (r'tool-[a-z0-9]+(?:-[a-z0-9]+)*', "tool-<slug>"),
+    "mvp": (r'mvp-[a-z0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*', "mvp-<域>-<slug>"),
+  }
+branch_rules = {}
+for label, family, path in known_repos:
+    # LAIXIN_REPO 可临时指向已登记仓；专属登记须覆盖默认“产品仓”条目。
+    branch_rules[os.path.realpath(os.path.expanduser(path))] = (label, *branch_patterns[family])
+known_labels = "/".join(label for label, _, _ in known_repos)
 _br = re.search(r'\*\*分支(?:名)?\*\*\s*[:：]\s*`([^`\n]{1,80})`', txt) \
       or re.search(r'(?im)^\s*(?:[-*]\s*)?分支(?:名)?\s*[:：]\s*`([^`\n]{1,80})`', txt)
 if _br:
@@ -1394,9 +1407,9 @@ if _br:
         warns.append(f"分支名仓判别未命中: prompt 未见 worktree/--dir，未校验 `{_bn}`(补工作树指针，⛔ 静默按产品仓放行)")
     else:
         _root = common_repo_root(_worktree)
-        _rule = next((rule for root, rule in branch_rules if root == _root), None)
+        _rule = branch_rules.get(_root)
         if not _rule:
-            warns.append(f"分支名仓判别未命中: worktree `{_worktree}` → `{_root}`，未校验 `{_bn}`(只识别产品仓/工具仓/钓不钓仓，⛔ 静默放行)")
+            warns.append(f"分支名仓判别未命中: worktree `{_worktree}` → `{_root}`，未校验 `{_bn}`(只识别{known_labels}，⛔ 静默放行)")
         elif re.fullmatch(_rule[1], _bn):
             oks += 1
         else:
@@ -3883,20 +3896,31 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
   # 而防手抄正是本命令存在的理由(防线失效要降级 ⛔ 反向,2026-08-19 三十一任实撞)。
   local last; last="$(grep -v '^[[:space:]]*$' "$report" | tail -1)"
   echo "$last" | grep -q '^【交付完成】' || die "契约不符:末行行首必须是【交付完成】<分支> <commit>,实际:$last"
-  local branch commit
+  local branch commit repo_entry repo_label repo_family repo_path repo_key repo="" searched="" seen=""
   read -r branch commit <<< "$(echo "$last" | sed 's/\*//g; s/^【交付完成】[[:space:]]*//')"
   [ -n "$branch" ] && [ -n "$commit" ] || die "末行解析不出分支与 commit:$last"
-  git -C "$DEFAULT_DIR" cat-file -t "$commit" >/dev/null 2>&1 || die "commit $commit 在仓库不存在——报告末行可能笔误"
+  for repo_entry in "${KNOWN_REPO_ENTRIES[@]}"; do
+    IFS='|' read -r repo_label repo_family repo_path <<< "$repo_entry"
+    repo_key="$(cd "$repo_path" 2>/dev/null && pwd -P || printf '%s' "$repo_path")"
+    case "|$seen|" in *"|$repo_key|"*) continue ;; esac
+    seen="${seen}${seen:+|}${repo_key}"
+    searched="${searched}${searched:+、}${repo_label}:${repo_path}"
+    if git -C "$repo_path" cat-file -t "$commit" >/dev/null 2>&1; then
+      repo="$repo_path"
+      break
+    fi
+  done
+  [ -n "$repo" ] || die "commit $commit 在已登记仓均不存在——已查:$searched"
   # #23:零 commit 拒接——停车报告误用【交付完成】信号(2026-08-19 实拦):commit 相对 main 零增量
   # (等同或为祖先)则验收方零物可验。「交付信号≠事情做完」三形态中唯一可机器化的(纯计数免语义)。
   # 分层与过期快照同款:--dry 只警告(解析工具不该在演练里拦人),真起窗才拒。
   local zerocommit=""
-  [ "$(git -C "$DEFAULT_DIR" rev-list --count "main..$commit" 2>/dev/null || echo X)" = "0" ] && zerocommit=1
+  [ "$(git -C "$repo" rev-list --count "main..$commit" 2>/dev/null || echo X)" = "0" ] && zerocommit=1
   [ -n "$zerocommit" ] && echo "⚠️ #23:$commit 相对 main 零 commit(等同或为祖先)——疑似停车报告误用完成信号,没有任何东西可验"
   # ⛔ 末行是会过期的快照(2026-08-13 夜,一晚实撞两次):开发方交付后自行 rebase,分支前进而报告末行
   #   没更新——B 轨那次已交接才发现,验收窗口整轮改验。比对分支 ref 是机器的活,不该靠派工窗口肉眼。
   local tip="" stale=""
-  tip="$(git -C "$DEFAULT_DIR" rev-parse --verify -q "$branch" 2>/dev/null || true)"
+  tip="$(git -C "$repo" rev-parse --verify -q "$branch" 2>/dev/null || true)"
   if [ -n "$tip" ]; then
     case "$tip" in "$commit"*) : ;; *) stale=1 ;; esac
   fi
@@ -3913,7 +3937,7 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
   #   ⇒ **工具自述与实际防线不同步,每加一道新防线旧自述就多一分误导力**(总账 A 族)。
   #   自述的道数由 tests 机器核:2 道常驻(契约/commit 存在)+ **语句位**的 die 拒绝条数,对不上即红。
   #   (判据只数语句位、不数注释——本注释自己就提到了那个词,数注释会把自己算进去。)
-  echo "解析:片名=$slice  分支=$branch  commit=$commit"
+  echo "解析:片名=$slice  分支=$branch  commit=$commit  仓库=$repo"
   echo "  已校验 4 道:①末行契约(取末非空行,#21)②commit 在仓库存在 ③相对 main 非零 commit(#23)④末行快照未过期(分支 ref 未前进)"
   echo "  (③④ 在 --dry 只警告、真起窗才拒;④ 可用 --allow-stale 显式豁免)"
   [ -n "$tip" ] || echo "⚠️ 分支 $branch 在仓库解析不到(可能已删)——无法核对末行快照是否过期"
@@ -3934,7 +3958,7 @@ cmd_verify_from(){  # 从交付报告解析分支/commit/片名再起验收窗�
   if [ -n "$zerocommit" ]; then
     die "⛔ 拒绝交接(#23):$commit 相对 main 零 commit,验收方拿到与 main 等同的树零物可验——若确是停车,按停车报告流程走"
   fi
-  cmd_verify "$slice" --branch "$branch" --commit "$commit" --report "$report" --prompt "$prompt" ${to:+--to "$to"} ${transport:+--transport "$transport"}
+  cmd_verify "$slice" --branch "$branch" --commit "$commit" --report "$report" --prompt "$prompt" --dir "$repo" ${to:+--to "$to"} ${transport:+--transport "$transport"}
 }
 
 cmd_handoff(){  # 交接包客观半部机器生成;判断留给人写并须标明是判断

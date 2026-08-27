@@ -3782,9 +3782,10 @@ t "prompt-rescan --all:扫 prompt/ 目录近 N 天全部(含 nofp ⇒ 2 份失�
   out="$(env LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-rescan --all --days 1 2>&1)"; grep -q "扫 3 份 prompt,2 份有引用失准" <<< "$out"' _ "$TRS" "$LANE"
 rm -rf "$TRS"
 
-# ── 分支命名闸(2026-08-27;按 worktree 三仓分流，⛔ 按 prompt 所在 KB) ───────────────
+# ── 分支命名闸(2026-08-27;按 worktree 四仓分流，⛔ 按 prompt 所在 KB) ───────────────
 TBN="$(mktemp -d)"; TOOLROOT="$TBN/home/Developer/laixin-pipeline"; TOOLWT="$TBN/tool-wt"
-mkdir -p "$TBN/kb/索引" "$TBN/repo" "$TOOLROOT" "$TBN/home/钓不钓" "$TBN/unknown"
+BASE="$TBN/home/钓不钓-基座"
+mkdir -p "$TBN/kb/索引" "$TBN/repo" "$TOOLROOT" "$TBN/home/钓不钓" "$BASE" "$TBN/unknown"
 printf '裁定池\n' > "$TBN/kb/索引/wiki-裁定池总表.md"; printf '红线\n' > "$TBN/kb/索引/wiki-红线清单.md"
 git init -q -b main "$TOOLROOT"; git -C "$TOOLROOT" config user.email t@t; git -C "$TOOLROOT" config user.name t
 printf 'x\n' > "$TOOLROOT/x"; git -C "$TOOLROOT" add x; git -C "$TOOLROOT" commit -qm init; git -C "$TOOLROOT" worktree add -q -b lint "$TOOLWT"
@@ -3794,14 +3795,30 @@ printf '**worktree**:`%s`\n**分支**:`tool-x`\n' "$TOOLWT" > "$TBN/tool-good.md
 printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$TOOLWT" > "$TBN/tool-bad.md"
 printf '**worktree**:`%s`\n**分支**:`mvp-x-y`\n' "$TBN/home/钓不钓" > "$TBN/fish-good.md"
 printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$TBN/home/钓不钓" > "$TBN/fish-bad.md"
+printf '**worktree**:`%s`\n**分支**:`mvp-x-y`\n' "$BASE" > "$TBN/base-good.md"
+printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$BASE" > "$TBN/base-bad.md"
 printf '**worktree**:`%s`\n**分支**:`v01-x-y`\n' "$TBN/unknown" > "$TBN/unknown.md"
 printf '没有分支声明的宪法头 prompt\n【交付完成】x y\n' > "$TBN/nodecl.md"
-t "prompt-lint 按 worktree 三仓分流:三种正确名过、跨仓体例红、未知仓显式提示、未声明仍只提示" bash -c '
+t "prompt-lint 按 worktree 四仓分流:四种正确名过、跨仓体例红、未知仓显式提示、未声明仍只提示" bash -c '
   run(){ env HOME="$1/home" LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "$2" prompt-lint "$1/$3.md" 2>&1; }
-  for f in product-good tool-good fish-good; do out="$(run "$1" "$2" "$f")"; rc=$?; [ "$rc" -eq 0 ] && ! grep -q "分支名不合规" <<< "$out" || { echo "$f:$out"; exit 1; }; done
-  for f in product-bad tool-bad fish-bad; do out="$(run "$1" "$2" "$f")"; rc=$?; [ "$rc" -ne 0 ] && grep -q "❌ 分支名不合规" <<< "$out" || { echo "$f:$out"; exit 2; }; done
+  for f in product-good tool-good fish-good base-good; do out="$(run "$1" "$2" "$f")"; rc=$?; [ "$rc" -eq 0 ] && ! grep -qE "分支名不合规|分支名仓判别未命中" <<< "$out" || { echo "$f:$out"; exit 1; }; done
+  out="$(env HOME="$1/home" LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/home/钓不钓-基座" "$2" prompt-lint "$1/base-good.md" 2>&1)"; rc=$?; [ "$rc" -eq 0 ] && ! grep -qE "分支名不合规|分支名仓判别未命中" <<< "$out" || { echo "base-override:$out"; exit 4; }
+  for f in product-bad tool-bad fish-bad base-bad; do out="$(run "$1" "$2" "$f")"; rc=$?; [ "$rc" -ne 0 ] && grep -q "❌ 分支名不合规" <<< "$out" || { echo "$f:$out"; exit 2; }; done
   out="$(run "$1" "$2" unknown)"; rc=$?; [ "$rc" -eq 0 ] && grep -q "⚠️ 分支名仓判别未命中" <<< "$out" || { echo "$out"; exit 3; }
   out="$(run "$1" "$2" nodecl)"; grep -q "⚠️ prompt 未见「分支」" <<< "$out" && ! grep -q "❌ 分支名不合规" <<< "$out"' _ "$TBN" "$LANE"
+git init -q -b main "$BASE"; git -C "$BASE" config user.email t@t; git -C "$BASE" config user.name t
+printf 'base\n' > "$BASE/x"; git -C "$BASE" add x; git -C "$BASE" commit -qm init
+git -C "$BASE" checkout -qb mvp-fusion-stock-selfcheck-repair
+printf 'fourth\n' >> "$BASE/x"; git -C "$BASE" add x; git -C "$BASE" commit -qm fourth
+BASE_COMMIT="$(git -C "$BASE" rev-parse HEAD)"
+printf '交付\n【交付完成】mvp-fusion-stock-selfcheck-repair %s\n' "$BASE_COMMIT" > "$TBN/base-delivery.md"
+printf '交付\n【交付完成】main 0000000000000000000000000000000000000000\n' > "$TBN/missing-delivery.md"
+t "verify-from 在第四仓找到 commit 后按该仓核分支与 main" bash -c '
+  out="$(env HOME="$1/home" LAIXIN_REPO="$1/repo" "$2" verify-from "$1/base-delivery.md" --dry 2>&1)"
+  grep -q "片名=base-delivery" <<< "$out" && grep -q "仓库=$1/home/钓不钓-基座" <<< "$out" && ! grep -q "在仓库解析不到" <<< "$out"' _ "$TBN" "$LANE"
+t "verify-from 假 commit 仍拒绝并逐仓列出搜索路径" bash -c '
+  out="$(env HOME="$1/home" LAIXIN_REPO="$1/repo" "$2" verify-from "$1/missing-delivery.md" --dry 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "产品仓:$1/repo" <<< "$out" && grep -q "工具仓:$1/home/Developer/laixin-pipeline" <<< "$out" && grep -q "钓不钓仓:$1/home/钓不钓" <<< "$out" && grep -q "基座仓:$1/home/钓不钓-基座" <<< "$out"' _ "$TBN" "$LANE"
 t "kickoff 卡:发车闸门第 7 条分支命名闸在,指向版本流卡 A-4 单点源" bash -c 'grep -q "^7\. \*\*分支命名闸" "$1/skills/laixin-kickoff/SKILL.md" && grep -q "版本流卡 A-4 为单点源" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TBN"
 

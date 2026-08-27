@@ -4769,7 +4769,8 @@ tout "env LAIXIN_LANE_TRANSPORT=print ⇒ dry 报 print(写单窗归 lane 面 �
   env LAIXIN_LANE_TRANSPORT=print "$LANE" prompt-up t2p --pack "$PK" --dry
 "$LANE" prompt-up t2p --pack "$PK" --transport nope --dry >/dev/null 2>&1; rc2p=$?
 t "未知 transport ⇒ 非零退出〔rc=${rc2p}〕" [ "$rc2p" -ne 0 ]
-sgrep "print 分支配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(⛔ 吃全局默认)" 'LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_BOARD_SRC=prompt-native'
+sgrep "print 分支配型经 LAIXIN_NATIVE_CODEX_MODEL 钉入(⛔ 吃全局默认)" 'LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_NATIVE_WRITABLE_ROOTS=%q LAIXIN_BOARD_SRC=prompt-native'
+sgrep "print 分支沙盒可写根透传(KB 交付面)" 'sandbox_workspace_write.writable_roots=[$_wr_json]'
 sgrep "native_run_start 透传模型参数到 codex exec" 'model_args+=(-m "$LAIXIN_NATIVE_CODEX_MODEL")'
 sgrep "print 分支走隔离 server(照 tool-up 同法)" 'die "$w print 隔离 tmux server 起窗失败;默认载体已回收"'
 

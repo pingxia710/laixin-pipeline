@@ -2163,11 +2163,14 @@ t "#60②:win 收 c → lane-c,非法轨照拒" bash -c '
   ! (win d) 2>/dev/null'
 t "#60②:引擎分派 a/b=codex c=kimi" bash -c '
   source "'"$C60W"'"; [ "$(lane_engine a)" = codex ] && [ "$(lane_engine b)" = codex ] && [ "$(lane_engine c)" = kimi ]'
+# 🔴 2026-08-27:以下 C 轨用例内显式钉 LAIXIN_LANE_TRANSPORT=tui ⛔ 依赖机器默认——
+#   全局开关切 print 后,:542 的守卫会让 fresh c 先以「非 Codex 轨」被拒,本组断言的拒绝理由随之改变,
+#   同一份代码因机器上一个开关文件而给出 1054/0 与 1053/1 两种结果 ⇒ 基线数字不可比。钉死后恢复可比。
 # ⭐ fresh c 必须 --dir(机器执法):不带即拒且**窗口未动**(破坏性动作前置校验);--dir 不存在同拒
 tfail "#60②:fresh c 不带 --dir 被拒(每片独立 worktree,同 B 轨形态)" "fresh c 必须带 --dir" \
-  env LAIXIN_SESSION=lx60c-nonexist "$LANE" fresh c
+  env LAIXIN_SESSION=lx60c-nonexist LAIXIN_LANE_TRANSPORT=tui "$LANE" fresh c
 tfail "#60②:fresh c --dir 目录不存在照拒(窗口未动)" "目录不存在" \
-  env LAIXIN_SESSION=lx60c-nonexist "$LANE" fresh c --dir "$C60/没有这个worktree"
+  env LAIXIN_SESSION=lx60c-nonexist LAIXIN_LANE_TRANSPORT=tui "$LANE" fresh c --dir "$C60/没有这个worktree"
 t "#60②:fresh c 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx60c-nonexist 2>/dev/null'
 # ⭐ --with-mcp 是 codex 专属语法:C 轨拒收(静默吞掉=调用者以为生效了),且动窗口之前拒
 tfail "#60②:up c --with-mcp 被拒(codex 专属参数 ⛔ 静默吞)" "codex 专属参数" \

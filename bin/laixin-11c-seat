@@ -235,7 +235,7 @@ kimi_trust_prewrite(){
   local d="$1" key f mcp
   mcp="$(kimi_project_mcp "$d" || true)"
   if [ -n "$mcp" ]; then
-    die "⛔ 拒绝自动信任 $d：发现 project 级 MCP 配置
+    die "⛔ 拒绝自动信任 ${d}：发现 project 级 MCP 配置
 $(echo "$mcp" | sed 's/^/     /')
    kimi 的 trust 语义逐字是「启用 project MCP servers」，stdio 条目会话启动即起进程。
    要起该席：先人工确认这些 MCP 条目可信，再手动在 kimi 里选 Trust(或删掉该配置)。"

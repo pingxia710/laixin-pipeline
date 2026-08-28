@@ -1948,6 +1948,27 @@ tout "#58:pane_claude_age 用 etime(lstart 中文 locale 不可解析)" "etime" 
 
 echo "== 8c. #45-bis 来源残留(board 来源=真实调用上下文,⛔ 硬编码;批二收尾裁定归停工 B 段) =="
 # 判可执行行(剔注释)——注释里保留了旧写法案底,含注释的包含匹配会被元文本命中(八律第 8 律)
+# ⭐ trust-nav 绊线(2026-08-28 热修;病灶=claude 2.1.250 起 trust 对话框默认项反转,❯ 停在「No, exit」,
+#    原「见框即 C-m」按下去是退出 ⇒ 无人值守托管窗被自愈重起时**每次都被自己按死**,而「按死」与
+#    「起窗失败」在读数面同形)。三条缺一即红:回退成裸 C-m 会红、导航判据被换成发键计数会红、
+#    $HOME 放行被并回 vtrusted_dir(会顺带放宽 tool-up :6290 那条有意的 --dir 闸)会红。
+t "#trust-nav①:vwait_ready 的 trust 分支必须经 trust_nav_confirm,⛔ 裸 C-m(回退即红)" bash -c '
+  body="$(sed -n "/^vwait_ready()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  seg="$(sed -n "/trust this folder/,/fi ;;/p" <<< "$body")"
+  [ -n "$seg" ] || exit 1
+  grep -q "trust_nav_confirm" <<< "$seg" || exit 1
+  ! grep -q "send-keys.*C-m" <<< "$seg"' "$LANE"
+t "#trust-nav②:判据是复核 ❯ 选中项读数 ⛔ 发键计数,且确认后须核进程存活" bash -c '
+  fn="$(sed -n "/^trust_nav_confirm()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  [ -n "$fn" ] || exit 1
+  grep -q "Yes, I trust" <<< "$fn" || exit 1
+  grep -q "send-keys -t \"\$t\" Down" <<< "$fn" || exit 1
+  grep -q "pane_current_command" <<< "$fn"' "$LANE"
+t "#trust-nav③:托管窗自动确认这一路的前提=vtrusted_dir 首 case 认 \$HOME(误删即托管窗全卡)" bash -c '
+  vfn="$(sed -n "/^vtrusted_dir()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  grep -q "\"\$HOME\")" <<< "$vfn" || grep -q "\"\$HOME\"|" <<< "$vfn" || exit 1
+  body="$(sed -n "/^vwait_ready()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  ! grep -q "cd \"\$HOME\"" <<< "$body"' "$LANE"
 t "#45-bis:vwait_ready 两处 board 改走 caller_src,零硬编码「事件总线」" bash -c '
   body="$(sed -n "/^vwait_ready()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
   [ "$(grep -c "board \"\$(caller_src)\"" <<< "$body")" = 2 ] || exit 1

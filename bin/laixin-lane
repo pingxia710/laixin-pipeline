@@ -7708,6 +7708,33 @@ vtrusted_dir() {  # 只对本机自有目录自动确认信任对话框,其他�
   return 1
 }
 
+# [trust-nav v1 → lane 侧,2026-08-28 11B 主持第六任热修] claude 2.1.250 起 trust 对话框默认项反转
+#   (❯ 停在「No, exit」)⇒ 原「见框即 C-m」按下去的是**退出**。11C 侧当日已修(laixin-11c-seat:109
+#   trust_nav_confirm),其注释同轮逐字登记「laixin-lane 侧 cmd_dispatch 接管指令 C-m 键序归 dispatch
+#   热修件」——本函数就是那一件。⚠️ 病灶不是「按不到」而是**按下去看着像起窗失败,实为被自己按死**:
+#   无人值守的托管窗(dispatch/relay)由看门狗自愈重起时没人导航 ⇒ 每次自愈都按在 No 上,重起 3 次后停。
+# 判据=**复核 ❯ 选中项读数 ⛔ 发键计数**(发了几次 Down 不等于光标在哪);4 轮导不到 Yes ⇒ fail-closed 不按。
+# ⛔ 手改 ~/.claude*/.claude.json 的 hasTrustDialogAccepted 预写信任:laixin-11c-trust 头部拍板依据
+#   (2026-08-20 首局 R4,创始人「好的,都过」)逐字「claude=保留人工节点 ⛔ 手改存储文件(格式可观察
+#   ≠官方支持预写)」——本函数走的是官方交互路径,不碰存储。
+trust_nav_confirm(){  # <tmux target> → 0=已核 ❯=Yes 才确认且进程存活;1=fail-closed
+  local t="$1" pane sel i pc
+  for i in 1 2 3 4; do
+    pane="$(tmux capture-pane -p -t "$t" 2>/dev/null || true)"
+    sel="$(grep '❯' <<< "$pane" | tail -1 | tr -s ' ' || true)"
+    case "$sel" in
+      *"Yes, I trust"*)
+        tmux send-keys -t "$t" C-m; sleep 2
+        pc="$(tmux display -p -t "$t" '#{pane_current_command}' 2>/dev/null || true)"
+        if [ -n "$pc" ] && [ "$pc" != "zsh" ] && [ "$pc" != "bash" ]; then return 0; fi
+        return 1 ;;
+      *"No,"*) tmux send-keys -t "$t" Down; sleep 0.6 ;;
+      *) sleep 0.6 ;;
+    esac
+  done
+  return 1
+}
+
 vwait_ready() {  # 轮询画面按内容分派按键,直到 claude 输入框就绪(替代盲等+盲发键)
   local w="$1" dir="$2" pane tries=0
   while [ "$tries" -lt 45 ]; do
@@ -7727,8 +7754,13 @@ ${why:-(未捕获到 FAIL 行,peek 看现场)}
       *"mode on"*|*"for agents"*|*"? for shortcuts"*) return 0 ;;                 # 已就绪(各权限模式状态栏文案不同,取并集)
       *"MCP servers"*)              tmux send-keys -t "=$SESSION:$w" Escape ;;     # 不给验收窗口挂 MCP
       *"trust this folder"*)
+        # ⛔ 在此另加 $HOME 放行:vtrusted_dir 首行 case 已逐字含 "$HOME" ⇒ 托管窗(cwd=$HOME)本就走
+        #   自动确认这一路。**真实故障链**(2026-08-28 实测复盘):vtrusted_dir 返回 0 → 原裸 C-m →
+        #   2.1.250 起 ❯ 默认停在「No, exit」→ **按下去把 claude 关了** → 画面回落 shell → 45 轮轮询
+        #   超时 → die「启动超时」。⇒ 病灶自始至终只有「按在哪一项上」,与目录信任判据无关。
         if vtrusted_dir "$dir"; then
-          tmux send-keys -t "=$SESSION:$w" C-m                                     # 自有目录:自动确认
+          trust_nav_confirm "=$SESSION:$w" \
+            || die "$w 的信任对话框未能确认(❯ 4 轮导不到「Yes, I trust」或确认后进程退出)——fail-closed ⛔ 盲按默认项(2.1.250 起默认是 No/退出)。看现场:laixin-lane attach"
         else
           die "$w 起在非自有目录 $dir,信任对话框需人工确认:laixin-lane attach"
         fi ;;

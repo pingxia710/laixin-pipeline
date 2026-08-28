@@ -1497,6 +1497,9 @@ tout "#44 机理自证:函数内 die(exit)穿透 >/dev/null ||兜底 直接杀�
 t "#44 绊线:relay 死跑 wd_loop 一拍——宿主存活+重生失败大声报+非守卫拦死" bash -c \
   'out="$(bash "$0" beat "$1")"; grep -q "HOST=alive" <<< "$out" && grep -q "中继重生失败" <<< "$out" && ! grep -q "起窗中止" <<< "$out"' \
   "$WDD" "$LANE"
+t "#夜间断链:全轨空闲且 0/0/缺设计 fixture 跑真 wd_loop 两拍——料断档与戳派工各恰一次,并留下三桶读数" bash -c \
+  'out="$(bash "$0" fuelgap "$1")"; grep -q "FUELGAP_COUNT=1" <<< "$out" && grep -q "NUDGE_COUNT=1" <<< "$out" && grep -q "燃料读数 ready=0 selfwrite=0 design=2 pending=0" <<< "$out" && grep -q "料断档:缺设计 2 件" <<< "$out"' \
+  "$WDD" "$LANE"
 # ⭐ 豁免不泄漏:首起路径(人手跑 relay,无豁免旗)守卫必须照旧拦
 t "#44 绊线:首起路径双中继守卫照旧(无豁免旗;2026-08-23 起判据=tmux 外有会话名 relay* 即真双中继,必拦且 rc 非零)" bash -c \
   'out="$(bash "$0" guard "$1")"; grep -q "GUARD_RC=1" <<< "$out" && grep -q "起窗中止" <<< "$out"' \
@@ -3299,10 +3302,38 @@ t "#136:两条常驻循环都挂了自换代钩(记 gen + loop_reload_due + exec
 t "#136:release 文案改口——不再写「仍需 stop && start」为唯一路径" bash -c 'b="$(sed -n "/^cmd_release()/,/^}/p" "$1")"; grep -q "自换代" <<< "$b"' _ "$LANE"
 rm -rf "$T136"
 
-T137="$(mktemp -d)"; sed -n "/^wd_fuel()/,/^}/p" "$LANE" > "$T137/f.sh"
-t "#137:wd_fuel 只认可行动燃料:空闲轨 ready / 待认领 P;忙轨 ready、verify/工具等待窗、relay outbox 都不算;总表不可读朝告警侧" bash -c '
+t "#夜间断链:两份派工 BRIEF 同步为三桶事实+收方判断,⛔ 穷举式有意空闲铁律" bash -c '
+  a="$(sed -n "/^DISPATCH_BRIEF=/,/^# (DISPATCH/p" "$1")"
+  b="$(sed -n "/^DISPATCH_BRIEF_KIMI=/,/^# ---- 派工权认领/p" "$1")"
+  for brief in "$a" "$b"; do
+    grep -qF "三桶读数是你的事实面;可自写非空时,写单通常就是当下动作;拿不准按目标(吞吐不断链)自判并留痕" <<< "$brief" || exit 1
+    grep -qF "ready/可自写/待认领交付" <<< "$brief" || exit 1
+    ! grep -qF "无在飞、无 ready、且 stats 可自写为零" <<< "$brief" || exit 1
+  done' _ "$LANE"
+
+T137="$(mktemp -d)"
+cat > "$T137/table.md" <<'EOF'
+## 进行中(=轨道占用)
+| 片 | 轨 | 分支 | 状态 |
+## 验收中
+| 片 | 轨 | 分支 | 状态 |
+## 已完成
+| 片 | 轨 | 分支 | 状态 |
+## 排队
+| 片 | 轨 | 内容 | 状态 |
+| ready片 | A | x | prompt ready |
+| 可自写片 | B | x | 待写 |
+| 缺设计片 | C | x | 发不了 |
+EOF
+mkdir -p "$T137/home/.laixin-events.d"
+printf '1|待验片|P\n' > "$T137/home/.laixin-events.d/pending.ack"
+t "#夜间断链:stats --machine 复用既有四桶分桶,输出可自写/缺设计/待认领读数" bash -c '
+  out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
+  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1" ]' _ "$T137" "$LANE"
+{ sed -n "/^wd_fuel()/,/^}/p" "$LANE"; sed -n "/^wd_fuel_advice()/,/^}/p" "$LANE"; sed -n "/^wd_nudge_text()/,/^}/p" "$LANE"; } > "$T137/f.sh"
+t "#137:wd_fuel 认可空闲轨 ready/可自写/待认领 P;忙轨 ready、verify/工具等待窗、relay outbox 都不算;总表不可读朝告警侧" bash -c '
   source "$1/f.sh"; SESSION=s; TABLE="$1/table.md"; : > "$TABLE"; EV_PENDING="$1/pending"; RELAY_OUTBOX="$1/outbox"; : > "$EV_PENDING"; : > "$RELAY_OUTBOX"
-  ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }; tmux(){ :; }
+  ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }; tmux(){ :; }; stat(){ printf "mtime\n"; }; cmd_stats(){ printf "ready=0 selfwrite=0 design=0 pending=0\n"; }
   [ -z "$(wd_fuel)" ] || { echo "全无应为空:$(wd_fuel)"; exit 1; }
   ev_next_ready(){ [ "$1" = B ] && echo "某片"; }; grep -q "B:某片" <<< "$(wd_fuel)" || exit 2; ev_next_ready(){ :; }
   ev_next_ready(){ [ "$1" = B ] && echo "某片"; }; lane_busy(){ [ "$1" = b ]; }; [ -z "$(wd_fuel)" ] || exit 21; lane_busy(){ return 1; }; ev_next_ready(){ :; }
@@ -3313,6 +3344,24 @@ t "#137:wd_fuel 只认可行动燃料:空闲轨 ready / 待认领 P;忙轨 ready
   win_exists(){ [ "$1" = lane-c ]; }; ev_next_ready(){ [ "$1" = C ] && echo "C片"; }; grep -q "C:C片" <<< "$(wd_fuel)" || exit 7
   win_exists(){ return 1; }; [ -z "$(wd_fuel)" ] || exit 8
   rm -f "$TABLE"; grep -q "不可读" <<< "$(wd_fuel)"' _ "$T137"
+t "#夜间断链:可自写 fixture 进入 wd_fuel,nudge 给三桶事实+默认建议+收方判断" bash -c '
+  source "$1/f.sh"; TABLE="$1/table"; : > "$TABLE"; EV_PENDING="$1/pending"; : > "$EV_PENDING"; STAMP=1
+  stat(){ printf "%s\n" "$STAMP"; }; cmd_stats(){ printf "ready=0 selfwrite=1 design=0 pending=0\n"; }
+  ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+  wd_fuel >/dev/null; out="$(wd_nudge_text 900)"
+  grep -q "可自写:1件" <<< "$WD_FUEL" && grep -qF "三桶读数: ready=0 / 可自写=1 / 待认领=0" <<< "$out" &&
+    grep -qF "默认建议:可自写非空通常适合起写单" <<< "$out" &&
+    grep -qF "若你判断另有更优动作,照你的判断办并留痕。" <<< "$out" &&
+    ! grep -qE "同一轮完成|fresh\\+send|立刻|必须" <<< "$out"' _ "$T137"
+t "#夜间断链:同一 TABLE mtime 连跑 wd_fuel 只调一次 stats,mtime 变化才重跑" bash -c '
+  source "$1/f.sh"; TABLE="$1/table"; : > "$TABLE"; EV_PENDING="$1/pending"; : > "$EV_PENDING"; STAMP=1; COUNT="$1/count"
+  stat(){ printf "%s\n" "$STAMP"; }; cmd_stats(){ echo run >> "$COUNT"; printf "ready=0 selfwrite=1 design=0 pending=0\n"; }
+  ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+  wd_fuel >/dev/null; wd_fuel >/dev/null; STAMP=2; wd_fuel >/dev/null
+  [ "$(wc -l < "$COUNT" | tr -d " ")" = 2 ]' _ "$T137"
+t "#夜间断链:wd_loop 使用事实型 nudge,料断档有单次 fuelgap 闸与三桶日志" bash -c '
+  w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"
+  grep -q "wd_nudge_text" <<< "$w" && grep -q "料断档:缺设计" <<< "$w" && grep -q "fuelgap" <<< "$w" && grep -q "燃料读数 ready=" <<< "$w"' _ "$LANE"
 t "#137:wd_loop 无行动燃料钩位置正确——在 dispatch 死亡重起之后(死了照重起)、在静默重起分支之前;且燃料回归时封顶静默 ⛔ 直接触发重起" bash -c '
   w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"
   a=$(grep -n "if ! dispatch_alive; then" <<< "$w" | head -1 | cut -d: -f1); b=$(grep -n "无行动燃料" <<< "$w" | head -1 | cut -d: -f1); c=$(grep -n "\"\$silent\" -ge \"\$restart_after\"" <<< "$w" | head -1 | cut -d: -f1)

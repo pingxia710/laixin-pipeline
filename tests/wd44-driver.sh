@@ -1,17 +1,18 @@
 #!/bin/bash
 # #44 绊线驱动——在隔离沙盒里跑真实的 wd_loop/cmd_relay(零真实 tmux/进程副作用:
 # tmux 是函数桩;ev_alive 桩为活 ⇒ 永远不会走到 cmd_events 的 pgrep/pkill)。
-# 用法:bash wd44-driver.sh <mech|beat|guard> <laixin-lane 路径>
+# 用法:bash wd44-driver.sh <mech|beat|guard|fuelgap> <laixin-lane 路径>
 #   mech  : 机理自证——函数内 die(exit)穿透 `>/dev/null 2>&1 ||兜底` 直接杀宿主(兜底行不执行)
 #   beat  : fixture=「relay 已死 + 常态拓扑 outside=2」,跑真 wd_loop ≥2 拍,输出宿主生死+看板
 #   guard : 首起路径(无豁免旗)直接调真 cmd_relay --fresh,输出 rc 与守卫报文(守卫必须照旧拦)
 #   manual-src : (#45)手工/在班窗口调用起窗成功路径,输出看板——来源必须随真实调用方,⛔「看门狗」
+#   fuelgap : 夜间断链 fixture=全轨空闲且 ready/selfwrite/pending=0、design>0,跑真 wd_loop ≥2 拍
 # 绊线判据(由 run.sh 断言,修复回退即变红):
 #   - beat 必须 HOST=alive(回退子 shell 隔离 ⇒ 守卫/超时 die 杀宿主 ⇒ HOST=dead)
 #   - beat 看板必须有「中继重生失败」大声条(回退大声报 ⇒ 缺条)
 #   - beat 看板不得含「起窗中止」(回退 --resurrect 豁免 ⇒ 常态拓扑被自家守卫拦死,死因末行即它)
 #   - guard 必须 GUARD_RC 非零且报「起窗中止」(豁免若泄漏进首起路径 ⇒ 守卫失守)
-MODE="${1:?mode(mech|beat|guard)}"; LANE="${2:?laixin-lane 路径}"
+MODE="${1:?mode(mech|beat|guard|fuelgap)}"; LANE="${2:?laixin-lane 路径}"
 
 if [ "$MODE" = mech ]; then
   # 与生产同款 set 选项下,f 内 exit 越过 || 兜底直接终止宿主 bash ⇒ caught/after 都不该出现
@@ -35,7 +36,7 @@ done
 grep -q '^caller_src()' "$LANE" && sed -n '/^caller_src()/,/^}/p' "$LANE" >> "$TMPD/fns.sh" \
   || printf 'caller_src(){ echo 手工; }\n' >> "$TMPD/fns.sh"
 # #136/#137(2026-08-22)引入的循环内新依赖:自换代四函数 + 燃料判据;对之前的代码同样可跑(缺则不抽)
-for fn in loop_self_gen loop_gen_record loop_reload_due loop_gen_label wd_fuel; do
+for fn in loop_self_gen loop_gen_record loop_reload_due loop_gen_label wd_fuel wd_fuel_advice wd_nudge_text; do
   grep -q "^${fn}()" "$LANE" && sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$TMPD/fns.sh"
 done
 
@@ -118,6 +119,26 @@ case "$MODE" in
     cmd_relay --fresh --force-rival >/dev/null 2>&1 || echo "MANUAL_RC=$?"
     LAIXIN_WINDOW="方案窗口" cmd_relay --fresh --force-rival >/dev/null 2>&1 || echo "MANUAL2_RC=$?"
     echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
+    ;;
+  fuelgap)
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    lane_busy(){ return 1; }
+    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0\n'; }
+    wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
+    export WD_INTERVAL=1
+    wd_loop >/dev/null 2>&1 &
+    WPID=$!
+    sleep 3
+    kill "$WPID" 2>/dev/null || true
+    wait "$WPID" 2>/dev/null || true
+    fuelgap_count="$(grep -c '料断档:缺设计 2 件' "$BOARD_F" 2>/dev/null || true)"
+    nudge_count=0
+    if [ -f "$TMPD/nudge.txt" ]; then nudge_count="$(wc -l < "$TMPD/nudge.txt" | tr -d ' ')"; fi
+    echo "FUELGAP_COUNT=$fuelgap_count"
+    echo "NUDGE_COUNT=$nudge_count"
+    echo "--- watchdog ---"; cat "$WD_LOG" 2>/dev/null || echo "(空)"
+    echo "--- nudge ---"; cat "$TMPD/nudge.txt" 2>/dev/null || echo "(空)"
     ;;
   *) echo "未知 mode:$MODE" >&2; exit 2 ;;
 esac

@@ -2597,31 +2597,39 @@ cmd_doctor() {
 }
 
 cmd_stats() {
-  python3 - "$BOARD" "$TABLE" <<'PY'
+  local machine=0
+  case "${1:-}" in
+    "") ;;
+    --machine) machine=1 ;;
+    *) die "stats 只接受 --machine" ;;
+  esac
+  python3 - "$machine" "$BOARD" "$TABLE" "$EV_PENDING" <<'PY'
 import re,sys
 from datetime import datetime
-board,table=sys.argv[1],sys.argv[2]
+machine=sys.argv[1]=='1'
+board,table,pending_path=sys.argv[2:]
 rows=[]
-for l in open(board,encoding='utf-8'):
-    m=re.match(r'\|\s*(\d\d-\d\d \d\d:\d\d)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|',l)
-    if m: rows.append((datetime.strptime('2026-'+m.group(1),'%Y-%m-%d %H:%M'),m.group(2),m.group(3)))
-rows.sort()
-print("== 流水线节奏(看板事件流) ==")
-if len(rows)<2: print("  事件太少,不足以统计"); 
-else:
-    span=(rows[-1][0]-rows[0][0]).total_seconds()/60
-    gaps=[((b[0]-a[0]).total_seconds()/60,a,b) for a,b in zip(rows,rows[1:])]
-    idle=sum(m for m,_,_ in gaps if m>=30)
-    print(f"  事件 {len(rows)} 条,跨度 {span/60:.1f}h")
-    print(f"  ≥30 分钟静默合计 {idle/60:.1f}h(占 {idle/span*100:.0f}%)  ← 这是流水线真正的损耗")
-    print("  最长三段静默:")
-    for m,a,b in sorted(gaps,key=lambda x:-x[0])[:3]:
-        print(f"    {m:5.0f} 分钟  {a[0]:%m-%d %H:%M}[{a[1]}] → {b[0]:%m-%d %H:%M}[{b[1]}]")
-    from collections import Counter
-    c=Counter(r[1] for r in rows)
-    print("  事件来源:"+"  ".join(f"{k}×{v}" for k,v in c.most_common()))
-print()
-print("== 队列燃料(执行总表 排队 节) ==")
+if not machine:
+    for l in open(board,encoding='utf-8'):
+        m=re.match(r'\|\s*(\d\d-\d\d \d\d:\d\d)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|',l)
+        if m: rows.append((datetime.strptime('2026-'+m.group(1),'%Y-%m-%d %H:%M'),m.group(2),m.group(3)))
+    rows.sort()
+    print("== 流水线节奏(看板事件流) ==")
+    if len(rows)<2: print("  事件太少,不足以统计")
+    else:
+        span=(rows[-1][0]-rows[0][0]).total_seconds()/60
+        gaps=[((b[0]-a[0]).total_seconds()/60,a,b) for a,b in zip(rows,rows[1:])]
+        idle=sum(m for m,_,_ in gaps if m>=30)
+        print(f"  事件 {len(rows)} 条,跨度 {span/60:.1f}h")
+        print(f"  ≥30 分钟静默合计 {idle/60:.1f}h(占 {idle/span*100:.0f}%)  ← 这是流水线真正的损耗")
+        print("  最长三段静默:")
+        for m,a,b in sorted(gaps,key=lambda x:-x[0])[:3]:
+            print(f"    {m:5.0f} 分钟  {a[0]:%m-%d %H:%M}[{a[1]}] → {b[0]:%m-%d %H:%M}[{b[1]}]")
+        from collections import Counter
+        c=Counter(r[1] for r in rows)
+        print("  事件来源:"+"  ".join(f"{k}×{v}" for k,v in c.most_common()))
+    print()
+    print("== 队列燃料(执行总表 排队 节) ==")
 s=open(table,encoding='utf-8').read()
 # 先取"进行中"节的在飞片名,用于交叉验证——排队节的状态常滞后于实际发车
 def _stem(x):
@@ -2697,6 +2705,18 @@ if m:
         elif '待写' in st:
             (blocked_rows if _blocked(cells,st) else buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']).append(name)
         else: unparsed.append(name)
+ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']); design=len(buckets['🚧 缺设计,要方案窗口补'])
+if machine:
+    pending=0
+    try:
+        with open(pending_path,encoding='utf-8') as f:
+            pending=sum(line.rstrip('\n').endswith('|P') for line in f)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pending='?'
+    print(f"ready={ready} selfwrite={writable} design={design} pending={pending}")
+    sys.exit(0)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
     for n in v[:6]: print(f"      · {n}")
@@ -2710,7 +2730,6 @@ if stale:
     print(f"  ⚠️ 排队节状态滞后 {len(stale)} 行(实际已在'进行中'节飞着,排队节还写着待写/ready):")
     for n in stale: print(f"      · {n}")
     print("      ⇒ 照排队节排片会重复发车;发车前以'进行中'节为准")
-ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'])
 print()
 print(f"  ⇒ 夜间可无人值守跑的片 ≈ {ready} 片立即可发 + {writable} 片派工窗口能自写")
 if ready+writable==0: print("  ⚠️ 燃料见底:看门狗能让窗口活着,但没片可派。**队列是方案窗口的产出,不是流水线能自造的**")
@@ -2766,6 +2785,7 @@ if merged_keys:
     print(f"  首过率:{len(fp)}/{len(merged_keys)}({len(fp)*100//len(merged_keys)}%)——合并片中零打回直过的比例")
     print("  打回轮是「变慢感」的主源:低于 60% 时先查 prompt 判据完备性与设计托底,再谈提速")
 PY
+  [ "$machine" -eq 1 ] && return 0
   echo
   echo "== 台账巡检(排队/验收中 × 看板合并记录;同一实现=audit-queue) =="
   cmd_audit_queue
@@ -4172,9 +4192,9 @@ DISPATCH_BRIEF='你是 laixin 开发流水线的**派工窗口**(由看门狗托
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
 
 接班先跑 laixin-lane doctor(体检)与 laixin-lane stats(看还剩多少燃料、有无总表状态滞后);合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
-**你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
+**你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/可自写/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
 
-铁律:有在飞分配却卡住,或有 ready 燃料长期未处理,才是事故;无在飞且无 ready 是有意空闲,记一次即可、不要重复通信。合并不是终点,有下一片才继续派;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、SendMessage 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
+铁律:有在飞分配却卡住,或有 ready 燃料长期未处理,才是事故;三桶读数是你的事实面;可自写非空时,写单通常就是当下动作;拿不准按目标(吞吐不断链)自判并留痕。合并不是终点,有下一片才继续派;只发排队节已 ready 的片,prompt 没写好的不现场发挥;同一片两次打回或任何裁定缺口 → 挂起该轨、SendMessage 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
 状态随做随写进执行总表与看板——你随时可能被换掉,窗口记忆不算数。
 📌 记看板用 laixin-lane log "..."(本窗口的来源会按窗口名自动标为「派工窗口」,⛔ 再手工拼前缀)。'
 
@@ -4204,12 +4224,12 @@ DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kim
 派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**。
 
 接班先跑 laixin-lane doctor 与 laixin-lane stats;合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
-**你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
+**你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/可自写/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
 
 🔴 **红线(本引擎没有 claude 的 disallowedTools 工具层禁令,以下以本指令为准)**:⛔ git push。
 合并你照旧做(派工窗口持有合并权),但 merge 后按卡跑 merge-guard 收尾。越线即整轮作废并报创始人。
 
-铁律:有在飞分配却卡住,或有 ready 燃料长期未处理,才是事故;无在飞且无 ready 是有意空闲,记一次即可、不要重复通信。合并不是终点,有下一片才继续派;只发排队节已 ready 的片;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
+铁律:有在飞分配却卡住,或有 ready 燃料长期未处理,才是事故;三桶读数是你的事实面;可自写非空时,写单通常就是当下动作;拿不准按目标(吞吐不断链)自判并留痕。合并不是终点,有下一片才继续派;只发排队节已 ready 的片;同一片两次打回或任何裁定缺口 → 挂起该轨、用 relay-msg 报方案窗口,绝不代拍裁定;验收标准不因夜间降低。
 📌 记看板用 laixin-lane log "..."(本窗口的来源会按窗口名自动标为「派工窗口」,⛔ 再手工拼前缀)。'
 
 # ---- 派工权认领:用"谁在动 lane"识别派工窗口,而不是数窗口个数 ----
@@ -7070,17 +7090,72 @@ ctx_watch_tick() {
 # ── #137 无燃料静默(2026-08-22 11B 监测登记)──────────────────────────────────────────────
 #   实证:08-22 02:19~07:23 三轨全空、排队节零可发,看门狗仍每 30 分钟戳一次派工窗口(11 次),同时段看板零派工产出
 #   =11 轮 Opus 空转。与中继的「反应式角色,没有缺口时静默就是健康态」同一条原则(见 wd_loop 0.5 段注)。
-#   燃料只认**派工席此刻能动作**的两类:①空闲轨已有 ready 片 ②投出未认领的交付(P 态)。verify/relay/M/工具窗
-#   在跑与 relay outbox 都是等待态,各自由 events 管,不是催派工席的理由。全无 ⇒ 不戳、不按静默重起(死了照重起)。
+#   燃料只认**派工席此刻能动作**的三类:①空闲轨已有 ready 片 ②可自写 ③投出未认领的交付(P 态)。verify/relay/M/工具窗
+#   在跑与 relay outbox 都是等待态,各自由 events 管,不是催派工席的理由。三桶全空且全轨空闲=料断档,不是健康态。
 #   失效降级:总表读不到 ⇒ 按有燃料(⛔ 因探针失效而静默)。
 wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在 set -e 下用命令替换接)
-  local src="" n
-  if [ ! -r "$TABLE" ]; then printf '%s' "总表不可读(探针失效按有燃料)"; return 0; fi
-  if ! lane_busy a; then n="$(ev_next_ready A 2>/dev/null || true)"; [ -n "$n" ] && src="A:${n}"; fi
-  if ! lane_busy b; then n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }B:${n}"; fi
-  if win_exists "lane-c" && ! lane_busy c; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && src="${src:+$src }C:${n}"; fi
-  if [ -s "$EV_PENDING" ] && grep -q '|P$' "$EV_PENDING" 2>/dev/null; then src="${src:+$src }待认领交付"; fi
-  printf '%s' "$src"; return 0
+  local src="" n table_mtime stats field ready selfwrite design
+  WD_FUEL_READY=0; WD_FUEL_SELFWRITE=0; WD_FUEL_PENDING=0
+  if [ ! -r "$TABLE" ]; then
+    WD_STATS_READY="?"; WD_STATS_SELFWRITE="?"; WD_STATS_DESIGN="?"; WD_STATS_PENDING="?"
+    WD_FUEL="总表不可读(探针失效按有燃料)"; printf '%s' "$WD_FUEL"; return 0
+  fi
+  table_mtime="$(stat -L -f '%m' "$TABLE" 2>/dev/null || true)"
+  if [ -z "$table_mtime" ]; then
+    WD_STATS_READY="?"; WD_STATS_SELFWRITE="?"; WD_STATS_DESIGN="?"; WD_STATS_PENDING="?"
+    WD_FUEL="总表状态不可读(探针失效按有燃料)"; printf '%s' "$WD_FUEL"; return 0
+  fi
+  if [ "${WD_STATS_TABLE_MTIME:-}" != "$table_mtime" ]; then
+    stats="$(cmd_stats --machine 2>/dev/null)" || stats=""
+    ready=""; selfwrite=""; design=""
+    for field in $stats; do
+      case "$field" in
+        ready=*) ready="${field#ready=}" ;;
+        selfwrite=*) selfwrite="${field#selfwrite=}" ;;
+        design=*) design="${field#design=}" ;;
+      esac
+    done
+    if ! [[ "$ready" =~ ^[0-9]+$ && "$selfwrite" =~ ^[0-9]+$ && "$design" =~ ^[0-9]+$ ]]; then
+      WD_STATS_READY="?"; WD_STATS_SELFWRITE="?"; WD_STATS_DESIGN="?"; WD_STATS_PENDING="?"
+      WD_FUEL="总表分桶失效(探针失效按有燃料)"; printf '%s' "$WD_FUEL"; return 0
+    fi
+    WD_STATS_TABLE_MTIME="$table_mtime"
+    WD_STATS_READY="$ready"; WD_STATS_SELFWRITE="$selfwrite"; WD_STATS_DESIGN="$design"
+  fi
+  if [ -e "$EV_PENDING" ] && [ ! -r "$EV_PENDING" ]; then
+    WD_STATS_PENDING="?"; WD_FUEL="待认领台账不可读(探针失效按有燃料)"; printf '%s' "$WD_FUEL"; return 0
+  fi
+  WD_STATS_PENDING="$(grep -c '|P$' "$EV_PENDING" 2>/dev/null || true)"
+  [ -n "$WD_STATS_PENDING" ] || WD_STATS_PENDING=0
+  if ! lane_busy a; then n="$(ev_next_ready A 2>/dev/null || true)"; [ -n "$n" ] && { src="A:${n}"; WD_FUEL_READY=1; }; fi
+  if ! lane_busy b; then n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && { src="${src:+$src }B:${n}"; WD_FUEL_READY=1; }; fi
+  if win_exists "lane-c" && ! lane_busy c; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && { src="${src:+$src }C:${n}"; WD_FUEL_READY=1; }; fi
+  if [ "$WD_STATS_SELFWRITE" -gt 0 ] && { ! lane_busy a || ! lane_busy b || { win_exists "lane-c" && ! lane_busy c; }; }; then src="${src:+$src }可自写:${WD_STATS_SELFWRITE}件"; WD_FUEL_SELFWRITE=1; fi
+  if [ "$WD_STATS_PENDING" -gt 0 ]; then src="${src:+$src }待认领交付"; WD_FUEL_PENDING=1; fi
+  WD_FUEL="$src"; printf '%s' "$WD_FUEL"; return 0
+}
+
+wd_fuel_advice(){  # 三桶事实 → 默认建议;判断仍归收方
+  local advice=""
+  [ "${WD_FUEL_READY:-0}" -gt 0 ] && advice="ready 非空通常适合发车"
+  [ "${WD_FUEL_SELFWRITE:-0}" -gt 0 ] && advice="${advice:+${advice}；}可自写非空通常适合起写单"
+  [ "${WD_FUEL_PENDING:-0}" -gt 0 ] && advice="${advice:+${advice}；}待认领非空通常适合先核交付"
+  printf '%s' "$advice"
+}
+
+wd_nudge_text(){  # <静默秒数> → 事实 + 默认建议 + 收方判断,⛔ 命令形
+  local silent="$1" advice
+  advice="$(wd_fuel_advice)"
+  printf '【看门狗】已静默 %s 分钟。三桶读数: ready=%s / 可自写=%s / 待认领=%s。默认建议:%s。若你判断另有更优动作,照你的判断办并留痕。' \
+    "$((silent/60))" "$WD_STATS_READY" "$WD_STATS_SELFWRITE" "$WD_STATS_PENDING" "$advice"
+}
+
+wd_nudge(){  # <正文> → 复用既有 tmux 注入路径
+  printf '%s' "$1" | tmux load-buffer -b laixin-nudge -
+  tmux paste-buffer -p -b laixin-nudge -t "=$SESSION:$DISPATCH_WIN"
+  tmux delete-buffer -b laixin-nudge
+  sleep 0.4
+  tmux send-keys -t "=$SESSION:$DISPATCH_WIN" C-m
 }
 
 wd_loop() {
@@ -7089,7 +7164,7 @@ wd_loop() {
   local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
   local max_restart="${WD_MAX_RESTART:-3}"
   local last_hash="" silent=0 nudged=0 restarts=0 ctx_tick=0
-  local _gen nofuel=0 qtick=0; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
+  local _gen nofuel=0 fuelgap=0 qtick=0; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
   echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
   board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
   while true; do
@@ -7206,15 +7281,30 @@ wd_loop() {
     # #60②:lane-c 可选轨——**起了才算数**(在跑且空闲同样该被过问),没起不挡正常等待判定
     if lane_busy a && lane_busy b && { ! win_exists "lane-c" || lane_busy c; }; then continue; fi
     # #137:只要存在空闲轨,就按「行动燃料」判是否该打扰;其他轨/验收窗仍在跑不构成燃料。
-    local _fuel; _fuel="$(wd_fuel)"
+    wd_fuel >/dev/null
+    local _fuel="$WD_FUEL"
+    echo "[$(date '+%F %T')] 燃料读数 ready=${WD_STATS_READY} selfwrite=${WD_STATS_SELFWRITE} design=${WD_STATS_DESIGN} pending=${WD_STATS_PENDING}; action=${_fuel:-无}" >> "$WD_LOG"
     if [ -z "$_fuel" ]; then
-      if [ "$nofuel" -eq 0 ]; then
-        nofuel=1
-        echo "[$(date '+%F %T')] 无行动燃料:空闲轨零 ready、无待认领交付 ⇒ 派工席静默属健康态(#137)" >> "$WD_LOG"
-        board "看门狗" "无行动燃料(#137):空闲轨零 ready、无待认领交付——等待中的验收/中继/机动/工具窗不算派工燃料,不戳不按静默重起"
+      local all_idle=1
+      lane_busy a && all_idle=0
+      lane_busy b && all_idle=0
+      { ! win_exists "lane-c" || ! lane_busy c; } || all_idle=0
+      if [ "$all_idle" -eq 1 ]; then
+        nofuel=0
+        if [ "$fuelgap" -eq 0 ]; then
+          fuelgap=1
+          echo "[$(date '+%F %T')] 🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备" >> "$WD_LOG"
+          board "看门狗" "🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备——向方案侧问料况;方案侧无应答则报创始人"
+          wd_nudge "【看门狗】料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备。向方案侧问料况;方案侧无应答则报创始人。"
+        fi
+      elif [ "$nofuel" -eq 0 ]; then
+        fuelgap=0; nofuel=1
+        echo "[$(date '+%F %T')] 无行动燃料:空闲轨零 ready/可自写、无待认领交付,另有轨在飞 ⇒ 派工席静默属健康态(#137)" >> "$WD_LOG"
+        board "看门狗" "无行动燃料(#137):空闲轨零 ready/可自写、无待认领交付——等待中的验收/中继/机动/工具窗不算派工燃料,不戳不按静默重起"
       fi
       continue
     fi
+    fuelgap=0
     if [ "$nofuel" -eq 1 ]; then
       nofuel=0
       echo "[$(date '+%F %T')] 行动燃料出现(${_fuel}),恢复戳/重起节奏;静默已 ${silent}s ⇒ 按到戳点处理" >> "$WD_LOG"
@@ -7237,12 +7327,7 @@ wd_loop() {
       last_hash=""; silent=0; nudged=0
     elif [ "$silent" -ge "$nudge_after" ] && [ "$nudged" -eq 0 ]; then
       nudged=1
-      printf '%s' "【看门狗】你已静默 $((silent/60)) 分钟,且有未处理的行动燃料:${_fuel}。同一轮完成对应的认领或 fresh+send,并写一条可见结果;等待中的窗口不需要另发状态说明。" \
-        | tmux load-buffer -b laixin-nudge -
-      tmux paste-buffer -p -b laixin-nudge -t "=$SESSION:$DISPATCH_WIN"
-      tmux delete-buffer -b laixin-nudge
-      sleep 0.4
-      tmux send-keys -t "=$SESSION:$DISPATCH_WIN" C-m
+      wd_nudge "$(wd_nudge_text "$silent")"
       echo "[$(date '+%F %T')] 戳了派工窗口(静默 ${silent}s,行动燃料:${_fuel})" >> "$WD_LOG"
       board "看门狗" "戳派工窗口:静默 $((silent/60)) 分钟且行动燃料未处理(${_fuel})"
     fi
@@ -8053,7 +8138,7 @@ case "${1:-}" in
   evidence) shift; cmd_evidence "$@" ;;
   evid-gc)  shift; cmd_evidence_gc "$@" ;;
   doctor)   shift; cmd_doctor ;;
-  stats)    shift; cmd_stats ;;
+  stats)    shift; cmd_stats "$@" ;;
   handover-audit) shift; cmd_handover_audit "$@" ;;   # #108 全量:所有未配对的交班条(第 6 步漏做清单)
   channel-of)     shift; cmd_channel_of "$@" ;;      # 会话名 → 它所在的通道(配置目录)与账号
   quota)          shift; cmd_quota "$@" ;;           # 两账号额度 + 派工席账号 + 哨兵线

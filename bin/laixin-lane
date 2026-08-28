@@ -2729,7 +2729,17 @@ def _blocked(cells,st):
     if re.search(r'(前置|等|待).*(合入|定稿|待拆|裁定|细化)',both): return True
     if re.search(r'不可立即发车|不可发车|暂不可发|不能发车|前置未解|前置未满足',both): return True
     return False
+def _track_bucket(_name,_trk):
+    # #186-bis(2026-08-29 方案窗口第三十七任):**轨列判据抽成一处,可自写与缺设计两桶共用** ⛔ 各写一份。
+    #   派工窗口报 design 桶同构时明确要求「套 6b29398 的同一份判据 ⛔ 另写一份」——两份会各自漂移,
+    #   而漂移后「两桶口径一致」与「两桶口径已经不同」在读数面同形(都只是两个数字)。
+    _trk=_re_sub_trk(_trk)
+    if _name.startswith('11B') or '工具' in _trk: return 'tool'
+    if re.match(r'^[ABC](\b|轨|/| )', _trk): return 'prod'
+    return 'other'
+def _re_sub_trk(_t): return re.sub(r'[*`]','',_t).strip()
 short_rows=[]; sw_prod=0; sw_tool=0; sw_other=0   # 第一片(2026-08-28):格数不足行 / 可自写按轨列拆 产品·工具·其他
+dg_prod=0; dg_tool=0; dg_other=0                  # #186-bis:缺设计桶同样按轨列拆(料断档判据只对产品格负责)
 if m:
     for line in m.group(1).split('\n'):
         if not line.startswith('|') or '---' in line: continue
@@ -2749,6 +2759,12 @@ if m:
         elif '已完成合入' in st or '已发车' in st or '已并入' in st: buckets['✔️ 已发车或已合入'].append(name)
         elif ('发不了' in st or '设计缺口' in st or '退回方案窗口' in st) and '已补' not in st and '已齐' not in st:
             buckets['🚧 缺设计,要方案窗口补'].append(name)
+            # #186-bis:同一份判据(⛔ 复制)。料断档告警此前取 design 合计 ⇒ 工具/档面类缺设计件
+            #   也会让看门狗对派工席报「料断档」并要求走问料程序,而补齐它们产不出任何可发的产品片。
+            _bd=_track_bucket(name,cells[1])
+            if _bd=='tool': dg_tool+=1
+            elif _bd=='prod': dg_prod+=1
+            else: dg_other+=1
         elif _stem(cells[0]) in flying:
             stale.append(name)
         elif 'ready' in st.lower() or 'prompt 已写' in st:
@@ -2760,9 +2776,9 @@ if m:
                 # 判据=读现成的轨列 ⛔ 片名前缀名单(主持 2026-08-29 复核:前缀只挡 11B、其余一律计产品 ⇒「产品 4」为假,真值 0;
                 #   前缀名单要穷举而漏一个的表现恰是「把非产品件报成产品线有活」,漏了不会有人告诉你)。
                 #   产品=轨列以 A/B/C 起头(A/B 开发轨、C 常设第三轨);工具=轨列含「工具」或片名 11B 起头;其余=其他(档面/台账/卡面/基座债/M 件…)
-                _trk=re.sub(r'[*`]','',cells[1]).strip()
-                if name.startswith('11B') or '工具' in _trk: sw_tool+=1
-                elif re.match(r'^[ABC](\b|轨|/| )', _trk): sw_prod+=1
+                _b=_track_bucket(name,cells[1])
+                if _b=='tool': sw_tool+=1
+                elif _b=='prod': sw_prod+=1
                 else: sw_other+=1
         else: unparsed.append(name)
 ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']); design=len(buckets['🚧 缺设计,要方案窗口补'])
@@ -2775,12 +2791,13 @@ if machine:
         pass
     except OSError:
         pending='?'
-    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool} selfwrite_other={sw_other}")
+    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool} selfwrite_other={sw_other} design_product={dg_prod} design_tool={dg_tool} design_other={dg_other}")
     sys.exit(0)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
     for n in v[:6]: print(f"      · {n}")
 print(f"  ✏️ 可自写拆分(按轨列):产品 {sw_prod}(A/B/C 轨)/ 工具 {sw_tool} / 其他 {sw_other}(档面·台账·卡面·基座债等)——派工窗口看的是「产品」这一格 ⛔ 合计")
+print(f"  🚧 缺设计拆分(按轨列):产品 {dg_prod}(A/B/C 轨)/ 工具 {dg_tool} / 其他 {dg_other}——料断档只对「产品」这一格成立 ⛔ 合计")
 if short_rows:
     print(f"  ⚠️ 格数不足 {len(short_rows)} 行(不足四格,分桶读不到 ⇒ 既不进已识别也不进未识别=静默漏行;补齐四格):")
     for x in short_rows: print(f"      · {x}")
@@ -7487,7 +7504,7 @@ ctx_watch_tick() {
 #   在跑与 relay outbox 都是等待态,各自由 events 管,不是催派工席的理由。三桶全空且全轨空闲=料断档,不是健康态。
 #   失效降级:总表读不到 ⇒ 按有燃料(⛔ 因探针失效而静默)。
 wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在 set -e 下用命令替换接)
-  local src="" n table_mtime stats field ready selfwrite design sw_prod sw_tool sw_other
+  local src="" n table_mtime stats field ready selfwrite design sw_prod sw_tool sw_other dg_prod dg_tool dg_other
   WD_FUEL_READY=0; WD_FUEL_SELFWRITE=0; WD_FUEL_PENDING=0
   if [ ! -r "$TABLE" ]; then
     WD_STATS_READY="?"; WD_STATS_SELFWRITE="?"; WD_STATS_DESIGN="?"; WD_STATS_PENDING="?"
@@ -7500,7 +7517,7 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
   fi
   if [ "${WD_STATS_TABLE_MTIME:-}" != "$table_mtime" ]; then
     stats="$(cmd_stats --machine 2>/dev/null)" || stats=""
-    ready=""; selfwrite=""; design=""; sw_prod=""; sw_tool=""; sw_other=""
+    ready=""; selfwrite=""; design=""; sw_prod=""; sw_tool=""; sw_other=""; dg_prod=""; dg_tool=""; dg_other=""
     for field in $stats; do
       case "$field" in
         ready=*) ready="${field#ready=}" ;;
@@ -7511,6 +7528,11 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
         selfwrite_tool=*) sw_tool="${field#selfwrite_tool=}" ;;
         selfwrite_other=*) sw_other="${field#selfwrite_other=}" ;;
         design=*) design="${field#design=}" ;;
+        # #186-bis:design 同族(派工窗口 2026-08-29 报的同构邻居)。⚠️ 与 selfwrite 一样,
+        #   `design=*` 匹配不到 `design_product=`(第 7 字符是 `_` 不是 `=`)⇒ 必须各列分支。
+        design_product=*) dg_prod="${field#design_product=}" ;;
+        design_tool=*) dg_tool="${field#design_tool=}" ;;
+        design_other=*) dg_other="${field#design_other=}" ;;
       esac
     done
     if ! [[ "$ready" =~ ^[0-9]+$ && "$selfwrite" =~ ^[0-9]+$ && "$design" =~ ^[0-9]+$ ]]; then
@@ -7533,6 +7555,15 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
     else
       WD_STATS_SW_PRODUCT="$selfwrite"; WD_STATS_SW_DEGRADED=1
       WD_STATS_SW_TOOL="?"; WD_STATS_SW_OTHER="?"
+    fi
+    # #186-bis:design 三格,降级方向与 selfwrite 逐字一致(读不出 ⇒ 回落合计并照常告警 ⛔ 静默)。
+    if [[ "$dg_prod" =~ ^[0-9]+$ ]]; then
+      WD_STATS_DG_PRODUCT="$dg_prod"; WD_STATS_DG_DEGRADED=""
+      [[ "$dg_tool"  =~ ^[0-9]+$ ]] && WD_STATS_DG_TOOL="$dg_tool"   || WD_STATS_DG_TOOL="?"
+      [[ "$dg_other" =~ ^[0-9]+$ ]] && WD_STATS_DG_OTHER="$dg_other" || WD_STATS_DG_OTHER="?"
+    else
+      WD_STATS_DG_PRODUCT="$design"; WD_STATS_DG_DEGRADED=1
+      WD_STATS_DG_TOOL="?"; WD_STATS_DG_OTHER="?"
     fi
   fi
   if [ -e "$EV_PENDING" ] && [ ! -r "$EV_PENDING" ]; then
@@ -7765,17 +7796,34 @@ wd_loop() {
       { ! win_exists "lane-c" || ! lane_busy c; } || all_idle=0
       if [ "$all_idle" -eq 1 ]; then
         nofuel=0
-        if [ "$fuelgap" -eq 0 ]; then
+        # #186-bis 三态位:0=本次断档尚未处理 · 1=**已真告警**(产品格>0) · 2=**已记 ℹ️**(产品格 0,未打扰任何人)。
+        #   ⛔ 用两态:置 0 会每拍重写 ℹ️(60s 一拍 ⇒ 一夜数百行);置 1 又会在产品格由 0 变 >0 时
+        #   **把真断档的首报吃掉**——而「吃掉了」与「本来就没有」在告警面同形。故 2 态可升级为 1。
+        if [ "$fuelgap" -eq 0 ] || { [ "$fuelgap" -eq 2 ] && [ "${WD_STATS_DG_PRODUCT:-0}" -gt 0 ]; }; then
           fuelgap=1
           local _fg_mark="${WD_FUELGAP_ALERTED:-$EV_DIR/fuelgap.alerted}"
           if [ -f "$_fg_mark" ]; then
             # 同一断档已告警过(标记在盘上):本进程是自换代/重起后的新一代,⛔ 再报一次——单事故单告警(P0)的落盘半边
             echo "[$(date '+%F %T')] 料断档持续(已告警于 $(head -1 "$_fg_mark" 2>/dev/null || echo 读不出));本代接续 ⛔ 重复告警" >> "$WD_LOG"
           else
-            printf '%s design=%s\n' "$(date '+%F %T')" "$WD_STATS_DESIGN" > "$_fg_mark" 2>/dev/null || true
-            echo "[$(date '+%F %T')] 🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备" >> "$WD_LOG"
-            board "看门狗" "🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备——向方案侧问料况;方案侧无应答则报创始人"
-            wd_nudge "【看门狗】料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备。向方案侧问料况;方案侧无应答则报创始人。"
+            # 🔴 #186-bis(2026-08-29 方案窗口第三十七任):料断档只对**产品格**成立 ⛔ 取 design 合计。
+            #   实撞=看门狗对派工席报「料断档:缺设计 2 件」并要求走「问方案侧 → 无应答报创始人」程序,
+            #   而那 2 件实测是 11B 流程纪律 + 钓不钓基座存量债(design_product=0)——**补齐它们产不出任何可发的产品片**,
+            #   派工席照程序走了一整轮(问料 → 得答 → 报创始人)才证明「这不是我的活」。
+            # ⛔ 只换文案里的数字:产品格为 0 时这条告警**根本不该要求任何人动作** ⇒ 降为只落日志,
+            #   ⛔ board ⛔ nudge ⛔ 置告警标记(置了会把真断档的首报吃掉)。
+            printf '%s design=%s design_product=%s\n' "$(date '+%F %T')" "$WD_STATS_DESIGN" "${WD_STATS_DG_PRODUCT:-?}" > "$_fg_mark" 2>/dev/null || true
+            if [ "${WD_STATS_DG_PRODUCT:-0}" -gt 0 ]; then
+              echo "[$(date '+%F %T')] 🔴 料断档:缺设计产品格 ${WD_STATS_DG_PRODUCT} 件(合计 ${WD_STATS_DESIGN};工具 ${WD_STATS_DG_TOOL:-?}·其他 ${WD_STATS_DG_OTHER:-?}${WD_STATS_DG_DEGRADED:+ ⚠️降级按合计}),下一批料未备" >> "$WD_LOG"
+              board "看门狗" "🔴 料断档:缺设计产品格 ${WD_STATS_DG_PRODUCT} 件(合计 ${WD_STATS_DESIGN}),下一批料未备——向方案侧问料况;方案侧无应答则报创始人"
+              wd_nudge "【看门狗】料断档:缺设计**产品格** ${WD_STATS_DG_PRODUCT} 件(合计 ${WD_STATS_DESIGN})。向方案侧问料况;方案侧无应答则报创始人。"
+            else
+              # 产品格 0:合计非空只说明**别的线**有缺设计件(工具/档面/基座债),⛔ 派工席的活。
+              #   ⛔ 静默丢掉:仍落日志留痕,只是不打扰任何人——「没料」与「有料但不归你」要分得开。
+              rm -f "$_fg_mark" 2>/dev/null || true
+              fuelgap=2
+              echo "[$(date '+%F %T')] ℹ️ 料断档(产品格 0,⛔ 告警):缺设计合计 ${WD_STATS_DESIGN} 件=工具 ${WD_STATS_DG_TOOL:-?}·其他 ${WD_STATS_DG_OTHER:-?}${WD_STATS_DG_DEGRADED:+ ⚠️降级按合计};补齐它们产不出可发的产品片 ⇒ ⛔ 催派工席问料" >> "$WD_LOG"
+            fi
           fi
         fi
       elif [ "$nofuel" -eq 0 ]; then

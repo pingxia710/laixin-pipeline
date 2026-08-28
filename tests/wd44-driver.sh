@@ -135,7 +135,7 @@ case "$MODE" in
     # #186(2026-08-29):夹具须带轨列三格——真实 stats 自 6b29398 起就输出它们。
     #   ⛔ 停在旧四字段:那会让本条一直跑**降级路径**,而降级路径与正常路径的日志/判据都不同,
     #   于是「测的是哪条路」和「口径对不对」在绿灯面同形。降级路径由 #186 降级向那条专测。
-    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0\n'; }
+    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0 design_product=2 design_tool=0 design_other=0\n'; }
     wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
     export WD_INTERVAL=1
     wd_loop >/dev/null 2>&1 &
@@ -143,13 +143,63 @@ case "$MODE" in
     sleep 3
     kill "$WPID" 2>/dev/null || true
     wait "$WPID" 2>/dev/null || true
-    fuelgap_count="$(grep -c '料断档:缺设计 2 件' "$BOARD_F" 2>/dev/null || true)"
+    fuelgap_count="$(grep -c '料断档:缺设计产品格 2 件' "$BOARD_F" 2>/dev/null || true)"
     nudge_count=0
     if [ -f "$TMPD/nudge.txt" ]; then nudge_count="$(wc -l < "$TMPD/nudge.txt" | tr -d ' ')"; fi
     echo "FUELGAP_COUNT=$fuelgap_count"
     echo "NUDGE_COUNT=$nudge_count"
     echo "--- watchdog ---"; cat "$WD_LOG" 2>/dev/null || echo "(空)"
     echo "--- nudge ---"; cat "$TMPD/nudge.txt" 2>/dev/null || echo "(空)"
+    ;;
+  fuelgap-nonprod)   # #186-bis(2026-08-29):缺设计**合计非空但产品格 0** ⇒ ⛔ 告警派工席
+    # 实撞=看门狗报「料断档:缺设计 2 件」并要求走「问方案侧 → 无应答报创始人」,而那 2 件实测是
+    #   11B 流程纪律 + 钓不钓基座存量债 ⇒ 补齐产不出任何可发的产品片,派工席照程序走了一整轮才自证「不是我的活」。
+    # ⛔ 静默丢掉:仍落日志留痕(ℹ️ 行),只是不 board、不 nudge、不置告警标记
+    #   ——「没料」与「有料但不归你」要分得开;置了标记会把下一次**真**断档的首报吃掉。
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    lane_busy(){ return 1; }
+    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0 design_product=0 design_tool=1 design_other=1\n'; }
+    wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
+    export WD_INTERVAL=1
+    wd_loop >/dev/null 2>&1 &
+    WPID=$!
+    sleep 3
+    kill "$WPID" 2>/dev/null || true
+    wait "$WPID" 2>/dev/null || true
+    echo "BOARD_ALERT_COUNT=$(grep -c '🔴 料断档' "$BOARD_F" 2>/dev/null || true)"
+    echo "NUDGE_COUNT=$([ -f "$TMPD/nudge.txt" ] && wc -l < "$TMPD/nudge.txt" | tr -d ' ' || echo 0)"
+    echo "INFO_LINE=$(grep -c 'ℹ️ 料断档(产品格 0' "$WD_LOG" 2>/dev/null || true)"
+    echo "MARK_EXISTS=$([ -f "${WD_FUELGAP_ALERTED:-$EV_DIR/fuelgap.alerted}" ] && echo yes || echo no)"
+    echo "--- watchdog ---"; cat "$WD_LOG" 2>/dev/null || echo "(空)"
+    ;;
+  fuelgap-upgrade)   # #186-bis 三态位关键路径:产品格由 0 变 >0 ⇒ 真断档**必须**报出来
+    # ⛔ 只测「产品格 0 不报」:那条通过、而升级路径坏掉时,现象是**真断档永远不报**,
+    #   而「吃掉了」与「本来就没有」在告警面同形 —— 正是本夜反复出现的那一族。
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    lane_busy(){ return 1; }
+    # 前两拍产品格 0(只记 ℹ️),之后转 2(应升级为真告警)
+    cmd_stats(){
+      local _n; _n="$(cat "$TMPD/statcalls" 2>/dev/null || echo 0)"; _n=$((_n+1)); echo "$_n" > "$TMPD/statcalls"
+      if [ "$_n" -le 2 ]; then printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0 design_product=0 design_tool=1 design_other=1\n'
+      else printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0 design_product=2 design_tool=0 design_other=0\n'; fi
+    }
+    wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
+    export WD_INTERVAL=1
+    # 🔴 必须让 TABLE 的 mtime 每拍变化,否则 wd_fuel 的 mtime 缓存**不会重跑 cmd_stats**
+    #   ⇒ 夹具只被调用一次、产品格永远停在首次读数,而现象是「升级路径坏了」——
+    #   实为**测试自己没让状态变化到达被测对象**。首版实撞:REAL_ALERT=0 而三态位其实是对的。
+    ( while :; do touch "$TABLE" 2>/dev/null || true; sleep 1; done ) & TOUCHPID=$!
+    wd_loop >/dev/null 2>&1 &
+    WPID=$!
+    sleep 6
+    kill "$WPID" "$TOUCHPID" 2>/dev/null || true
+    wait "$WPID" 2>/dev/null || true
+    echo "INFO_LINE=$(grep -c 'ℹ️ 料断档(产品格 0' "$WD_LOG" 2>/dev/null || true)"
+    echo "REAL_ALERT=$(grep -c '🔴 料断档:缺设计产品格 2 件' "$BOARD_F" 2>/dev/null || true)"
+    echo "NUDGE_COUNT=$([ -f "$TMPD/nudge.txt" ] && wc -l < "$TMPD/nudge.txt" | tr -d ' ' || echo 0)"
+    echo "--- watchdog ---"; cat "$WD_LOG" 2>/dev/null || echo "(空)"
     ;;
   ka-hold)   # P0(2026-08-28):保活关闭态 ⇒ 对派工席完全惰性(零拉起零告警),且关闭条按状态转移只出声一次
     relay_enabled(){ return 1; }
@@ -212,10 +262,10 @@ case "$MODE" in
     wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
     export WD_INTERVAL=1
     _gen(){ wd_loop >/dev/null 2>&1 & WPID=$!; sleep 3; kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true; }
-    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0\n'; }
-    _gen; echo "GEN1_COUNT=$(grep -c '料断档:缺设计 2 件' "$BOARD_F" 2>/dev/null || true)"
+    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0 design_product=2 design_tool=0 design_other=0\n'; }
+    _gen; echo "GEN1_COUNT=$(grep -c '料断档:缺设计产品格 2 件' "$BOARD_F" 2>/dev/null || true)"
     [ -f "$EV_DIR/fuelgap.alerted" ] && echo "MARK_AFTER_GEN1=present" || echo "MARK_AFTER_GEN1=absent"
-    _gen; echo "GEN2_TOTAL=$(grep -c '料断档:缺设计 2 件' "$BOARD_F" 2>/dev/null || true)"
+    _gen; echo "GEN2_TOTAL=$(grep -c '料断档:缺设计产品格 2 件' "$BOARD_F" 2>/dev/null || true)"
     grep -q '料断档持续' "$WD_LOG" 2>/dev/null && echo "GEN2_PERSIST_LINE=yes" || echo "GEN2_PERSIST_LINE=no"
     # 代 3:燃料出现——看门狗判燃料走 ev_next_ready(⛔ 只看 stats 的 ready 数),沙盒给 A 轨一片 ready
     cmd_stats(){ printf 'ready=1 selfwrite=0 design=0 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0\n'; }

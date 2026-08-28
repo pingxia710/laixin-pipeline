@@ -1544,13 +1544,45 @@ t "#44 绊线:relay 死跑 wd_loop 一拍——宿主存活+重生失败大声�
   'out="$(bash "$0" beat "$1")"; grep -q "HOST=alive" <<< "$out" && grep -q "中继重生失败" <<< "$out" && ! grep -q "起窗中止" <<< "$out"' \
   "$WDD" "$LANE"
 t "#夜间断链:全轨空闲且 0/0/缺设计 fixture 跑真 wd_loop 两拍——料断档与戳派工各恰一次,并留下三桶读数" bash -c \
-  'out="$(bash "$0" fuelgap "$1")"; grep -q "FUELGAP_COUNT=1" <<< "$out" && grep -q "NUDGE_COUNT=1" <<< "$out" && grep -q "燃料读数 ready=0 selfwrite=0(产品0·工具0·其他0) design=2 pending=0" <<< "$out" && grep -q "料断档:缺设计 2 件" <<< "$out"' \
+  'out="$(bash "$0" fuelgap "$1")"; grep -q "FUELGAP_COUNT=1" <<< "$out" && grep -q "NUDGE_COUNT=1" <<< "$out" && grep -q "燃料读数 ready=0 selfwrite=0(产品0·工具0·其他0) design=2 pending=0" <<< "$out" && grep -q "料断档:缺设计产品格 2 件" <<< "$out"' \
   "$WDD" "$LANE"
 # ⭐ 2026-08-29 值守实撞(04:50 / 05:24 两条料断档各紧跟一次自换代):去重位只在内存,#136 exec 后归零 ⇒ 每次 release 再报一次并再催派工席问料。
 #   绊线:同一沙盒三代——代 2 不得再报(标记在盘上)且 wd.log 明写「持续」;燃料出现后标记必须清掉(否则下一次真断档会被吞)。
 t "#料断档落盘去重:自换代后同一断档 ⛔ 再报(代1=1 · 代2 仍=1 · 代2 记「持续」)" bash -c \
   'out="$(bash "$0" fuelgap-regen "$1")"; grep -q "GEN1_COUNT=1" <<< "$out" && grep -q "MARK_AFTER_GEN1=present" <<< "$out" && grep -q "GEN2_TOTAL=1" <<< "$out" && grep -q "GEN2_PERSIST_LINE=yes" <<< "$out"' \
   "$WDD" "$LANE"
+# ── #186-bis(2026-08-29 方案窗口第三十七任):料断档只对**产品格**成立 ⛔ 取 design 合计 ──────────
+#   实撞=看门狗对派工席报「料断档:缺设计 2 件」并要求走「问方案侧 → 无应答报创始人」程序,
+#   而那 2 件实测是 11B 流程纪律 + 钓不钓基座存量债(design_product=0)——补齐产不出任何可发的产品片,
+#   派工席照程序走了一整轮(问料 → 得答 → 报创始人)才自证「这不是我的活」。
+#   与 #186 的 selfwrite 桶完全同构,只是换了个桶;轨列判据两桶**共用一份** `_track_bucket` ⛔ 各写一份。
+t "#186-bis 阴性:缺设计合计非空但产品格 0 ⇒ ⛔ 上看板 ⛔ 催派工席 ⛔ 置告警标记(仍落日志留痕)" bash -c \
+  'out="$(bash "$0" fuelgap-nonprod "$1")"
+   grep -q "BOARD_ALERT_COUNT=0" <<< "$out" || { echo "误上看板"; exit 1; }
+   grep -q "NUDGE_COUNT=0" <<< "$out" || { echo "误催派工席"; exit 2; }
+   grep -q "INFO_LINE=1" <<< "$out" || { echo "日志留痕应恰 1 行(0=静默丢掉 · >1=每拍刷屏):$(grep INFO_LINE= <<< "$out")"; exit 3; }
+   grep -q "MARK_EXISTS=no" <<< "$out" || { echo "置了告警标记会吃掉下一次真断档首报"; exit 4; }' \
+  "$(dirname "$0")/wd44-driver.sh" "$LANE"
+# 🔴 三态位的关键路径:0=未处理 · 1=已真告警 · 2=已记 ℹ️。⛔ 只测「产品格 0 不报」——
+#   那条通过而升级路径坏掉时,现象是**真断档永远不报**,而「被吃掉」与「本来就没有」在告警面同形。
+t "#186-bis 升级:产品格由 0 变 >0 ⇒ 真断档必须报出来(⛔ 被 ℹ️ 态吃掉)" bash -c \
+  'out="$(bash "$0" fuelgap-upgrade "$1")"
+   grep -q "INFO_LINE=1" <<< "$out" || { echo "ℹ️ 态异常:$(grep INFO_LINE= <<< "$out")"; exit 1; }
+   grep -q "REAL_ALERT=1" <<< "$out" || { echo "升级后真断档未报(被 ℹ️ 态吃掉):$(grep REAL_ALERT= <<< "$out")"; exit 2; }
+   grep -q "NUDGE_COUNT=1" <<< "$out" || exit 3' \
+  "$(dirname "$0")/wd44-driver.sh" "$LANE"
+# 降级向:机器行无 design_product ⇒ 回落 design 合计并**照常告警** ⛔ 静默(与 #186 同一原则)。
+# ⚠️ 本条自建夹具 ⛔ 借用后文的 $T137——那个变量在本行之后才定义,借用会拿到空串,
+#   而空串路径下 source 失败的现象是「测试红了」而非「变量没定义」,两者在报错面同形。
+DG186="$(mktemp -d)"; sed -n "/^wd_fuel()/,/^}/p" "$LANE" > "$DG186/f.sh"
+t "#186-bis 降级:机器行不含 design_product ⇒ 回落合计并仍判有断档 ⛔ 静默" bash -c \
+  'source "$1/f.sh"; TABLE="$1/t"; : > "$TABLE"; EV_PENDING="$1/p"; : > "$EV_PENDING"
+   ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+   cmd_stats(){ printf "ready=0 selfwrite=0 design=3 pending=0\n"; }
+   WD_STATS_TABLE_MTIME=""; wd_fuel >/dev/null
+   [ "${WD_STATS_DG_PRODUCT:-}" = 3 ] || { echo "未回落合计:${WD_STATS_DG_PRODUCT:-空}"; exit 1; }
+   [ "${WD_STATS_DG_DEGRADED:-}" = 1 ] || exit 2' _ "$DG186"
+rm -rf "$DG186"
 t "#料断档落盘去重:燃料出现即清标记(⛔ 吞掉下一次真断档)" bash -c \
   'out="$(bash "$0" fuelgap-regen "$1")"; grep -q "MARK_AFTER_FUEL=absent" <<< "$out"' \
   "$WDD" "$LANE"
@@ -3539,7 +3571,7 @@ mkdir -p "$T137/home/.laixin-events.d"
 printf '1|待验片|P\n' > "$T137/home/.laixin-events.d/pending.ack"
 t "#夜间断链:stats --machine 复用既有四桶分桶,输出可自写/缺设计/待认领读数" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
-  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1 short=0 selfwrite_product=1 selfwrite_tool=0 selfwrite_other=0" ]' _ "$T137" "$LANE"
+  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1 short=0 selfwrite_product=1 selfwrite_tool=0 selfwrite_other=0 design_product=1 design_tool=0 design_other=0" ]' _ "$T137" "$LANE"
 # 第一片(2026-08-28 创始人改判后首片,创始人窗口直修;料窗 B 附带发现 a+b):
 #   a 三格行原被 len(cells)<4 静默跳过——既不进已识别也不进未识别(总表 L8032 实撞)⇒ 报「格数不足」;
 #   b 可自写合计会被读成产品线有活(当日 8 件全是 11B 工具件而两条开发轨空)⇒ 按片名前缀拆产品/工具。
@@ -3562,7 +3594,7 @@ EOF
 mkdir -p "$T1S/home/.laixin-events.d" "$T1S/kb"; : > "$T1S/board"   # 人读面读看板节奏节,夹具须有空看板 ⛔ 只给 --machine 用的最小集
 t "第一片a:排队节三格行报 short=1 ⛔ 静默跳过(machine 行)" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
-  [ "$out" = "ready=0 selfwrite=3 design=0 pending=0 short=1 selfwrite_product=1 selfwrite_tool=1 selfwrite_other=1" ]' _ "$T1S" "$LANE"
+  [ "$out" = "ready=0 selfwrite=3 design=0 pending=0 short=1 selfwrite_product=1 selfwrite_tool=1 selfwrite_other=1 design_product=0 design_tool=0 design_other=0" ]' _ "$T1S" "$LANE"
 t "第一片a+b:人读面点名三格片且可自写按轨列拆为 产品 1 / 工具 1 / 其他 1(⛔ 前缀名单)" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats 2>/dev/null)"
   grep -q "格数不足 1 行" <<< "$out" && grep -q "· 三格片" <<< "$out" && grep -q "产品 1(A/B/C 轨)/ 工具 1 / 其他 1" <<< "$out"' _ "$T1S" "$LANE"

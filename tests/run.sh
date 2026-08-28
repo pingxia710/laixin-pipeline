@@ -3759,8 +3759,11 @@ t "宪法头模板本体含两句(射程红线停车句挂第 8 条 / 文案口�
   grep -q "片射程与红线冲突=停车场景" "$m" && grep -q "单列「文案口径」节" "$m"'
 t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kickoff 卡「结构未知字段族先实测」句在" bash -c '
   grep -q "挂起 ≠ 停工" "$1/skills/laixin-pipeline/SKILL.md" && grep -q "本卡只放指针 ⛔ 抄全文" "$1/skills/laixin-pipeline/SKILL.md" &&
-  grep -q "结构未知的字段族,prompt ⛔ 替开发方假设结构" "$1/skills/laixin-kickoff/SKILL.md" &&
-  grep -q "^### 1-ter. 关系判据的样本值必须能让「通过」与「失败」分开" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
+  grep -q "^## 一 四个核对" "$1/skills/laixin-kickoff/SKILL.md" &&
+  grep -q "^## 四 负面清单" "$1/skills/laixin-kickoff/SKILL.md" &&
+  grep -q "档案-kickoff卡原文-20260828.md" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "kickoff 卡防回胖(≤90 行且 ≤5000 bytes;2026-08-28 创始人定:一分钟卡,加一条先删一条)" bash -c '
+  f="$1/skills/laixin-kickoff/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 90 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 5000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "pipeline 派工卡防回胖(≤220 行且 ≤12000 bytes)" bash -c '
   f="$1/skills/laixin-pipeline/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 220 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 12000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "pipeline 瘦身不丢六条操作程序:三条已迁协作流程权威节,另三条卡内留精确指针" bash -c '
@@ -3972,7 +3975,7 @@ t "verify-from 在第四仓找到 commit 后按该仓核分支与 main" bash -c 
 t "verify-from 假 commit 仍拒绝并逐仓列出搜索路径" bash -c '
   out="$(env HOME="$1/home" LAIXIN_REPO="$1/repo" "$2" verify-from "$1/missing-delivery.md" --dry 2>&1)"; rc=$?
   [ "$rc" -ne 0 ] && grep -q "产品仓:$1/repo" <<< "$out" && grep -q "工具仓:$1/home/Developer/laixin-pipeline" <<< "$out" && grep -q "钓不钓仓:$1/home/钓不钓" <<< "$out" && grep -q "基座仓:$1/home/钓不钓-基座" <<< "$out"' _ "$TBN" "$LANE"
-t "kickoff 卡:发车闸门第 7 条分支命名闸在,指向版本流卡 A-4 单点源" bash -c 'grep -q "^7\. \*\*分支命名闸" "$1/skills/laixin-kickoff/SKILL.md" && grep -q "版本流卡 A-4 为单点源" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "kickoff 卡:分支命名指针在(照版本流卡 A-4 为单点源;2026-08-28 缩编后在 §三 机器代人一句 ⛔ 编号条)" bash -c 'grep -q "分支名照版本流卡 A-4 为单点源" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 rm -rf "$TBN"
 
 # ── 验收回执末行分类 × 正文一致性自检(2026-08-23;实证=B5 第二次回执) ──────────────────────────

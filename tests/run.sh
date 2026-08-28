@@ -3410,7 +3410,7 @@ t "#夜间断链:两份派工 BRIEF 同步为三桶事实+收方判断,⛔ 穷�
   a="$(sed -n "/^DISPATCH_BRIEF=/,/^# (DISPATCH/p" "$1")"
   b="$(sed -n "/^DISPATCH_BRIEF_KIMI=/,/^# ---- 派工权认领/p" "$1")"
   for brief in "$a" "$b"; do
-    grep -qF "三桶读数是你的事实面;可自写非空时,写单通常就是当下动作;拿不准按目标(吞吐不断链)自判并留痕" <<< "$brief" || exit 1
+    grep -qF "三桶读数是你的事实面;可自写非空时,写单就是当下动作——prompt 由你自己写、按批写(方案窗口交一批设计,一口气写完入排队节;卡点过了再写下一批),prompt-up 写单窗只作上下文扛不住时的备选;拿不准按目标(吞吐不断链)自判并留痕" <<< "$brief" || exit 1
     grep -qF "ready/可自写/待认领交付" <<< "$brief" || exit 1
     ! grep -qF "无在飞、无 ready、且 stats 可自写为零" <<< "$brief" || exit 1
   done' _ "$LANE"

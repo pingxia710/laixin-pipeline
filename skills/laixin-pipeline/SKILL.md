@@ -72,20 +72,18 @@ description: 来信平台 11B 开发流水线操作卡。派工、开发轨、�
 
 ## 4. 写 prompt 与 Gate2
 
-prompt 起草默认走一次性写单窗：
+**prompt 由派工窗口自己写、按批写**：方案窗口交一批设计，一口气写完入排队节；卡点过了再写下一批。写单窗只作上下文扛不住时的备选：
 
     laixin-lane prompt-up <片名> --pack <方案底稿.md>
-    laixin-lane peek-prompt <片名> 30
-    laixin-lane prompt-down <片名>
 
-写单交稿后，派工窗口做 Gate2，四项缺一不可：
+写完后派工窗口做 Gate2，四项缺一不可：
 
 1. 独立跑 laixin-lane prompt-lint <prompt>，不采信报告里的“已绿”；
 2. 抽核实测表 2–3 条；
 3. 发车当刻校准 main 基点、迁移号、worktree 号；
 4. 扫在飞/已写未发片的文件面与口径冲突。
 
-通过后顺序固定：kb-commit → 执行总表登记发车 → fresh → send → peek → 回收写单窗。缺料或缺裁定就把停车报告指针交方案窗口，派工方不补设计。
+通过后顺序固定：kb-commit → 执行总表登记发车 → fresh → send → peek。缺料或缺裁定就把停车报告指针交方案窗口，派工方不补设计。
 
 prompt 宪法头、测试矩阵、交付契约正文见：
 

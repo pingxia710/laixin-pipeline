@@ -2619,6 +2619,19 @@ V16F2="$(mktemp)"; cp "$V16F" "$V16F2"
 # #105 端到端:真 git 仓 + 中文路径 + 默认 quotePath——跑生产同款管道,防「fixture 全绿真环境必不命中」重演
 V105="$(mktemp -d)"; ( cd "$V105" && git init -q . && mkdir -p 索引 && echo a > 索引/wiki-测试词汇表.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm base && echo b >> 索引/wiki-测试词汇表.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
 t "#105 E2E:中文路径经 quotePath=false 管道命中" bash -c 'source "'"$V16F2"'"; git -C "'"$V105"'" -c core.quotePath=false log --name-only --format= HEAD~1..HEAD | ev_material_filter | grep -q 词汇表'
+# 守护: 11B-三个探针面选错
+T3PA="$(mktemp -d)"; mkdir -p "$T3PA/sessions" "$T3PA/socks"
+awk "/^seat_liveness\\(\\)\\{/,/^}/" "$LANE" > "$T3PA/sl.sh"
+printf '%s\n' '| **收班席** | `seat-closed`(**已收班 ⛔ 在班**; 历史 **第一任在班**、**第二任在班**) | — | 任 | 时 | 人 |' > "$T3PA/closed.md"
+printf '%s\n' '| **真在班席** | `seat-active`(**第三任在班**; 历史 **第二任已收班**) | — | 任 | 时 | 人 |' > "$T3PA/active.md"
+printf '%s\n' '| **待接席** | **待接**(`seat-pending` 历史 **第一任在班**) | — | 任 | 时 | 人 |' > "$T3PA/pending.md"
+t "三探针 A 阴性1/2:当前已收班、历史两处在班 ⇒ 零告警" env LAIXIN_CC_SESS="$T3PA/sessions" LAIXIN_CC_SOCKS="$T3PA/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=three-probe-none bash -c '
+  source "$1/sl.sh"; [ -z "$(seat_liveness "$1/closed.md")" ]' _ "$T3PA"
+t "三探针 A 阳性1/1:当前真在班、历史已收班 ⇒ 恰一条原形告警" env LAIXIN_CC_SESS="$T3PA/sessions" LAIXIN_CC_SOCKS="$T3PA/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=three-probe-none bash -c '
+  source "$1/sl.sh"; out="$(seat_liveness "$1/active.md")"; [ "$(grep -c "注册表标在班但无活会话" <<< "$out")" -eq 1 ] && grep -q "seat-active" <<< "$out"' _ "$T3PA"
+t "三探针 A 阴性2/2:当前待接、历史在班 ⇒ 零告警" env LAIXIN_CC_SESS="$T3PA/sessions" LAIXIN_CC_SOCKS="$T3PA/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=three-probe-none bash -c '
+  source "$1/sl.sh"; [ -z "$(seat_liveness "$1/pending.md")" ]' _ "$T3PA"
+rm -rf "$T3PA"
 t "#130 席位活性:在班无会话=报(受控真火形态)" bash -c 'awk "/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl-fn.sh; source /tmp/lx-sl-fn.sh; printf "%s\n" "| **测试席位甲** | **\`pingxia-zz\`**(**第一任在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; seat_liveness /tmp/lx-sl-reg.md | grep -q "pingxia-zz"'
 t "#130 席位活性:待接/看门狗托管不报(⛔ 交接期与 tmux 内误报)" bash -c 'source /tmp/lx-sl-fn.sh; printf "%s\n%s\n" "| **席位丙** | **待接**(\`pingxia-yy\` 已交班) | — | 任 | 时 | 人 |" "| **席位丁** | \`dwin\`(tmux 内,看门狗托管;**在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; [ -z "$(seat_liveness /tmp/lx-sl-reg.md)" ]'
 t "#130 席位活性:首版 awk 分列假阴性已钉死(cell 必须取到第 3 竖列)" bash -c 'grep -q "cut -d.|. -f3" "'"$LANE"'" && ! grep -qE "awk -F. \\\\\| . .\{print .2\}" "'"$LANE"'"'

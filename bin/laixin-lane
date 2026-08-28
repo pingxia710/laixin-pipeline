@@ -286,6 +286,8 @@ seat_src_infer(){  # tmux 窗口名 → 角色名;推不出则空。⛔ 依赖�
   local w; w="$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || true)"
   case "$w" in
     dispatch)  echo "派工窗口" ;;
+    opt-11b)   echo "11B优化窗" ;;
+    tool-*)    echo "11B工具窗" ;;
     relay)     echo "中继窗口" ;;
     relay-*)   echo "一次性中继窗" ;;
     m-*)       echo "机动窗" ;;
@@ -2207,6 +2209,12 @@ $(head -5 <<< "$dirty")"
 }
 
 cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 git 远端」):三仓 push committed 历史
+  # 🔴 **本命令没有 dry-run**,且**未知参数一律拒 ⛔ 静默吞**(2026-08-29 创始人实撞:
+  #   跑 `laixin-lane backup --dry` 以为是演练,而 case 分支当时写作 `backup) cmd_backup ;;`
+  #   —— 参数被整个丢弃,**实际对三仓真跑了一次 push**)。
+  # ⚠️ 「演练」与「真跑」在命令行上同形,是本系统最危险的一类失效:它没有报错、没有痕迹差别,
+  #   只有事后核 remote 才看得出。⇒ 宁可拒起,也 ⛔ 让一个拼错/臆造的旗标看起来像生效了。
+  [ $# -eq 0 ] || die "backup 不接受参数(收到:$*)——**本命令没有 dry-run**。要知道会推哪些仓:读 bin/laixin-lane 的仓表(REPOS)或跑 laixin-lane doctor;要只看不推:自己对目标仓跑 git push --dry-run"
   # 只推已提交历史——未提交的是活窗口的在途工作,由各窗口按纪律及时提交;⛔ 本命令不 add 不 commit
   # (备份自动 commit -A 会与窗口的精确提交互扫且污染史,见复盘页#9)
   # #38:推送瞬时失败自动重试一轮——重启窗口期网络/代理未就绪会造成首轮全败误报(08-19 08:55
@@ -3319,6 +3327,43 @@ handover_unpaired(){  # <看板尾部文件> <复盘页文件> → stdout=有交
   rm -f "$_bf"
 }
 
+# [#181 2026-08-29 11B 主持第六任] 席位名抽取:按**模式**认名 ⛔ 取「整格第一个反引号 token」。
+# 病灶(dispatch 第七十八任受控实验钉死):台账时刻自证纪律(#107/#145)要求写 `date` 实测,
+#   只要谁把它写在会话名前面,原 `head -1` 就抓到 `date`,找不到该会话 ⇒ **投假崩告警**;
+#   而假崩的下游动作是「人工核并开新窗接任」⇒ **真实风险是造出第二个派工窗**(doctor 硬判据)。
+#   机制两半缺一不炸:探针对「待接」直接 continue ⇒ 雷埋下后要等状态翻成「在班」才引爆(实测休眠 10 分钟)。
+# ⛔ 取 token 黑名单(date/doctor/ctx/main…):要穷举,而**漏一个词的表现恰好是假崩** ⇒ 漏了不会有人告诉你。
+# ⛔ 拿「同名 session/窗口是否存在」当取名判据:那是判活本身,席位真崩时反而取不到名 ⇒ 把真崩降级成读不出。
+# ⇒ 判据取**名字形态**(与运行时存在性无关);认不出一律 **stderr 提醒 + 不判崩**(角色卡:失效必须降级 ⛔ 反向)。
+seat_name_pick(){  # <格文本> → stdout=席位名;认不出则空且返回 1
+  # 两层,顺序不可换:
+  #   ①**形态白名单**——命中即最可靠(已知席位名族)。
+  #   ②**命令名黑名单之外的第一个 token**——**保持修改前的原行为**,只把明确是命令名的跳过。
+  # 🔴 为什么必须有②:只留①会**把不在白名单里的真死席降级成「读不出」⇒ 漏报**。
+  #   这不是推演,是本次改动**被自己的测试套件当场抓住**:`#130` 三条(幽灵席 `no-such-win-zz` /
+  #   PID 复用 `seatlive-reused` / 真死席 `seatlive-dead`)在只有①的版本上全红——它们都是合法的
+  #   「该报而没报」。⇒ 修法必须是**只加不减**:①提高准确率,②守住原有的不漏报。
+  # ⚠️ 失效方向(如实标 ⛔ 粉饰):②的黑名单**漏一个命令名** ⇒ 该词被当成席位名 ⇒ 退回原病灶(假崩);
+  #   但**不比修改前更差**(修改前是无条件取第一个)。而①每扩一族,②被用到的机会就少一分。
+  local cell="$1" tok
+  # ① 形态白名单
+  for tok in $(printf '%s' "$cell" | grep -oE '`[a-z0-9-]+`' | tr -d '`'); do
+    case "$tok" in
+      dispatch|relay|dispatch-11c|opt-11b|lane-a|lane-b|lane-c) printf '%s' "$tok"; return 0 ;;
+      pingxia-*|seat-*|scribe-*|verify-*|prompt-*|relay-*|m-*|tool-*) printf '%s' "$tok"; return 0 ;;
+    esac
+  done
+  # ② 跳过命令名后的第一个 token(⛔ 把 dispatch/relay 等**既是命令又是席位名**的词放进黑名单——
+  #    它们已被①先行命中;放进来会让真席位取不到名)
+  for tok in $(printf '%s' "$cell" | grep -oE '`[a-z0-9-]+`' | tr -d '`'); do
+    case "$tok" in
+      date|doctor|ctx|stats|whoholds|log|merge|release|keepalive|evidence|vdown|fresh|send|peek|verify|main|git|kb-commit|prompt-lint|merge-guard) continue ;;
+      *) printf '%s' "$tok"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死席一行;全活零输出(#130,2026-08-20 十五任优化轮)
   # 失败样本=11B pingxia-37 晨退无接班登记零告警,靠 relay 人工 ListAgents 发现——tmux 外窗口无看门狗,
   # 「窗口崩了」与「窗口安静」在一切机器眼里同形。射程=注册表「当前在班」表里 tmux 外的席位;
@@ -3346,8 +3391,13 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
     esac
     printf '%s' "$current" | grep -Eq '待接|已收班|已交班|已终止' && continue
     printf '%s' "$current" | grep -q '在班' || continue
-    name="$(printf '%s' "$cell" | grep -oE '`[a-z0-9-]+`' | head -1 | tr -d '\`')"
-    [ -n "$name" ] || continue
+    name="$(seat_name_pick "$cell")" || name=""
+    if [ -z "$name" ]; then
+      # ⛔ 写 stdout:下游(doctor :2595 / ev_loop :3793)把 stdout 每行当一个**死席**消费,
+      #   往那儿写「读不出」等于换一种方式假崩。走 stderr ⇒ 现有 2>/dev/null 天然不误判。
+      printf '⚠️ 席位活性:角色「%s」标在班,但本格反引号 token 里认不出席位名 ⇒ **跳过判活 ⛔ 判崩**;写法=会话名须是本格**第一个**反引号 token(形如 dispatch / relay / pingxia-XX / lane-a),⛔ 把 `date` 等命令名写在它前面\n' "$role" >&2
+      continue
+    fi
     # 🔴 tmux 内但非看门狗托管的应召席(2026-08-23 监测窗实撞,dispatch-11c 首例):分窗后 laixin-11c
     #   会话里的机务窗两局之间合法待命 >45 分钟,心跳启发式必误报(19:16 实发一条假阳性,dispatch 61
     #   人工核后判假)。名下窗口机器可见时**直接测窗口 ⛔ 推断**:窗在且 pane 不是登录 shell ⇒ 活;
@@ -8464,7 +8514,7 @@ case "${1:-}" in
   copy-audit) shift; cmd_copy_audit "$@" ;;  # 词表覆盖率审计(#28):三列清单+统计,报告非闸门零命中不改退出码
   merge-guard) shift; cmd_merge_guard "$@" ;;  # ref级合并主树同步闸(#24):只判不动手,⛔ 代跑 reset --hard
   opt-status) shift; cmd_opt_status "$@" ;;  # 优化条目销号率(#33):按节独立统计,未知节/解析失效自曝退非零
-  backup) cmd_backup ;;                      # 异地备份:三仓 push(P0-2)
+  backup) shift; cmd_backup "$@" ;;          # 异地备份:三仓 push(P0-2);⛔ 丢参(丢了 --dry 就成了「以为演练实为真跑」)
   release) shift; cmd_release "$@" ;;        # #25 部署原子化:已提交版→版本化路径+原子换软链(脏树拒发)
   review-env) shift; cmd_review_env "$@" ;;  # #五-18 评审环境一键化:实操卡命令序翻译;down 杀净+验尸(⛔ 留孤儿)
   table-lint) shift; cmd_table_lint "$@" ;;  # #51 台账写盘断言库:列数+残留竖线+行首唯一(kb-commit 涉台账自动只核新增行)

@@ -2733,7 +2733,7 @@ V105="$(mktemp -d)"; ( cd "$V105" && git init -q . && mkdir -p 索引 && echo a 
 t "#105 E2E:中文路径经 quotePath=false 管道命中" bash -c 'source "'"$V16F2"'"; git -C "'"$V105"'" -c core.quotePath=false log --name-only --format= HEAD~1..HEAD | ev_material_filter | grep -q 词汇表'
 # 守护: 11B-三个探针面选错
 T3PA="$(mktemp -d)"; mkdir -p "$T3PA/sessions" "$T3PA/socks"
-awk "/^seat_liveness\\(\\)\\{/,/^}/" "$LANE" > "$T3PA/sl.sh"
+awk "/^seat_name_pick\\(\\)\\{/,/^}/;/^seat_liveness\\(\\)\\{/,/^}/" "$LANE" > "$T3PA/sl.sh"
 printf '%s\n' '| **收班席** | `seat-closed`(**已收班 ⛔ 在班**; 历史 **第一任在班**、**第二任在班**) | — | 任 | 时 | 人 |' > "$T3PA/closed.md"
 printf '%s\n' '| **真在班席** | `seat-active`(**第三任在班**; 历史 **第二任已收班**) | — | 任 | 时 | 人 |' > "$T3PA/active.md"
 printf '%s\n' '| **待接席** | **待接**(`seat-pending` 历史 **第一任在班**) | — | 任 | 时 | 人 |' > "$T3PA/pending.md"
@@ -2744,12 +2744,53 @@ t "三探针 A 阳性1/1:当前真在班、历史已收班 ⇒ 恰一条原形�
 t "三探针 A 阴性2/2:当前待接、历史在班 ⇒ 零告警" env LAIXIN_CC_SESS="$T3PA/sessions" LAIXIN_CC_SOCKS="$T3PA/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=three-probe-none bash -c '
   source "$1/sl.sh"; [ -z "$(seat_liveness "$1/pending.md")" ]' _ "$T3PA"
 rm -rf "$T3PA"
-t "#130 席位活性:在班无会话=报(受控真火形态)" bash -c 'awk "/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl-fn.sh; source /tmp/lx-sl-fn.sh; printf "%s\n" "| **测试席位甲** | **\`pingxia-zz\`**(**第一任在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; seat_liveness /tmp/lx-sl-reg.md | grep -q "pingxia-zz"'
+# ⭐ #181 绊线(2026-08-29;病灶=seat_liveness 取「整格第一个反引号 token」,撞上台账 `date` 实测的书写纪律
+#    ⇒ 抓到 date、找不到该会话 ⇒ **假崩告警**,而假崩的下游动作是「开新窗接任」⇒ 真实风险=第二个派工窗)。
+#    fixture 形态硬约束(dispatch 第七十八任受控实验供):**状态词必须在括号外**且取「在班」——
+#    写成「…(在班)」会被 current 解析截掉、根本走不到取名那一步,**全绿而什么都没证明**(与 #180 方法论① 同族)。
+T181="$(mktemp -d)"; mkdir -p "$T181/sessions" "$T181/socks"
+sed -n "/^seat_name_pick()/,/^}/p" "$LANE" > "$T181/sl.sh"; sed -n "/^seat_liveness()/,/^}/p" "$LANE" >> "$T181/sl.sh"
+printf '%s\n' '| **测试席位** | ✅ **第一任在班**(2026-08-29 00:00:00 `date` 实测);`pingxia-zz9` 通道 .claude-b | 一 | 时 | 人 |' > "$T181/date-first-active.md"
+printf '%s\n' '| **测试席位** | 🔁 **待接第二任**(2026-08-29 00:00:00 `date` 实测);`pingxia-zz9` 通道 .claude-b | 一 | 时 | 人 |' > "$T181/date-first-pending.md"
+printf '%s\n' '| **测试席位** | `pingxia-zz9`(✅ **第一任在班**;2026-08-29 00:00:00 `date` 实测) | 一 | 时 | 人 |' > "$T181/name-first-active.md"
+printf '%s\n' '| **测试席位** | ✅ **第一任在班**(2026-08-29 `date` 实测,`doctor` 与 `stats` 已跑) | 一 | 时 | 人 |' > "$T181/no-name.md"
+t "#181 矩阵(date 在前 × 在班):认出 pingxia-zz9 ⛔ 抓成 date(回退成 head -1 即红)" env LAIXIN_CC_SESS="$T181/sessions" LAIXIN_CC_SOCKS="$T181/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=t181-none bash -c '
+  source "$1/sl.sh"; out="$(seat_liveness "$1/date-first-active.md" 2>/dev/null)"
+  grep -q "|pingxia-zz9|" <<< "$out" || exit 1
+  ! grep -q "|date|" <<< "$out"' _ "$T181"
+t "#181 矩阵(date 在前 × 待接):零输出(交接期 ⛔ 判崩)" env LAIXIN_CC_SESS="$T181/sessions" LAIXIN_CC_SOCKS="$T181/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=t181-none bash -c '
+  source "$1/sl.sh"; [ -z "$(seat_liveness "$1/date-first-pending.md" 2>/dev/null)" ]' _ "$T181"
+t "#181 矩阵(名在前 × 在班):原本就对的那格 ⛔ 被修法带坏" env LAIXIN_CC_SESS="$T181/sessions" LAIXIN_CC_SOCKS="$T181/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=t181-none bash -c '
+  source "$1/sl.sh"; grep -q "|pingxia-zz9|" <<< "$(seat_liveness "$1/name-first-active.md" 2>/dev/null)"' _ "$T181"
+t "#181 认不出名 ⇒ stdout 零 + stderr 提醒(失效降级 ⛔ 反向判崩)" env LAIXIN_CC_SESS="$T181/sessions" LAIXIN_CC_SOCKS="$T181/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=t181-none bash -c '
+  source "$1/sl.sh"; e="$1/e.txt"; o="$(seat_liveness "$1/no-name.md" 2>"$e")"
+  [ -z "$o" ] || exit 1
+  grep -q "认不出席位名" "$e"' _ "$T181"
+t "#181 取名两层且顺序不可换:①形态白名单 → ②命令名黑名单外兜底(只加不减)" bash -c '
+  fn="$(sed -n "/^seat_name_pick()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  [ -n "$fn" ] || exit 1
+  w="$(grep -n "pingxia-\*" <<< "$fn" | head -1 | cut -d: -f1)"
+  b="$(grep -n "date|doctor" <<< "$fn" | head -1 | cut -d: -f1)"
+  [ -n "$w" ] && [ -n "$b" ] || exit 1
+  [ "$w" -lt "$b" ] || exit 1
+  grep -q "return 1" <<< "$fn"' "$LANE"
+# ⭐ 行为绊线(⛔ 只做静态断言):本条钉的是**第一版修法的真实缺陷** —— 只有形态白名单时,
+#    `#130` 三条(幽灵席 / PID 复用 / 真死席)全红,因为白名单外的名字被降级成「读不出」⇒ **漏报真死席**。
+#    漏报比误报更难发现(没人会来告诉你「本该报的没报」),所以这条守的是**不漏报**那一侧。
+printf '%s\n' '| **幽灵席** | **`no-such-win-zz`**(**在班**) | 一 | 时 | 人 |' > "$T181/ghost.md"
+t "#181 不漏报:白名单外的席位名仍须如实报 ⛔ 降级成读不出(只有①时此条红)" env LAIXIN_CC_SESS="$T181/sessions" LAIXIN_CC_SOCKS="$T181/socks" LAIXIN_SEATLIVE_TMUX_SESSIONS=t181-none bash -c '
+  source "$1/sl.sh"; grep -q "|no-such-win-zz|" <<< "$(seat_liveness "$1/ghost.md" 2>/dev/null)"' _ "$T181"
+t "#181-b 来源映射补 opt-11b/tool-*(缺席致看板来源落成「手工」⇒ 归因面全黑)" bash -c '
+  fn="$(sed -n "/^seat_src_infer()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  grep -q "opt-11b)" <<< "$fn" || exit 1
+  grep -q "tool-\*)" <<< "$fn"' "$LANE"
+rm -rf "$T181"
+t "#130 席位活性:在班无会话=报(受控真火形态)" bash -c 'awk "/^seat_name_pick\\(\\)\\{/,/^}/;/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl-fn.sh; source /tmp/lx-sl-fn.sh; printf "%s\n" "| **测试席位甲** | **\`pingxia-zz\`**(**第一任在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; seat_liveness /tmp/lx-sl-reg.md | grep -q "pingxia-zz"'
 t "#130 席位活性:待接/看门狗托管不报(⛔ 交接期与 tmux 内误报)" bash -c 'source /tmp/lx-sl-fn.sh; printf "%s\n%s\n" "| **席位丙** | **待接**(\`pingxia-yy\` 已交班) | — | 任 | 时 | 人 |" "| **席位丁** | \`dwin\`(tmux 内,看门狗托管;**在班**) | — | 任 | 时 | 人 |" > /tmp/lx-sl-reg.md; [ -z "$(seat_liveness /tmp/lx-sl-reg.md)" ]'
 t "#130 席位活性:首版 awk 分列假阴性已钉死(cell 必须取到第 3 竖列)" bash -c 'grep -q "cut -d.|. -f3" "'"$LANE"'" && ! grep -qE "awk -F. \\\\\| . .\{print .2\}" "'"$LANE"'"'
 # ── #130-tmux 直测半边(2026-08-23 监测实撞:dispatch-11c 两局之间合法待命 >45 分钟,心跳启发式 19:16 假阳性)──
 t "#130 tmux 内活窗(pane 非 shell)⇒ 直测判活不报〔应召机务窗形态〕" bash -c '
-  awk "/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl2-fn.sh; source /tmp/lx-sl2-fn.sh
+  awk "/^seat_name_pick\\(\\)\\{/,/^}/;/^seat_liveness\\(\\)\\{/,/^}/" "'"$LANE"'" > /tmp/lx-sl2-fn.sh; source /tmp/lx-sl2-fn.sh
   tmux kill-session -t lxslt-$$ 2>/dev/null
   tmux new-session -d -s lxslt-$$ -n live-seat-zz -x 40 -y 8 "sleep 25"   # -n 显式命名=tmux 自动关 automatic-rename(rename-window 会被自动改名顶回)
   sleep 1   # 等 tmux 已从登录 shell 切到目标进程，⛔ 把启动瞬间误判为死席
@@ -2766,7 +2807,7 @@ t "#130 tmux 无此窗 ⇒ 仍走心跳判如实报(失效可见性不降)" bash
 
 # ── #130-tmux 外活席:空闲不等于崩；procStart 对 ps lstart 防 PID 复用 ──
 T130E="$(mktemp -d)"
-sed -n "/^seat_liveness()/,/^}/p" "$LANE" > "$T130E/sl.sh"
+sed -n "/^seat_name_pick()/,/^}/p" "$LANE" > "$T130E/sl.sh"; sed -n "/^seat_liveness()/,/^}/p" "$LANE" >> "$T130E/sl.sh"
 mkdir -p "$T130E/home/.claude-test/sessions" "$T130E/socks"
 sleep 900 & T130E_LIVE=$!
 sleep 900 & T130E_REUSED=$!
@@ -3692,7 +3733,7 @@ rm -rf "$TMP108"
 # ── 11B 待定轨首批四件(2026-08-23 方案窗口第二十三任点名排序):①seat_liveness 多通道 ④Waiting 收口 ③假交付降级 ⑤#107 按 diff ──
 echo "== 11B 待定轨首批:seat_liveness 多通道 · lane_busy Waiting 收口 · 假交付降级 · #107 按 diff =="
 TB4="$(mktemp -d)"
-sed -n "/^seat_liveness()/,/^}/p" "$LANE" > "$TB4/sl.sh"
+sed -n "/^seat_name_pick()/,/^}/p" "$LANE" > "$TB4/sl.sh"; sed -n "/^seat_liveness()/,/^}/p" "$LANE" >> "$TB4/sl.sh"
 mkdir -p "$TB4/home/.claude-b/sessions" "$TB4/home/.claude-official/sessions" "$TB4/socks"
 now_ms=$(( $(date +%s) * 1000 ))
 printf '{"name":"pingxia-a4","updatedAt":%s}\n' "$now_ms" > "$TB4/home/.claude-official/sessions/111.json"

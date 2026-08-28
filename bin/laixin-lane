@@ -4810,6 +4810,7 @@ ctx_sample_scan(){  # stdin=看板新增行:见 dispatch 交班条 ⇒ 记起点
 QUOTA_WARN="${LAIXIN_QUOTA_WARN:-96}"       # 预警线(创始人 08-23:96 提醒一次「还差几点」)
 QUOTA_SWITCH="${LAIXIN_QUOTA_SWITCH:-98}"   # 切换线(创始人 08-23:用到 98%=剩 2% 时切派工席)
 QUOTA_ALERTED="$EV_DIR/quota.alerted"       # 已提醒登记 mail|线|重置时刻(同一重置窗口内每线只提醒一次)
+WD_FUELGAP_ALERTED="$EV_DIR/fuelgap.alerted" # 料断档已告警标记(2026-08-29 值守实撞:fuelgap 只在内存,#136 自换代 exec 后归零 ⇒ 每次 release 都再报一次料断档并再催派工席问料;落盘后同一断档只报一次,燃料出现即清)
 quota_snapshot(){  # → stdout 每账号一行 "mail|weekly%|weekly_reset|session%|session_reset";读不到退 1(⛔ 读成充裕)
   # LAIXIN_USAGE_RAW=<json 文件> 时直接读文件(测试/离线);否则 2s 探活 + 15s 拉取(与 channel_quota_verdict 同一对超时)
   local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}" raw=""
@@ -7766,18 +7767,25 @@ wd_loop() {
         nofuel=0
         if [ "$fuelgap" -eq 0 ]; then
           fuelgap=1
-          echo "[$(date '+%F %T')] 🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备" >> "$WD_LOG"
-          board "看门狗" "🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备——向方案侧问料况;方案侧无应答则报创始人"
-          wd_nudge "【看门狗】料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备。向方案侧问料况;方案侧无应答则报创始人。"
+          local _fg_mark="${WD_FUELGAP_ALERTED:-$EV_DIR/fuelgap.alerted}"
+          if [ -f "$_fg_mark" ]; then
+            # 同一断档已告警过(标记在盘上):本进程是自换代/重起后的新一代,⛔ 再报一次——单事故单告警(P0)的落盘半边
+            echo "[$(date '+%F %T')] 料断档持续(已告警于 $(head -1 "$_fg_mark" 2>/dev/null || echo 读不出));本代接续 ⛔ 重复告警" >> "$WD_LOG"
+          else
+            printf '%s design=%s\n' "$(date '+%F %T')" "$WD_STATS_DESIGN" > "$_fg_mark" 2>/dev/null || true
+            echo "[$(date '+%F %T')] 🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备" >> "$WD_LOG"
+            board "看门狗" "🔴 料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备——向方案侧问料况;方案侧无应答则报创始人"
+            wd_nudge "【看门狗】料断档:缺设计 ${WD_STATS_DESIGN} 件,下一批料未备。向方案侧问料况;方案侧无应答则报创始人。"
+          fi
         fi
       elif [ "$nofuel" -eq 0 ]; then
-        fuelgap=0; nofuel=1
+        fuelgap=0; nofuel=1; rm -f "${WD_FUELGAP_ALERTED:-$EV_DIR/fuelgap.alerted}"
         echo "[$(date '+%F %T')] 无行动燃料:空闲轨零 ready/可自写、无待认领交付,另有轨在飞 ⇒ 派工席静默属健康态(#137)" >> "$WD_LOG"
         board "看门狗" "无行动燃料(#137):空闲轨零 ready/可自写、无待认领交付——等待中的验收/中继/机动/工具窗不算派工燃料,不戳不按静默重起"
       fi
       continue
     fi
-    fuelgap=0
+    fuelgap=0; rm -f "${WD_FUELGAP_ALERTED:-$EV_DIR/fuelgap.alerted}"
     if [ "$nofuel" -eq 1 ]; then
       nofuel=0
       echo "[$(date '+%F %T')] 行动燃料出现(${_fuel}),恢复戳/重起节奏;静默已 ${silent}s ⇒ 按到戳点处理" >> "$WD_LOG"

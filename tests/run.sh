@@ -1546,6 +1546,14 @@ t "#44 绊线:relay 死跑 wd_loop 一拍——宿主存活+重生失败大声�
 t "#夜间断链:全轨空闲且 0/0/缺设计 fixture 跑真 wd_loop 两拍——料断档与戳派工各恰一次,并留下三桶读数" bash -c \
   'out="$(bash "$0" fuelgap "$1")"; grep -q "FUELGAP_COUNT=1" <<< "$out" && grep -q "NUDGE_COUNT=1" <<< "$out" && grep -q "燃料读数 ready=0 selfwrite=0(产品0·工具0·其他0) design=2 pending=0" <<< "$out" && grep -q "料断档:缺设计 2 件" <<< "$out"' \
   "$WDD" "$LANE"
+# ⭐ 2026-08-29 值守实撞(04:50 / 05:24 两条料断档各紧跟一次自换代):去重位只在内存,#136 exec 后归零 ⇒ 每次 release 再报一次并再催派工席问料。
+#   绊线:同一沙盒三代——代 2 不得再报(标记在盘上)且 wd.log 明写「持续」;燃料出现后标记必须清掉(否则下一次真断档会被吞)。
+t "#料断档落盘去重:自换代后同一断档 ⛔ 再报(代1=1 · 代2 仍=1 · 代2 记「持续」)" bash -c \
+  'out="$(bash "$0" fuelgap-regen "$1")"; grep -q "GEN1_COUNT=1" <<< "$out" && grep -q "MARK_AFTER_GEN1=present" <<< "$out" && grep -q "GEN2_TOTAL=1" <<< "$out" && grep -q "GEN2_PERSIST_LINE=yes" <<< "$out"' \
+  "$WDD" "$LANE"
+t "#料断档落盘去重:燃料出现即清标记(⛔ 吞掉下一次真断档)" bash -c \
+  'out="$(bash "$0" fuelgap-regen "$1")"; grep -q "MARK_AFTER_FUEL=absent" <<< "$out"' \
+  "$WDD" "$LANE"
 # ⭐ 豁免不泄漏:首起路径(人手跑 relay,无豁免旗)守卫必须照旧拦
 t "#44 绊线:首起路径双中继守卫照旧(无豁免旗;2026-08-23 起判据=tmux 外有会话名 relay* 即真双中继,必拦且 rc 非零)" bash -c \
   'out="$(bash "$0" guard "$1")"; grep -q "GUARD_RC=1" <<< "$out" && grep -q "起窗中止" <<< "$out"' \

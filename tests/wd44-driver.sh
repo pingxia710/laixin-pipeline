@@ -203,5 +203,26 @@ case "$MODE" in
     echo "CAPPED_LOG_COUNT=$(grep -c '已达重起上限' "$WD_LOG" 2>/dev/null || true)"
     echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
     ;;
+  fuelgap-regen)
+    # 2026-08-29 值守实撞:料断档去重只在内存,#136 自换代 exec 后归零 ⇒ 每次 release 再报一次(04:50 / 05:24 各紧跟一次自换代)。
+    # 同一沙盒跑三代:代1 断档(应告警 1)→ 代2 断档(标记在 ⇒ 应 0 且 wd.log 记「持续」)→ 代3 燃料出现(标记应被清)
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    lane_busy(){ return 1; }
+    wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
+    export WD_INTERVAL=1
+    _gen(){ wd_loop >/dev/null 2>&1 & WPID=$!; sleep 3; kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true; }
+    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0\n'; }
+    _gen; echo "GEN1_COUNT=$(grep -c '料断档:缺设计 2 件' "$BOARD_F" 2>/dev/null || true)"
+    [ -f "$EV_DIR/fuelgap.alerted" ] && echo "MARK_AFTER_GEN1=present" || echo "MARK_AFTER_GEN1=absent"
+    _gen; echo "GEN2_TOTAL=$(grep -c '料断档:缺设计 2 件' "$BOARD_F" 2>/dev/null || true)"
+    grep -q '料断档持续' "$WD_LOG" 2>/dev/null && echo "GEN2_PERSIST_LINE=yes" || echo "GEN2_PERSIST_LINE=no"
+    # 代 3:燃料出现——看门狗判燃料走 ev_next_ready(⛔ 只看 stats 的 ready 数),沙盒给 A 轨一片 ready
+    cmd_stats(){ printf 'ready=1 selfwrite=0 design=0 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0\n'; }
+    ev_next_ready(){ echo 测试片甲; }
+    _gen
+    [ -f "$EV_DIR/fuelgap.alerted" ] && echo "MARK_AFTER_FUEL=present" || echo "MARK_AFTER_FUEL=absent"
+    echo "--- watchdog ---"; cat "$WD_LOG" 2>/dev/null || echo "(空)"
+    ;;
   *) echo "未知 mode:$MODE" >&2; exit 2 ;;
 esac

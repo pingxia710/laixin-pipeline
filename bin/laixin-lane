@@ -6060,7 +6060,7 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--engin
     redline='——**本引擎没有 claude 的工具层禁令,以下以本指令为准,越线即整件作废**:⛔ git push ⛔ git merge ⛔ git reset --hard ⛔ 提交到 main ⛔ laixin-lane send/fresh/up/down/claim/dispatch/dmsg/halt/resurrect/release/verify*/relay*/m-up/m-down/tool-up/tool-down/account-switch'
   fi
   local msg
-  msg="$(cat <<EOF
+  IFS= read -r -d '' msg <<EOF || true
 你是 laixin 开发流水线的 **11B/11C 开发维护窗**(引擎=${TOOL_ENGINE};tmux 托管、一次性应召;由派工窗口遇到工具/流水线问题时按件拉起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
 **你与 A/B 开发轨同构,唯一差别是仓与射程**:它们维护 ~/来信平台(产品),**你只维护 11B(工具仓)与 11C(圆桌工具侧)**。
 
@@ -6081,6 +6081,24 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--engin
   → git add <显式文件> ⛔ git add -A → commit → git show <commit> -- <文件> **逐 hunk 认领**(⛔ 只看 --stat)
 **修 bug 必附绊线测试**,fixture 要构造成**修复被回退时会变红**;**自动机制类交付必须真环境首火**(隔离 tmux 会话 + LAIXIN_SESSION/BOARD/KB/REPO 四 env 指沙盒)——单测全绿 ≠ 真环境可用。
 
+沙盒内已知做不了的动作清单(附注;只有同一动作 + 同一拒绝签名才命中):
+1. tmux socket 创建被拒
+   原始错误串样例:error creating /private/tmp/tmux-501/lxte (Operation not permitted)
+2. git index 元数据不可写
+   原始错误串样例:fatal: Unable to create '/Users/pingxia/Developer/laixin-pipeline/.git/worktrees/laixin-pipeline-terminal-events/index.lock': Operation not permitted
+3. tool-versions 账写入被拒
+   原始错误串样例:/Users/pingxia/.local/bin/laixin-lane: line 2337: /Users/pingxia/.laixin-events.d/tool-versions: Operation not permitted
+4. 沙盒代理端口不可达
+   原始错误串样例:fatal: unable to access 'https://github.com/pingxia710/laixin-pipeline.git/': Failed to connect to 127.0.0.1 port 7890 after 0 ms: Couldn't connect to server
+5. worktree FETCH_HEAD 元数据只读
+   原始错误串样例:error: cannot open '/Users/pingxia/Developer/laixin-pipeline/.git/worktrees/laixin-pipeline-terminal-events/FETCH_HEAD': Operation not permitted
+路径、worktree 名、tmux socket 名与脚本行号可以随当轮漂移;只有同一动作 + 同一拒绝签名才属于对应项,不能仅凭 Operation not permitted 泛化。
+撞到清单内:报告逐字引用对应清单条目,贴当轮完整原始串,结论逐字写「沙盒阻断」;停止把它当环境事实追查,继续完成沙盒内仍可完成的代码/测试步骤。
+清单内不是健康证明,也不是跳过交付义务:被挡住的 fetch/add/commit/full test 仍如实写「未完成」,由派工方在沙盒外复核/承接。
+代理项只报告;禁止尝试本机 7896,禁止改代理/PAC/IP/凭据。
+撞到清单外:仍按 prompt 的 〇-ter 写逐字原始串、端口 / 路径 / 文件名 / 整条命令、分离的结论,并继续逐项取证;File name too long 与 No such file or directory 明确属于清单外样例。
+工具窗禁止自行扩写清单;新形态只进报告,归派工/方案方裁定。
+
 🔴 **提交纪律(与开发轨逐字同款,AGENTS ③)**:你在本 worktree 里**开分支开发**,**⛔ 直接提交 main ⛔ git merge ⛔ git push**;
    分支名 tool-<件名简写>;**合并由派工窗口在复核后做**。⛔ 自己跑 laixin-lane release(发布=换代,归合并方)。
 
@@ -6099,7 +6117,6 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--engin
 收摊:报告落盘后你的活就结束了;派工窗口会 laixin-lane tool-down ${item} 回收本窗(你 ⛔ 自收——看板要留「回收」条且来源是回收方)。
 看板记录用 laixin-lane log "..."。
 EOF
-)"
   local busy; busy="$(tool_running || true)"
   # 信任前置核**按引擎分叉**:
   #   codex —— m-up 同款,`~/.codex/config.toml` 预写(TOML 声明式,库内有先例);未信任必被对话框挡住 ⇒ 起窗前 die。

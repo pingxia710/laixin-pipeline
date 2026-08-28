@@ -4144,6 +4144,35 @@ t "#165 起动串与开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd(那
 #   而互指注释是本仓惯例 ⇒ 该适配的是判据(今日第二次撞同族,前一次是 dry_win_clash 的 ensure_session)。
 t "#165 点名指令(**代码部分**)零反引号〔病灶:反引号在 $(cat <<EOF) 里被求值,首火实撞 run.sh: command not found + grep usage〕" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"; ! grep -q "\`" <<< "$seg"' 
+# 守护: 11B-工具窗沙盒动作清单
+t "#165 工具窗沙盒动作清单:五面+两向判据共用单个 msg,删任一签名真红" bash -c '
+  note_ok(){
+    local file="$1" seg note other want
+    seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "$file")"
+    note="$(sed -n "/沙盒内已知做不了的动作清单/,/提交纪律/p" <<< "$seg")"
+    for want in \
+      "tmux socket 创建被拒" "error creating /private/tmp/tmux-501/lxte (Operation not permitted)" \
+      "git index 元数据不可写" "index.lock'"'"': Operation not permitted" \
+      "tool-versions 账写入被拒" "/Users/pingxia/.laixin-events.d/tool-versions: Operation not permitted" \
+      "沙盒代理端口不可达" "Failed to connect to 127.0.0.1 port 7890 after 0 ms" \
+      "worktree FETCH_HEAD 元数据只读" "FETCH_HEAD'"'"': Operation not permitted" \
+      "逐字引用对应清单条目" "当轮完整原始串" "结论逐字写「沙盒阻断」" \
+      "仍按 prompt 的 〇-ter" "端口 / 路径 / 文件名 / 整条命令" \
+      "File name too long" "No such file or directory" \
+      "代理项只报告;禁止尝试本机 7896" "禁止改代理/PAC/IP/凭据"; do
+      grep -Fq "$want" <<< "$note" || return 1
+    done
+    ! grep -Fq "\`" <<< "$note" && ! grep -Fq "\$(" <<< "$note" || return 1
+    grep -q "printf.*\\\$msg.*native_run/brief.txt" <<< "$seg" || return 1
+    grep -q "printf.*\\\$msg.*laixin-toolmsg" <<< "$seg" || return 1
+    [ "$(grep -c "沙盒内已知做不了的动作清单" <<< "$seg")" -eq 1 ] || return 1
+    other="$(sed -n "/^cmd_prompt_up()/,/^}/p" "$file")"
+    ! grep -Fq "沙盒内已知做不了的动作清单" <<< "$other"
+  }
+  T="$(mktemp -d)"; note_ok "'"$LANE"'" || { rm -rf "$T"; exit 1; }
+  sed "/error creating \/private\/tmp\/tmux-501\/lxte (Operation not permitted)/d" "'"$LANE"'" > "$T/lane"
+  note_ok "$T/lane" && { rm -rf "$T"; exit 2; }
+  rm -rf "$T"'
 t "#165 指令写死开分支纪律(⛔ 直接提交 main;与开发轨 AGENTS ③ 同款)" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"; grep -q "开分支开发" <<< "$seg" && grep -q "⛔ 直接提交 main" <<< "$seg"'
 t "#165 指令写死射程:只维护 11B/11C ⛔ 产品代码" bash -c '

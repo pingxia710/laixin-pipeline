@@ -3839,6 +3839,10 @@ t "两张卡:pipeline 卡「挂起 ≠ 停工」只放指针 ⛔ 抄全文;kicko
   grep -q "档案-kickoff卡原文-20260828.md" "$1/skills/laixin-kickoff/SKILL.md"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "kickoff 卡防回胖(≤90 行且 ≤5000 bytes;2026-08-28 创始人定:一分钟卡,加一条先删一条)" bash -c '
   f="$1/skills/laixin-kickoff/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 90 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 5000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "acceptance 验收卡防回胖(≤90 行且 ≤5000 bytes;2026-08-29 创始人「测试那块按方案改」=闸线确认)" bash -c '
+  f="$1/skills/laixin-acceptance/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 90 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 5000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
+t "acceptance 卡:机器契约末行形态在卡上(【验收回执】通过 / 打回 <类型:方向性|工程>)" bash -c '
+  f="$1/skills/laixin-acceptance/SKILL.md"; grep -q "【验收回执】通过" "$f" && grep -q "【验收回执】打回 <类型:方向性|工程>" "$f" && grep -q "所基于的main commit" "$f"' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "pipeline 派工卡防回胖(≤220 行且 ≤12000 bytes)" bash -c '
   f="$1/skills/laixin-pipeline/SKILL.md"; [ "$(wc -l < "$f" | tr -d " ")" -le 220 ] && [ "$(wc -c < "$f" | tr -d " ")" -le 12000 ]' _ "$(cd "$(dirname "$0")/.." && pwd)"
 t "pipeline 瘦身不丢六条操作程序:三条已迁协作流程权威节,另三条卡内留精确指针" bash -c '

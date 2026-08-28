@@ -7957,7 +7957,7 @@ cmd_verify() {
 
   # 交接只传客观信息;不含任何预期暗示(派工窗口写了 prompt,它的预期就是污染源)
   msg="$(cat <<EOF
-你是本片的**一次性验收窗口**(验完即弃,不复用)。起手式:调 Skill laixin-pipeline,认领"验收窗口"角色,然后按 laixin-acceptance 七步做独立验收。
+你是本片的**一次性验收窗口**(验完即弃,不复用)。起手式:调 Skill laixin-pipeline,认领"验收窗口"角色,然后按 laixin-acceptance 的四问做独立验收(目标结果出现了吗 / 真实动线走到终点了吗 / 越过边界没有 / 判据不是恒绿吧)。
 
 片名:$slice
 prompt:$prompt
@@ -7966,12 +7966,12 @@ commit:$commit
 交付报告(=验收记录):$report
 
 硬要求:
-1. 先重读 prompt 与交付报告,再动手;报告没提的验证项就是最该亲手跑的;
+1. 先读 prompt 的动线、边界、判据,再动手;交付报告里的话不当证据——你换的是观察面,不是再读一遍;
 2. 全量测试自己跑,判据是"全部 passed 且 zero failed",不是测试数相等;
 3. 验收隔离:主树可能被 Codex 占用,一律用独立验收 worktree 或 ref 级操作,禁止在共享工作树 checkout/merge;
-4. **最后一步必须**:rebase 到当时 main,并在 rebase 后的状态上复跑全量——"验的就是合的";
+4. 先 rebase 到当刻 main 作为**最终基点**,全量在最终基点跑一次——"验的就是合的";只在基点实质变化或出现随机失败时重跑;
 5. **证据必须落盘**:凡结论要引用的输出,一律加 "2>&1 | tee $evid/<片名>.log" 落到该目录再引用——
-   全量两次 → pytest-1.log / pytest-2.log;迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
+   全量 → pytest.log(重跑才有 pytest-2.log);迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
    证据目录:$evid
    结论里每个数字、每处代码引用,必须能在这些文件里逐字 grep 到;记不起的重新跑工具,**不得凭印象写**。
    派工窗口会用 laixin-lane evidence $slice 复查,对不上即退回重验;
@@ -8013,7 +8013,7 @@ EOF
   # 交接只传客观信息;五项客观信息与 claude 版完全同构(片名/prompt/分支/commit/报告路径)
   msg="$(cat <<EOF
 你是本片的**一次性验收窗口**(引擎=Codex,验完即弃,不复用)。开场第一件事:通读
-/Users/pingxia/.codex/skills/laixin-acceptance/SKILL.md 全文(独立验收卡单点源),然后按它的七步做独立验收。
+/Users/pingxia/.codex/skills/laixin-acceptance/SKILL.md 全文(独立验收卡单点源),然后按它的四问做独立验收(目标结果出现了吗 / 真实动线走到终点了吗 / 越过边界没有 / 判据不是恒绿吧)。
 
 片名:$slice
 prompt:$prompt
@@ -8022,12 +8022,12 @@ commit:$commit
 交付报告(=验收记录):$report
 
 硬要求:
-1. 先重读 prompt 与交付报告,再动手;报告没提的验证项就是最该亲手跑的;
+1. 先读 prompt 的动线、边界、判据,再动手;交付报告里的话不当证据——你换的是观察面,不是再读一遍;
 2. 全量测试自己跑,判据是"全部 passed 且 zero failed",不是测试数相等;
 3. 验收隔离:主树可能被开发轨占用,一律用独立验收 worktree 或 ref 级操作,禁止在共享工作树 checkout/merge;
-4. **最后一步必须**:rebase 到当时 main,并在 rebase 后的状态上复跑全量——"验的就是合的";
+4. 先 rebase 到当刻 main 作为**最终基点**,全量在最终基点跑一次——"验的就是合的";只在基点实质变化或出现随机失败时重跑;
 5. **证据必须落盘**:凡结论要引用的输出,一律加 "2>&1 | tee $evid/<名字>.log" 落到该目录再引用——
-   全量两次 → pytest-1.log / pytest-2.log;迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
+   全量 → pytest.log(重跑才有 pytest-2.log);迁移回环 → migration.log;自写复现脚本 → repro.log;红线/范围检查 → scope.log。
    证据目录:$evid
    结论里每个数字、每处代码引用,必须能在这些文件里逐字 grep 到;记不起的重新跑工具,**不得凭印象写**。
    派工窗口会用 laixin-lane evidence $slice 复查,对不上即退回重验;

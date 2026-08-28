@@ -1565,6 +1565,52 @@ t "#44:resurrect --full 内无裸 cmd_relay/cmd_dispatch/cmd_watchdog 调用" ba
 t "#44:起窗函数内后台块显式脱离 stdout(防拖住 wd_loop 的命令替换读 15s)" bash -c \
   'for f in cmd_relay cmd_dispatch; do sed -n "/^${f}()/,/^}/p" "$0" | grep -qE "^[[:space:]]*\) &$" && exit 1; done; :' "$LANE"
 
+echo "== 7a-bis. P0 派工席保活开关 keepalive + 单事故单告警(2026-08-28 R4 第一条命令;隔离 fixture,零真实 tmux) =="
+# 起因(实测,⛔ 转述):创始人直令「派工窗干完直接关闭」撞上机器缺口——派工席**默认托管、没有可清的标记**,
+#   只能走「让重起上限自然用掉」;而达上限后 wd_loop **每拍在第 1 分支 continue**:
+#   ① 看板被同一条告警灌到 148 条(08-28 20:53 实测,仍 +1/分钟);
+#   ② silent 累积与 wd_fuel 都排在该分支之后 ⇒ **燃料判定自 18:17 起一拍未跑**,当晚夜测数字①的采数面随之失效。
+# ⭐ ②的形态值得记:**「计数被清零」与「计数从来没在涨」,在事后读数上完全同形**——都只是一个小数字。
+# 三条主绊线全为**执行级**(跑真 wd_loop),回退验证已实做:拆保活闸门 ⇒ DISPATCH_CALLS 0→3、关闭条 1→0;
+#   拆单告警闸 ⇒ 达上限条 1→4(正是真环境那 148 条的同一形态)。
+t "P0 绊线:保活关闭态跑真 wd_loop ≥3 拍——零拉起 + 关闭条恰一条 + 零「派工窗口不在」告警" bash -c \
+  'out="$(bash "$0" ka-hold "$1")"; grep -q "DISPATCH_CALLS=0" <<< "$out" && grep -q "HOLD_BOARD_COUNT=1" <<< "$out" && grep -q "NOTIN_BOARD_COUNT=0" <<< "$out"' \
+  "$WDD" "$LANE"
+t "P0 绊线:运行中恢复保活——抑制期零拉起,清标记后意外死亡仍被拉起(证明抑制 ⛔ 把自愈整个打死)" bash -c \
+  'out="$(bash "$0" ka-restore "$1")"; a="$(sed -n "s/^CALLS_AFTER=//p" <<< "$out")"; grep -q "CALLS_HELD=0" <<< "$out" && grep -q "RESTORE_BOARD_COUNT=1" <<< "$out" && [ "${a:-0}" -ge 1 ]' \
+  "$WDD" "$LANE"
+t "P0 绊线:达上限告警按**状态转移**恰一条(⛔ 时间窗去重;回退成每拍一条即 ≥3)" bash -c \
+  'out="$(bash "$0" ka-capped "$1")"; grep -q "CAPPED_BOARD_COUNT=1" <<< "$out" && grep -q "CAPPED_LOG_COUNT=1" <<< "$out"' \
+  "$WDD" "$LANE"
+# 模式级:闸门位置。挂在派工分支**之后**等于「关了还会被拉起一拍」;照 relay 的 relay_enabled 同款要求。
+t "P0 模式绊线:wd_loop 内保活闸门排在 dispatch 分支之前" bash -c \
+  'b="$(awk "/^wd_loop\(\)/,/^}/" "$0" | grep -n "dispatch_keepalive_off" | head -1 | cut -d: -f1)";
+   d="$(awk "/^wd_loop\(\)/,/^}/" "$0" | grep -n "dispatch_alive" | head -1 | cut -d: -f1)";
+   [ -n "$b" ] && [ -n "$d" ] && [ "$b" -lt "$d" ]' "$LANE"
+# 方向性(最容易被「顺手优化」掉):看门狗的自愈路径 ⛔ 自己清关闭标记——否则关闭令会被它要抑制的那个动作解除。
+t "P0 方向绊线:wd_loop 内不清关闭标记(只有人工/boot 链的 cmd_dispatch 才清)" bash -c \
+  'body="$(sed -n "/^wd_loop()/,/^}/p" "$0")"; ! grep -q "rm -f \"\$DISPATCH_KEEPALIVE_OFF\"" <<< "$body"' "$LANE"
+tout "P0:cmd_dispatch 起窗即恢复保活(与 relay 起窗即写启用标记对称)" 'rm -f "$DISPATCH_KEEPALIVE_OFF"' \
+  sed -n "/^cmd_dispatch()/,/^}/p" "$LANE"
+# ⭐ 同批修的第四份载体:「无 ready = 有意空闲」在 ev 侧是**活的判定分支**,前三份文字改完它照旧生效。
+tout "P0 同批:ev 侧「有意空闲」判定已含第三桶 selfwrite(⛔ 停在两桶)" "ev_selfwrite_pending" \
+  sed -n "/^ev_watch_target()/,/^}/p" "$LANE"
+tout "P0 同批:selfwrite 探针失效按有燃料(⛔ 因探针失效而静默)" 'WD_STATS_SELFWRITE:-?' \
+  sed -n "/^ev_selfwrite_pending()/,/^}/p" "$LANE"
+# keepalive 命令面:三态回显 + 接线 + 清标记(可观察面是「关不掉 vs 没关」不同形的唯一依据)
+KA="$(mktemp -d)"; KAS="lx-ka-nonexistent-$$"
+tout "keepalive 无参:默认托管态如实回显" "派工席保活:开" \
+  env LAIXIN_SESSION="$KAS" LAIXIN_DISPATCH_KEEPALIVE_OFF="$KA/none" LAIXIN_BOARD="$KA/b.md" "$LANE" keepalive
+printf '2026-08-28 21:00:00 测试\n' > "$KA/mark"
+tout "keepalive 无参:奉令关闭态回显含落令时刻与来源(标记 ⛔ 空文件)" "2026-08-28 21:00:00 测试" \
+  env LAIXIN_SESSION="$KAS" LAIXIN_DISPATCH_KEEPALIVE_OFF="$KA/mark" LAIXIN_BOARD="$KA/b.md" "$LANE" keepalive
+tout "keepalive on 已接线并清关闭标记" "派工席保活已恢复" \
+  env LAIXIN_SESSION="$KAS" LAIXIN_DISPATCH_KEEPALIVE_OFF="$KA/mark" LAIXIN_BOARD="$KA/b.md" "$LANE" keepalive on
+t "keepalive on 后标记确已不在(闸门真的开了)" bash -c '[ ! -f "'"$KA"'/mark" ]'
+tfail "keepalive 拒未知子命令(⛔ 静默当 status)" "只接受 off|on|status" \
+  env LAIXIN_SESSION="$KAS" LAIXIN_DISPATCH_KEEPALIVE_OFF="$KA/none" LAIXIN_BOARD="$KA/b.md" "$LANE" keepalive bogus
+rm -rf "$KA"
+
 echo "== 7b. #45 起窗看板来源=真实调用上下文(⛔ 硬编码「看门狗」) =="
 # 实撞(08-19 11:0x):创始人**手工**拉起 relay,看板记「看门狗 起中继窗口」,relay 第二任据此
 # 误判「看门狗保活有效」并正式推翻 #44 的失效判定(三层全错)——来源写「通常是谁」=为每一次

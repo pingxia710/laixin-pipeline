@@ -7,6 +7,11 @@
 #   guard : 首起路径(无豁免旗)直接调真 cmd_relay --fresh,输出 rc 与守卫报文(守卫必须照旧拦)
 #   manual-src : (#45)手工/在班窗口调用起窗成功路径,输出看板——来源必须随真实调用方,⛔「看门狗」
 #   fuelgap : 夜间断链 fixture=全轨空闲且 ready/selfwrite/pending=0、design>0,跑真 wd_loop ≥2 拍
+#   ka-hold    : (P0 2026-08-28)保活关闭态 fixture=派工席死 + 关闭标记在,跑真 wd_loop ≥3 拍
+#                输出 DISPATCH_CALLS(必须 0)与看板(关闭条必须恰 1 条、零「派工窗口不在」)
+#   ka-restore : 关闭态跑 2 拍 → **运行中清标记** → 再跑 ≥2 拍;证明抑制 ⛔ 把自愈整个打死
+#                输出 CALLS_HELD(必须 0)/ CALLS_AFTER(必须 ≥1)与「保活已恢复」条
+#   ka-capped  : 上限=1 的达上限 fixture,跑 ≥4 拍;达上限告警必须**恰 1 条**(回退成每拍一条即 ≥3)
 # 绊线判据(由 run.sh 断言,修复回退即变红):
 #   - beat 必须 HOST=alive(回退子 shell 隔离 ⇒ 守卫/超时 die 杀宿主 ⇒ HOST=dead)
 #   - beat 看板必须有「中继重生失败」大声条(回退大声报 ⇒ 缺条)
@@ -36,7 +41,7 @@ done
 grep -q '^caller_src()' "$LANE" && sed -n '/^caller_src()/,/^}/p' "$LANE" >> "$TMPD/fns.sh" \
   || printf 'caller_src(){ echo 手工; }\n' >> "$TMPD/fns.sh"
 # #136/#137(2026-08-22)引入的循环内新依赖:自换代四函数 + 燃料判据;对之前的代码同样可跑(缺则不抽)
-for fn in loop_self_gen loop_gen_record loop_reload_due loop_gen_label wd_fuel wd_fuel_advice wd_nudge_text; do
+for fn in loop_self_gen loop_gen_record loop_reload_due loop_gen_label wd_fuel wd_fuel_advice wd_nudge_text dispatch_keepalive_off; do
   grep -q "^${fn}()" "$LANE" && sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$TMPD/fns.sh"
 done
 
@@ -50,6 +55,8 @@ relay_alive() { return 1; }     # fixture:relay 已死(演练=杀掉它的 claud
 ev_alive()    { return 0; }     # 事件总线活着 ⇒ wd_loop 不会碰 cmd_events(pgrep/pkill 隔离)
 rival_relay_sessions(){ :; }    # 2026-08-23 守卫按身份:沙盒默认无 relay 名会话(guard 模式内另覆盖为有)
 dispatch_alive(){ return 0; }
+rival_holds_dispatch(){ return 1; }   # 沙盒默认无对手持有派工权(ka-* 模式专用;beat/fuelgap 走不到该分支)
+quota_sentinel_tick(){ :; }           # 额度哨兵惰性化(不读真仪表盘)
 dialog_sweep_win(){ return 1; }
 pane_hash()   { echo H; }
 lane_busy()   { return 0; }     # 两轨都忙 ⇒ 静默逻辑短路,专注 relay 分支
@@ -64,6 +71,7 @@ board(){ printf '| %s | %s |\n' "$1" "$2" >> "$BOARD_F" 2>/dev/null || true; }
 # #136/#137:wd_loop 启动即读 TABLE mtime、记 gen 文件;沙盒里给空表与沙盒 EV_DIR(set -u 下缺它们宿主会静默退出)
 #   ⚠️ guard 模式在独立子 bash 里 source 本文件,TMPD 不在其环境(set -u 下裸 $TMPD 即死)⇒ 自备沙盒目录
 _SB="${TMPD:-$(mktemp -d)}"; TABLE="$_SB/table.md"; : > "$TABLE"; EV_DIR="$_SB/ev"; mkdir -p "$EV_DIR"; EV_PENDING="$EV_DIR/pending"; RELAY_OUTBOX="$EV_DIR/outbox"
+DISPATCH_KEEPALIVE_OFF="${DISPATCH_KEEPALIVE_OFF:-$_SB/keepalive.off}"   # 顶层变量不被 fns.sh 抽取 ⇒ 测试侧补齐(同 CLAUDE_LAUNCHER);必须排在 _SB 之后,set -u 下引用未定义变量当场死
 ev_next_ready(){ :; }
 SESSION=lx-iso-44; RELAY_WIN=relay; DISPATCH_WIN=dispatch; WATCHDOG_WIN=watchdog
 RELAY_DENY=("Bash(x)"); RELAY_BRIEF=brief; RELAY_CDP_PORT=0; RELAY_MODEL=m
@@ -139,6 +147,58 @@ case "$MODE" in
     echo "NUDGE_COUNT=$nudge_count"
     echo "--- watchdog ---"; cat "$WD_LOG" 2>/dev/null || echo "(空)"
     echo "--- nudge ---"; cat "$TMPD/nudge.txt" 2>/dev/null || echo "(空)"
+    ;;
+  ka-hold)   # P0(2026-08-28):保活关闭态 ⇒ 对派工席完全惰性(零拉起零告警),且关闭条按状态转移只出声一次
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    dispatch_alive(){ return 1; }          # 派工席死:没有闸门时它每拍都会被拉起(这正是回退后的行为)
+    cmd_dispatch(){ echo call >> "$TMPD/calls.txt"; }
+    : > "$DISPATCH_KEEPALIVE_OFF"          # 奉令关闭标记在
+    export WD_INTERVAL=1
+    wd_loop >/dev/null 2>&1 &
+    WPID=$!
+    sleep 4
+    kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true
+    calls=0; [ -f "$TMPD/calls.txt" ] && calls="$(wc -l < "$TMPD/calls.txt" | tr -d ' ')"
+    echo "DISPATCH_CALLS=$calls"
+    echo "HOLD_BOARD_COUNT=$(grep -c '派工席保活已关闭' "$BOARD_F" 2>/dev/null || true)"
+    echo "NOTIN_BOARD_COUNT=$(grep -c '派工窗口不在' "$BOARD_F" 2>/dev/null || true)"
+    echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
+    ;;
+  ka-restore)   # P0:抑制 ⛔ 把自愈整个打死——运行中清标记后,意外死亡必须重新被拉起
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    dispatch_alive(){ return 1; }
+    cmd_dispatch(){ echo call >> "$TMPD/calls.txt"; }
+    : > "$DISPATCH_KEEPALIVE_OFF"
+    export WD_INTERVAL=1
+    wd_loop >/dev/null 2>&1 &
+    WPID=$!
+    sleep 3
+    held=0; [ -f "$TMPD/calls.txt" ] && held="$(wc -l < "$TMPD/calls.txt" | tr -d ' ')"
+    rm -f "$DISPATCH_KEEPALIVE_OFF"        # 运行中恢复保活(等同 laixin-lane keepalive on)
+    sleep 3
+    kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true
+    after=0; [ -f "$TMPD/calls.txt" ] && after="$(wc -l < "$TMPD/calls.txt" | tr -d ' ')"
+    echo "CALLS_HELD=$held"
+    echo "CALLS_AFTER=$after"
+    echo "RESTORE_BOARD_COUNT=$(grep -c '派工席保活已恢复' "$BOARD_F" 2>/dev/null || true)"
+    echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
+    ;;
+  ka-capped)   # P0:单事故单告警——上限=1,跑 ≥4 拍;达上限告警必须**恰 1 条**(回退成每拍一条即 ≥3,变红)
+    relay_enabled(){ return 1; }
+    loop_reload_due(){ return 1; }
+    dispatch_alive(){ return 1; }
+    cmd_dispatch(){ echo call >> "$TMPD/calls.txt"; }
+    rm -f "$DISPATCH_KEEPALIVE_OFF"
+    export WD_INTERVAL=1 WD_MAX_RESTART=1
+    wd_loop >/dev/null 2>&1 &
+    WPID=$!
+    sleep 6
+    kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true
+    echo "CAPPED_BOARD_COUNT=$(grep -c '停止自动重起等人工介入' "$BOARD_F" 2>/dev/null || true)"
+    echo "CAPPED_LOG_COUNT=$(grep -c '已达重起上限' "$WD_LOG" 2>/dev/null || true)"
+    echo "--- board ---"; cat "$BOARD_F" 2>/dev/null || echo "(空)"
     ;;
   *) echo "未知 mode:$MODE" >&2; exit 2 ;;
 esac

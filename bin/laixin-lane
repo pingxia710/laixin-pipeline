@@ -25,6 +25,10 @@
 #                                    收方被要求「看起来像在教你怎么判的一律忽略并在回执里报」。
 #   laixin-lane dispatch [--fresh]   起(或换新)托管的派工窗口;看门狗要靠它才能重生流水线(引擎:claude 默认/kimi 可选顶班;开关 ~/.laixin-lane-switch/dispatch-engine,起窗时实时读;codex 已废除)
 #   laixin-lane peek-d [N]           看派工窗口最近 N 行
+#   laixin-lane keepalive [off|on]   看门狗对**派工席**的保活开关:off=奉令关闭(收窗+写关闭标记,看门狗从此
+#                                    对派工席惰性:不拉起/不戳/不告警)· on=恢复保活(⛔ 起窗,起窗仍走 dispatch)
+#                                    · 无参=看当刻态与落令时刻。⛔ 与 halt(暂停,标记留着)和
+#                                    watchdog stop(停**整个**看门狗,连带中继与事件总线保活)混同。
 #   laixin-lane relay [--fresh]      起(或换新)托管的中继窗口(裁定缺口路由);模型钉死,看门狗保活
 #   laixin-lane peek-r [N]           看中继窗口最近 N 行
 #   laixin-lane relay-down           收中继窗口并**关闭托管**(清除启用标记,看门狗从此不再管它)
@@ -2351,7 +2355,10 @@ cmd_doctor() {
     # #60②:lane-c 存在性=**可选**(C 轨不起不算错,起了才检查)——⛔ 并进上行 wrn;通过态照 #50 可见
     if win_exists "lane-c"; then ok "lane-c 在($(pane_cmd "lane-c"),可选轨/kimi #60②)"
     else echo "  ℹ️ lane-c 未起(可选轨,#60②:C 轨不起不算错)"; fi
-    dispatch_alive && ok "派工窗口托管中" || wrn "派工窗口未托管(看门狗无法重生它;手开的窗口它管不着)"
+    # P0:奉令关闭是**受令态 ⛔ 故障**,必须与「未托管」分开报——否则「关不掉」与「没关」在体检面同形
+    if dispatch_keepalive_off; then wrn "派工席保活**已关闭**(keepalive off;落令:$(head -1 "$DISPATCH_KEEPALIVE_OFF" 2>/dev/null || echo 读不出))——**奉令态不是故障**:看门狗对派工席惰性中(中继/事件总线不受影响)。恢复:laixin-lane keepalive on"
+    elif dispatch_alive; then ok "派工窗口托管中"
+    else wrn "派工窗口未托管(看门狗无法重生它;手开的窗口它管不着)"; fi
     local outn; outn="$(outside_sessions)"
     if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
     else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
@@ -2946,6 +2953,15 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
     }' "$TABLE" "$TABLE" 2>/dev/null | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
 }
 
+ev_selfwrite_pending(){  # 0=可自写桶非空或探针失效(⇒ 空闲**不是**有意的) / 1=可自写确为 0
+  # P0 同批(2026-08-28):补上「有意空闲」判据缺的第三桶。复用 wd_fuel 的解析与 mtime 缓存 ⛔ 另起一份读法——
+  #   两份读法会各自漂移,而这正是本次要修的病(同一条判据散在四个载体里,第四份是活的判定逻辑)。
+  # 失效降级方向与 wd_fuel 一致:**读不出按有燃料** ⛔ 因探针失效而静默。
+  wd_fuel >/dev/null 2>&1 || true
+  [ "${WD_STATS_SELFWRITE:-?}" != "?" ] || return 0
+  [ "${WD_STATS_SELFWRITE:-0}" -gt 0 ]
+}
+
 ev_lane_assigned(){  # <A|B|C> → 当前「进行中」表里的片名;0=有分配 1=确认空闲 2=表结构未知
   awk -v lane="$1" '
     /^## / { if (active && header) exit; active=($0 ~ /进行中/); next }
@@ -3475,8 +3491,14 @@ ev_watch_target(){  # <窗口名> —— TUI 画面/native 进度无变化累计
         nxt="$(ev_next_ready "$LN")"
         if [ -z "$nxt" ]; then
           ev_lane_assigned "$LN" >/dev/null 2>&1; _arc=$?
-          if [ "$_arc" -eq 1 ]; then
-            alerted=0  # 无在飞分配 + 无 ready = 有意空闲；保持可重判但不制造重复消息
+          # 🔴 三桶 ⛔ 两桶(2026-08-28 P0 同批修):本行原判据是「ev_next_ready 空 ∧ 无在飞分配 ⇒ 有意空闲」,
+          #   **全程零 selfwrite 项** —— 那是 08-26 夜二「合并后停手 9 小时零派工」的条文根「无 ready = 有意空闲」
+          #   的**第四份载体**;前三份(协作流程 §5 / laixin-pipeline 卡 §3 / 机器侧 BRIEF)当日已改,
+          #   只有这一份是**每一拍都在执行的判定逻辑**,于是三份文字全绿而行为照旧。
+          # ⭐ 形态进条文治理:**一致性核的载体登记必须含代码注释与判定分支**——
+          #   「载体清单不全」与「载体全都干净」,在任何按清单跑的核里得到的是同一个绿。
+          if [ "$_arc" -eq 1 ] && ! ev_selfwrite_pending; then
+            alerted=0  # 三桶皆空(无 ready ∧ 无在飞分配 ∧ 可自写=0)= 有意空闲;保持可重判但不制造重复消息
             printf '%s %s %s %s\n' "$h" "$silent" "$alerted" "$started" > "$sf"
             return 0
           fi
@@ -4140,6 +4162,34 @@ EOT
 DISPATCH_WIN="dispatch"
 WATCHDOG_WIN="watchdog"
 WD_LOG="$HOME/.laixin-lane-watchdog.log"
+
+# ── 派工席保活开关 keepalive(P0;2026-08-28 R4 第一条命令)──────────────────────────────
+# 缺口:创始人直令「派工窗干完直接关闭」撞上**机器没有这个表达方式**——relay 有 relay-down 清启用标记,
+#   派工席**默认托管、没有可清的标记**;halt 只是暂停(其注释逐字「halt 是『暂停』,relay-down 才是『关闭托管』」);
+#   攥派工权也不行(rival_holds_dispatch() 内 `[ "$h" = "$DISPATCH_WIN" ] && return 1`,持有者是派工席自己时抑制不生效)。
+#   ⇒ 2026-08-28 18:13 只能走「让重起上限自然用掉」,而**达上限后 wd_loop 每拍在第 1 分支 continue**:
+#   看板被同一条告警灌到 148 条(20:53 实测,仍 +1/分钟),且 silent 累积与 wd_fuel 都排在该分支之后
+#   ⇒ **燃料判定自 18:17 起一拍未跑**,当晚夜测数字①的采数面随之失效。
+#
+# 🔴 **标记方向与 relay 相反,这不是笔误**:relay 是应召角色、默认不托管 ⇒ 用**启用标记**(存在=托管);
+#   派工席**默认托管** ⇒ 用**禁用标记**(存在=奉令关闭)。
+# ⚠️ **失效方向也因此相反,如实标 ⛔ 粉饰**:relay 标记丢了退化为「不托管」=机器少管一点(安全侧);
+#   **本标记丢了退化为「照旧托管」⇒ 在奉令关闭的语境下等于违令**。本开关的失效**不在安全侧**。
+#   缓解两条:①标记内容写**落令时刻与来源** ⛔ touch 空文件——「谁在什么时候关的」是它唯一的追责面;
+#   ②`keepalive`(无参)与 `doctor` 都回显当刻态——否则「关不掉」与「没关」在读数面同形
+#   (执行总表已记这个代价形状:空壳窗把 dispatch_alive 骗过、自愈被堵 1.5 小时)。
+#
+# 🔴 **命名理由 ⛔ 写成「为通过闸」——记错了,下一个人会学到错的东西**:
+#   本开关控制的是**看门狗对派工席的保活**,而 `dispatch` 是**派工动词**;R4 底稿写的 `dispatch-down`/`dispatch-up`
+#   让两个语义共用一个前缀,**本身就是命名缺陷**。改叫 `keepalive` 是**语义分离**。
+#   它顺带避开了 `Bash(laixin-lane dispatch*)` 通配(受权席的验证入口一度被它连带挡住),
+#   但那是**缺陷被闸照出来** ⛔ 把因果读反:是名字本来就该改,不是因为有闸才改。
+DISPATCH_KEEPALIVE_OFF="${LAIXIN_DISPATCH_KEEPALIVE_OFF:-$HOME/.laixin-dispatch.keepalive-off}"
+dispatch_keepalive_off(){   # 存在=奉令关闭:看门狗对派工席完全惰性(零拉起零告警)
+  # ⚠️ 写成多行 ⛔ 单行:绊线驱动用 `sed -n "/^fn()/,/^}/p"` 抽真函数,单行函数没有独立的 `}` 行,
+  #    sed 会一路抽到下一个函数的结尾——测试于是抽到一堆无关定义(仓里既有单行函数已在吃这个亏)。
+  [ -f "$DISPATCH_KEEPALIVE_OFF" ]
+}
 # 派工窗口持有合并权,故不禁 merge;只禁推远端(流水线不碰 origin)
 DISPATCH_DENY=( "Bash(git push*)" )
 
@@ -4881,6 +4931,11 @@ cmd_dispatch() {
   # #37:回读复核接管指令已提交(后台跑,未提交先补 Enter、仍失败大声上看板;显式脱离 fd 防拖 $( ) 读)
   ( confirm_briefed "$DISPATCH_WIN" "dispatch" "$DISPATCH_ENGINE" ) >/dev/null 2>&1 &
   printf '%s %s\n' "$DISPATCH_WIN" "$(date +%s)" > "$DISPATCH_LOCK"   # 起窗即认领派工权
+  # 起窗即**恢复保活**(与 relay「起窗即写启用标记」对称;方向相反因两个标记的语义相反):
+  # 人工或 boot 链起了新派工席 ⇒ 奉令关闭态自然解除,⛔ 让一个过期的关闭令把新席位一直压着。
+  # ⚠️ 看门狗在关闭态下**走不到这里**(wd_loop 0.8 闸门先 continue)⇒ 本行只由人工/boot 链触发,
+  #    关闭令不会被它自己要抑制的那个自愈动作解除。
+  rm -f "$DISPATCH_KEEPALIVE_OFF"
   board "$(caller_src)" "起派工窗口 $DISPATCH_WIN(全新上下文,已派接管指令,派工权已认领;引擎=$DISPATCH_ENGINE)"
   ev_alive || { cmd_events stop >/dev/null 2>&1 || true; cmd_events start >/dev/null 2>&1 || true; }
   # 起窗验尸(复盘页#20b,lanes #11-③ 同款):就绪判定可能被过渡画面骗过,15s 后回头核
@@ -4977,6 +5032,48 @@ cmd_handover_audit(){  # #108 全量清单:doctor 只逐条报近几天的,历�
   printf '   —— 合计 %s 条 ——\n' "$(printf '%s' "$out" | grep -c '任' || true)"
   echo "   补法:复盘页追加「<角色><任次>收班盘点」节(单一入口 ⛔ 散落快照);盘点内容照收班卡形态——"
   echo "   只挑真实发生过的摩擦(失败样本→候选优化),分流三去向:可机器化→11B 队列 / 规则类→当轮落卡 / 要创始人拍的→专场攒。"
+}
+
+cmd_keepalive(){   # 看门狗对**派工席**的保活开关:off=奉令关闭态 / on=恢复保活 / 无参=看当刻态
+  # ⛔ 与 halt 混同:halt 是「暂停」(标记留着,自愈仍在);keepalive off 是**关闭保活**(看门狗对派工席完全惰性)。
+  # ⛔ 与 watchdog stop 混同:那会停掉**整个**看门狗(连带中继保活、事件总线保活、额度哨兵);本开关只关派工席这一段。
+  local mode="${1:-status}"
+  [ $# -le 1 ] || die "keepalive 只接受 off|on|status(不接第二个参数)"
+  case "$mode" in
+    off)
+      local was=0
+      if win_exists "$DISPATCH_WIN"; then
+        tmux kill-window -t "=$SESSION:$DISPATCH_WIN"
+        cdp_sweep "$DISPATCH_CDP_PORT"
+        was=1
+      fi
+      # 标记内容=落令时刻 + 来源 ⛔ 空文件:「谁在什么时候关的」是本开关唯一的追责面(见常量区失效方向注)
+      printf '%s %s\n' "$(date '+%F %T')" "$(caller_src)" > "$DISPATCH_KEEPALIVE_OFF" \
+        || die "写关闭标记失败:$DISPATCH_KEEPALIVE_OFF —— ⛔ 当成已关闭(标记不在=看门狗照旧拉起)"
+      board "$(caller_src)" "派工席保活**已关闭**(keepalive off):看门狗从此对派工席惰性——不拉起、不戳、不告警;中继/事件总线/额度哨兵不受影响。恢复:laixin-lane keepalive on"
+      if [ "$was" = 1 ]; then echo "$DISPATCH_WIN 已回收;派工席保活已关闭(标记已写:$DISPATCH_KEEPALIVE_OFF)"
+      else echo "$DISPATCH_WIN 本就不存在;派工席保活已关闭(标记已写:$DISPATCH_KEEPALIVE_OFF)"; fi
+      ;;
+    on)
+      if dispatch_keepalive_off; then
+        rm -f "$DISPATCH_KEEPALIVE_OFF"
+        board "$(caller_src)" "派工席保活**已恢复**(keepalive on):看门狗重新保活派工席,重起计数下一拍归零;⛔ 本命令不起窗"
+        echo "派工席保活已恢复(标记已清)。⛔ 本命令不起窗——起窗:laixin-lane dispatch --fresh"
+      else
+        echo "派工席保活本就是开的(标记 $DISPATCH_KEEPALIVE_OFF 不存在)⇒ 无动作"
+      fi
+      ;;
+    status)
+      # 可观察面:没有它,「关不掉」与「没关」在读数面同形(执行总表已记这个代价形状)
+      if dispatch_keepalive_off; then
+        echo "派工席保活:**关闭**(奉令关闭态)——落令 $(head -1 "$DISPATCH_KEEPALIVE_OFF" 2>/dev/null || echo '(标记内容读不出)');看门狗对派工席惰性中。恢复:laixin-lane keepalive on"
+      else
+        echo "派工席保活:开(默认托管态)——看门狗照常拉起/戳/换窗"
+      fi
+      ;;
+    *) die "keepalive 只接受 off|on|status(收到:$mode)" ;;
+  esac
+  return 0
 }
 
 cmd_peekd() { tmux capture-pane -p -t "=$SESSION:$DISPATCH_WIN" -S "-${1:-30}"; }
@@ -7320,6 +7417,10 @@ wd_loop() {
   local restart_after="${WD_RESTART:-1800}" # 再静默多久重起(30 分钟)
   local max_restart="${WD_MAX_RESTART:-3}"
   local last_hash="" silent=0 nudged=0 restarts=0 ctx_tick=0
+  # P0(2026-08-28)状态位:held=派工席保活关闭态 · dead_seen=本场事故已见派工席不在 ·
+  #   capped_* / rival_holder_last=**单事故单告警**的状态转移闸(⛔ 时间窗去重——时间窗会让同一场事故
+  #   按钟点反复出声,而事故本身一次都没变;08-28 实测把看板灌到 148 条的正是「每拍一条」)。
+  local held=0 dead_seen=0 capped_dead=0 capped_silent=0 rival_holder_last=""
   local _gen nofuel=0 fuelgap=0 qtick=0; _gen="$(loop_self_gen)"; loop_gen_record wd-loop   # #136
   echo "[$(date '+%F %T')] watchdog 启动 interval=${interval}s nudge=${nudge_after}s restart=${restart_after}s 上限=${max_restart}" >> "$WD_LOG"
   board "看门狗" "启动(每 ${interval}s 巡检;静默 $((nudge_after/60)) 分钟戳、$((restart_after/60)) 分钟重起,重起上限 ${max_restart})"
@@ -7386,16 +7487,49 @@ wd_loop() {
     #     (~/.claude-b/settings.json 的 statusLine 同样指向它,双通道都有);② ctx-all 只认 codex rollout,对 claude 席位
     #     本就无读数;③ 推送被撤的根因是「工具对在班席位下令」(见 ctx_watch_tick 内注),与引擎无关。
     #   ⇒ 引擎换回不是恢复巡检的理由;kimi 顶班同理(其 TUI 底栏自带 context%,1M 窗口);恢复须创始人明令。
+    # —— 0.8 派工席保活总闸门(P0,2026-08-28)——————————————————————————
+    # 位置**必须在派工分支之前、relay/events 保活之后**:奉令关闭的是**派工席这一段**,
+    #   ⛔ 连带停掉中继保活与事件总线——那两条各有自己的闸门,且整机重启时最需要它们还活着。
+    # 关闭态下本段 continue ⇒ 下面所有派工相关分支(拉起/代续/对话框扫描/静默戳/静默换窗)一律不执行,
+    #   = relay 的 relay_enabled 总闸门同款纪律:标记在则**完全惰性,零拉起零告警**。
+    # 🔴 **进出各只出声一次**(状态转移):否则「奉令关闭」本身会变成第二个每拍灌条的源——那正是本片要修的病。
+    if dispatch_keepalive_off; then
+      if [ "$held" -eq 0 ]; then
+        held=1; restarts=0; capped_dead=0; capped_silent=0; rival_holder_last=""; last_hash=""; silent=0; nudged=0
+        echo "[$(date '+%F %T')] 派工席保活已关闭(奉令关闭态):本循环对派工席惰性,重起计数与告警闸归零" >> "$WD_LOG"
+        board "看门狗" "派工席保活已关闭(keepalive off)——不拉起、不戳、不告警;中继/事件总线不受影响。重起计数已归零。恢复:laixin-lane keepalive on"
+      fi
+      continue
+    fi
+    if [ "$held" -eq 1 ]; then
+      held=0; restarts=0; capped_dead=0; capped_silent=0; rival_holder_last=""; last_hash=""; silent=0; nudged=0
+      echo "[$(date '+%F %T')] 派工席保活已恢复:重起计数与告警闸归零,自愈能力满血" >> "$WD_LOG"
+      board "看门狗" "派工席保活已恢复(keepalive on)——重起计数已归零,自愈能力满血"
+    fi
     # —— 1. 派工窗口死了:立即重起 ——
     if ! dispatch_alive; then
+      dead_seen=1
       if [ "$restarts" -ge "$max_restart" ]; then
-        echo "[$(date '+%F %T')] 已达重起上限 $max_restart,停止自动重起" >> "$WD_LOG"
-        board "看门狗" "⛔ 派工窗口反复起不来(已重起 ${max_restart} 次),停止自动重起等人工介入"
+        # 🔴 单事故单告警(P0,2026-08-28):按**状态转移**只发一次 ⛔ 时间窗去重。
+        #   原实现每拍 echo+board 各一条 ⇒ 08-28 18:14~20:53 实测看板被同一条灌 148 条且仍 +1/分钟,
+        #   把当轮 R4 落地的记录条冲散;而事故本身自始至终是同一个。
+        #   闸在事故收尾(1.1)与保活切换(0.8)处复位 ⇒ **下一场事故仍会照告**,去重 ⛔ 变成静音。
+        if [ "$capped_dead" -eq 0 ]; then
+          capped_dead=1
+          echo "[$(date '+%F %T')] 已达重起上限 $max_restart,停止自动重起(状态转移,本条只记一次)" >> "$WD_LOG"
+          board "看门狗" "⛔ 派工窗口反复起不来(已重起 ${max_restart} 次),停止自动重起等人工介入。**本条按状态转移只发一次**;当刻态可查:laixin-lane keepalive / laixin-lane doctor"
+        fi
         continue
       fi
       if rival_holds_dispatch; then
-        echo "[$(date '+%F %T')] 派工窗口不在,但派工权由 [$(lock_holder)] 持有($(lock_age)s 前动过 lane)⇒ 不自动重起" >> "$WD_LOG"
-        board "看门狗" "派工窗口不在,但派工权由 [$(lock_holder)] 持有($(lock_age)s 前动过 lane)⇒ **不自动重起**,避免双派工窗口"
+        # 同族每拍一条(P0 一并收):抑制态只要持有者没变就是同一件事 ⇒ **按持有者变化**才重告,
+        #   ⛔ 按时间窗——持有者换人是真的新情况,时间到了不是。
+        local _rh; _rh="$(lock_holder)"
+        if [ "$_rh" != "$rival_holder_last" ]; then
+          rival_holder_last="$_rh"
+          echo "[$(date '+%F %T')] 派工窗口不在,但派工权由 [$_rh] 持有($(lock_age)s 前动过 lane)⇒ 不自动重起(本条按持有者变化去重)" >> "$WD_LOG"
+          board "看门狗" "派工窗口不在,但派工权由 [$_rh] 持有($(lock_age)s 前动过 lane)⇒ **不自动重起**,避免双派工窗口。**本条按持有者变化去重**,持有者不变不再重复"
+        fi
         continue
       fi
       restarts=$((restarts+1))
@@ -7408,6 +7542,19 @@ wd_loop() {
       [ "$d_rc" -eq 0 ] || board "看门狗" "⛔ 派工窗口重起失败(rc=${d_rc}):$(tail -1 <<< "$d_out" | cut -c1-160)——循环存活,下轮重试"
       last_hash=""; silent=0; nudged=0
       continue
+    fi
+    # —— 1.1 事故周期收尾(P0,2026-08-28):派工席从「不在」恢复到「在」⇒ 本场事故结束,
+    #   重起计数与两个告警闸一并复位 ⇒ **下一场事故拿到满血的 3 次自愈,且会照常告警**。
+    # 🔴 原实现 restarts **只增不减**(局部变量仅在循环起点置零)⇒ 一旦达上限就永久停自愈,
+    #   直到 wd_loop 自己重启为止;08-28 18:14 起实测:达上限后每拍在第 1 分支 continue,
+    #   看板被同一条灌 148 条,而 silent 累积与 wd_fuel 都排在该分支之后 ⇒ **燃料判定一拍未跑**。
+    #   ⭐ 那次的代价形状值得记:**「计数被清零」与「计数从来没在涨」,在事后读数上完全同形**——都只是一个小数字。
+    # ⚠️ **如实标一个本片不修的缺口**:恢复即归零 ⇒ 「起来立刻又死」的 flapping 会绕过上限
+    #   (每次重起间隔 ≥ 一拍且各留一条 board,不至于无声失控)。加频率闸属新功能族,
+    #   **已登记候后批 ⛔ 在本片顺手扩**(护栏:laixin-lane 不再承载新功能族)。
+    if [ "$dead_seen" -eq 1 ]; then
+      dead_seen=0; restarts=0; capped_dead=0; capped_silent=0; rival_holder_last=""
+      echo "[$(date '+%F %T')] 派工席已恢复(本场事故结束):重起计数与告警闸归零" >> "$WD_LOG"
     fi
     # —— 1.2 派工权代续(复盘页#19 根治):dispatch 窗口活着(pane=claude)是机器可观察的「在班」,
     #    看门狗每拍据此代续——「有意不发车」不再被判无人持有(08-19 实撞:节流 70 分钟即失锁,
@@ -7469,7 +7616,14 @@ wd_loop() {
     fi
     if [ "$silent" -ge "$restart_after" ]; then
       if [ "$restarts" -ge "$max_restart" ]; then
-        board "看门狗" "⛔ 派工窗口持续无响应但已达重起上限,等人工介入"; continue
+        # 单事故单告警(P0):与死窗分支同款状态转移闸,但**独立一位**——
+        #   「窗死了起不来」与「窗活着但不动」是两种事故,合用一位会让第二种被第一种吃掉。
+        if [ "$capped_silent" -eq 0 ]; then
+          capped_silent=1
+          echo "[$(date '+%F %T')] 派工窗口持续无响应且已达重起上限,停止自动换窗(状态转移,本条只记一次)" >> "$WD_LOG"
+          board "看门狗" "⛔ 派工窗口持续无响应但已达重起上限,等人工介入。**本条按状态转移只发一次**;当刻态可查:laixin-lane keepalive / laixin-lane doctor"
+        fi
+        continue
       fi
       restarts=$((restarts+1))
       echo "[$(date '+%F %T')] 静默 ${silent}s 且行动燃料未处理(${_fuel}),第 $restarts 次重起" >> "$WD_LOG"
@@ -8303,6 +8457,7 @@ case "${1:-}" in
   codex-tier) shift; cmd_codex_tier "$@" ;;
   handover-mode)  shift; cmd_handover_mode "$@" ;;   # 交班形态判据:同账号 or 跨账号(⛔ 靠推定)
   dispatch) shift; cmd_dispatch "$@" ;;
+  keepalive) shift; cmd_keepalive "$@" ;;   # 看门狗对**派工席**的保活开关(off 奉令关闭 / on 恢复 / 无参看当刻态);⛔ 与 halt(暂停)和 watchdog stop(停整个看门狗)混同
   peek-d)   shift; cmd_peekd "$@" ;;
   relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记
   peek-r)     shift; cmd_peekr "$@" ;;

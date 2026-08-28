@@ -423,7 +423,7 @@ echo "== 7. 事件总线执行级绊线(真跑;静态 grep 抓不到展开顺序
 TMPE="$(mktemp -d)"
 # ⚠️ #171 起 ev_scan_deliveries 依赖 last_contract_line(契约行取法单点源)⇒ 夹具抽取必须带上它,否则「函数不存在」
 #   的症状与「扫描逻辑写错」完全同形(本轮 5 条既有测试同时红,红因是依赖缺失不是被测行为)。
-{ sed -n "/^last_contract_line/,/^}/p" "$LANE"; sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^ev_next_ready/,/^}/p" "$LANE"; sed -n "/^ev_lane_assigned/,/^}/p" "$LANE"; sed -n "/^ev_verify_receipt_ready/,/^}/p" "$LANE"; } > "$TMPE/fns.sh"
+{ sed -n "/^last_contract_line/,/^}/p" "$LANE"; sed -n "/^pane_hash/,/^}/p" "$LANE"; sed -n "/^native_print_active()/,/^}/p" "$LANE"; sed -n "/^ev_watch_target/,/^}/p" "$LANE"; sed -n "/^ev_scan_deliveries/,/^}/p" "$LANE"; sed -n "/^ev_next_ready/,/^}/p" "$LANE"; sed -n "/^ev_lane_assigned/,/^}/p" "$LANE"; sed -n "/^ev_verify_receipt_ready/,/^}/p" "$LANE"; } > "$TMPE/fns.sh"
 mkdir -p "$TMPE/kb/4-开发层/记录"
 printf 'x\n【交付完成】b z\n' > "$TMPE/kb/4-开发层/记录/a验收记录.md"
 printf 'y\n没有标记\n' > "$TMPE/kb/4-开发层/记录/b验收记录.md"
@@ -492,6 +492,51 @@ t "有意空闲:lane-b 无在飞分配且无 ready ⇒ 静默;lane-a 有分配 �
   [ -z "$(ev_watch_target lane-b)" ] || exit 1
   EV_DIR="'$TMPE'/active-a"; mkdir -p "$EV_DIR"; printf "fixed 360 0 1\n" > "$EV_DIR/lane-a.state"
   ev_watch_target lane-a | grep -q "lane-a 已"' _
+
+# 守护: 11B-三个探针面选错
+NWB="$TMPE/native-watch"; mkdir -p "$NWB"
+cat > "$NWB/common.sh" <<'SH'
+source "$NATIVE_FNS"
+EV_DIR="$NW_ROOT"; EV_TICK=1; EV_STALL=2; ALERTS="$NW_ROOT/alerts"
+pane_hash(){ printf 'PANE-FIXED\n'; }
+tool_native_status(){ cat "$2/status" 2>/dev/null; }
+ev_deliver(){ printf '%s\n' "$2" >> "$ALERTS"; }
+ev_next_ready(){ :; }
+ev_lane_assigned(){ return 0; }
+lane_engine(){ printf 'codex\n'; }
+ev_verify_receipt_ready(){ return 1; }
+ev_log(){ :; }
+nw_setup(){
+  local w="$1" status="${2:-running thread-1}" run="$EV_DIR/native/$1/run-1"
+  mkdir -p "$run"
+  printf 'print\n' > "$EV_DIR/native/$w/transport"
+  printf '%s\n' "$run" > "$EV_DIR/native/$w/current"
+  printf '%s\n' "$status" > "$run/status"
+  printf 'raw-1\n' > "$run/raw.jsonl"
+}
+SH
+t "三探针 B 阳性1/2:lane print raw 每拍推进，跨 stall 仍零告警" env NATIVE_FNS="$TMPE/fns.sh" NW_ROOT="$NWB/progress" NW_COMMON="$NWB/common.sh" bash -c '
+  mkdir -p "$NW_ROOT"; source "$NW_COMMON"; nw_setup lane-a; ev_watch_target lane-a
+  for n in 2 3 4 5; do printf "raw-%s\n" "$n" >> "$NW_ROOT/native/lane-a/run-1/raw.jsonl"; ev_watch_target lane-a; done
+  [ ! -s "$ALERTS" ] && grep -q "^NATIVE-" "$NW_ROOT/lane-a.state"'
+t "三探针 B 阴性1/3:lane print raw 停滞只告一次，推进后四字段 state 复位" env NATIVE_FNS="$TMPE/fns.sh" NW_ROOT="$NWB/stuck" NW_COMMON="$NWB/common.sh" bash -c '
+  mkdir -p "$NW_ROOT"; source "$NW_COMMON"; nw_setup lane-a
+  for n in 1 2 3 4; do ev_watch_target lane-a; done
+  [ "$(grep -c "lane-a 已" "$ALERTS")" -eq 1 ] || exit 1
+  printf "raw-2\n" >> "$NW_ROOT/native/lane-a/run-1/raw.jsonl"; ev_watch_target lane-a
+  read -r old silent alerted started < "$NW_ROOT/lane-a.state"; [ "$silent" -eq 0 ] && [ "$alerted" -eq 0 ] && [ -n "$started" ]'
+t "三探针 B 阴性2/3:settled/failed 都不投同义卡住告警" env NATIVE_FNS="$TMPE/fns.sh" NW_ROOT="$NWB/terminal" NW_COMMON="$NWB/common.sh" bash -c '
+  mkdir -p "$NW_ROOT"; source "$NW_COMMON"; nw_setup lane-a "settled 0"; for n in 1 2 3 4; do ev_watch_target lane-a; done
+  printf "failed 1 process_gone\n" > "$NW_ROOT/native/lane-a/run-1/status"; for n in 1 2 3 4; do ev_watch_target lane-a; done
+  [ ! -s "$ALERTS" ] && grep -q "^NATIVE-TERMINAL 0 0 " "$NW_ROOT/lane-a.state"'
+t "三探针 B 阴性3/3:native raw 缺失超过阈值后恰一次可观察告警" env NATIVE_FNS="$TMPE/fns.sh" NW_ROOT="$NWB/missing" NW_COMMON="$NWB/common.sh" bash -c '
+  mkdir -p "$NW_ROOT"; source "$NW_COMMON"; nw_setup lane-a; rm -f "$NW_ROOT/native/lane-a/run-1/raw.jsonl"
+  for n in 1 2 3 4; do ev_watch_target lane-a; done
+  [ "$(grep -c "lane-a 已" "$ALERTS")" -eq 1 ]'
+t "三探针 B 阳性2/2:verify print root 同走 native，停滞恰一次告警" env NATIVE_FNS="$TMPE/fns.sh" NW_ROOT="$NWB/verify" NW_COMMON="$NWB/common.sh" bash -c '
+  mkdir -p "$NW_ROOT"; source "$NW_COMMON"; nw_setup verify-probe
+  for n in 1 2 3 4; do ev_watch_target verify-probe; done
+  [ "$(grep -c "验收窗口 verify-probe" "$ALERTS")" -eq 1 ] && grep -q "^NATIVE-" "$NW_ROOT/verify-probe.state"'
 
 # 已有本轮落盘回执时,verify 静默不是故障;旧轮回执(mtime 早于本窗起点)不能误抑制。
 RKB="$TMPE/rkb"; mkdir -p "$RKB/4-开发层/记录"

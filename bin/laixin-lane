@@ -3413,10 +3413,30 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
   fi
 }
 
-ev_watch_target(){  # <窗口名> —— 画面 hash 无变化累计;达阈值投递一次告警,变化即复位
+ev_watch_target(){  # <窗口名> —— TUI 画面/native 进度无变化累计;达阈值投递一次告警,变化即复位
   local w="$1"; local sf="$EV_DIR/$w.state"  # 必须分两条:同一条 local 的参数先全部展开再赋值,$w 在展开时还未定义,set -u 直接击杀(2026-08-13 两次无声死亡的真凶)
-  local h; h="$(pane_hash "$w")"
-  local gf; gf="$EV_DIR/$w.gone"
+  local h gf native_root run state raw_sum
+  gf="$EV_DIR/$w.gone"
+  native_root="$EV_DIR/native/$w"
+  if native_print_active "$native_root"; then
+    run="$(cat "$native_root/current" 2>/dev/null || true)"
+    state=""; [ -n "$run" ] && state="$(tool_native_status read "$run" 2>/dev/null || true)"
+    state="${state%%$'\n'*}"
+    case "$state" in
+      running\ *)
+        raw_sum=""; [ -r "$run/raw.jsonl" ] && raw_sum="$(cksum < "$run/raw.jsonl" 2>/dev/null || true)"
+        if [ -n "$raw_sum" ]; then h="NATIVE-${run##*/}-${raw_sum// /-}"; else h="NATIVE-MISSING"; fi
+        ;;
+      settled\ *|failed\ *)
+        rm -f "$gf"
+        printf 'NATIVE-TERMINAL 0 0 %s\n' "$(date +%s)" > "$sf"
+        return 0
+        ;;
+      *) h="NATIVE-MISSING" ;;
+    esac
+  else
+    h="$(pane_hash "$w")"
+  fi
   if [ "$h" = "GONE" ]; then
     # #60②:先记「此前活过没有」再清状态档——lane-c 是可选轨,从未起过(无状态档)=正常闲置 ⛔ 告警;
     # 起过又消失=与 a/b 同级事故照告。a/b 是常驻轨不受此闸影响(不存在永远异常,照旧直告)。

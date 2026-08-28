@@ -2225,7 +2225,12 @@ cmd_backup(){  # 异地备份(2026-08-18 生产级 P0-2,创始人裁「私有 gi
   local rc=0 cfg_rc=0 r round
   for round in 1 2; do
     rc=0
-    for r in "$HOME/Obsidian" "$HOME/Developer/laixin-pipeline" "$HOME/来信平台"; do
+    # 五仓(2026-08-29 由三仓补齐;前两个私有灾备仓创始人已建并首推完成)。
+    # ⚠️ 仓表**硬编码在此**:加仓 = 改这一行 + 同轮加绊线(否则「远端建好了」与「已进自动备份」同形——
+    #   两个新仓 08-28 建好后仍在表外,连续多轮 backup 全绿却根本没备到它们)。
+    # 📌 `push origin main` ⇒ 只推 origin、只推 main:`钓不钓-基座` 另有一个指向本地目录的
+    #   `knowledge-pack` remote,**不会被误推**(实测两仓 upstream 均为 origin/main)。
+    for r in "$HOME/Obsidian" "$HOME/Developer/laixin-pipeline" "$HOME/来信平台" "$HOME/钓不钓" "$HOME/钓不钓-基座"; do
       if git -C "$r" remote get-url origin >/dev/null 2>&1; then
         if git -C "$r" push origin main -q 2>/dev/null; then
           echo "✅ $(basename "$r") 已推送"

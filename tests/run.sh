@@ -1952,6 +1952,19 @@ echo "== 8c. #45-bis 来源残留(board 来源=真实调用上下文,⛔ 硬编�
 #    原「见框即 C-m」按下去是退出 ⇒ 无人值守托管窗被自愈重起时**每次都被自己按死**,而「按死」与
 #    「起窗失败」在读数面同形)。三条缺一即红:回退成裸 C-m 会红、导航判据被换成发键计数会红、
 #    $HOME 放行被并回 vtrusted_dir(会顺带放宽 tool-up :6290 那条有意的 --dir 闸)会红。
+# ⭐ 五仓灾备绊线(2026-08-29;病灶=「远端建好了」与「已进自动备份」同形——两个私有灾备仓 08-28 建好并首推
+#    完成后**仍在仓表外**,而 backup 连续多轮全绿:它只报表内三仓的成败,表外的仓**不会以任何形式显影**)。
+#    ⇒ 判据取**仓表本身** ⛔ 取 backup 的退出码(那是「表内全推成功」,不是「该备的都备了」)。
+t "#五仓灾备:backup 仓表含全部五仓(漏一个即红;⛔ 拿 backup 退出码当判据)" bash -c '
+  line="$(sed -n "/^cmd_backup()/,/^}/p" "$0" | grep "for r in ")"
+  [ -n "$line" ] || exit 1
+  for repo in Obsidian Developer/laixin-pipeline 来信平台 钓不钓 钓不钓-基座; do
+    grep -qF "\$HOME/$repo\"" <<< "$line" || exit 1
+  done' "$LANE"
+t "#五仓灾备:只推 origin main(⛔ --all/--mirror,⛔ 推非 origin 的本地 remote)" bash -c '
+  b="$(sed -n "/^cmd_backup()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
+  grep -q "push origin main" <<< "$b" || exit 1
+  ! grep -qE "push .*(--all|--mirror)" <<< "$b"' "$LANE"
 t "#trust-nav①:vwait_ready 的 trust 分支必须经 trust_nav_confirm,⛔ 裸 C-m(回退即红)" bash -c '
   body="$(sed -n "/^vwait_ready()/,/^}/p" "$0" | grep -v "^[[:space:]]*#")"
   seg="$(sed -n "/trust this folder/,/fi ;;/p" <<< "$body")"

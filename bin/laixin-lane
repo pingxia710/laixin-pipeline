@@ -2703,11 +2703,16 @@ def _blocked(cells,st):
     if re.search(r'(前置|等|待).*(合入|定稿|待拆|裁定|细化)',both): return True
     if re.search(r'不可立即发车|不可发车|暂不可发|不能发车|前置未解|前置未满足',both): return True
     return False
+short_rows=[]; sw_prod=0; sw_tool=0   # 第一片(2026-08-28):格数不足行 / 可自写按产品·工具拆分
 if m:
     for line in m.group(1).split('\n'):
         if not line.startswith('|') or '---' in line: continue
         cells=[c.strip() for c in line.strip('|').split('|')]
-        if len(cells)<4 or cells[0].startswith('片'): continue
+        if cells[0].startswith('片'): continue
+        if len(cells)<4:
+            # 静默漏行(料窗 B 2026-08-28 实撞:总表 L8032 三格行既不进已识别行也不报未识别)——报出来 ⛔ 跳过;
+            #   「查不了」与「查过没有」⛔ 同形,跳过就是把它做成了同形。
+            short_rows.append(re.sub(r'[*~\[\]]','',cells[0])[:34]); continue
         # 分桶只认状态格**首段**(首个<br>前)——整格子串匹配会把解释文字里的"已发车"当状态,
         # 把在排片误报成已跑掉(2026-08-13 实撞:速率限制铺开被报燃料 0,假停摆族)
         name=re.sub(r'[*~\[\]]','',cells[0])[:34]; st=cells[-1].split('<br>')[0]
@@ -2723,7 +2728,12 @@ if m:
         elif 'ready' in st.lower() or 'prompt 已写' in st:
             (blocked_rows if _blocked(cells,st) else buckets['✅ 可立即发车(prompt ready 且未发)']).append(name)
         elif '待写' in st:
-            (blocked_rows if _blocked(cells,st) else buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']).append(name)
+            if _blocked(cells,st): blocked_rows.append(name)
+            else:
+                buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'].append(name)
+                # 工具件判据=片名以 11B 起头(总表既有写法:「11B:…」「11B/落卡:…」);其余算产品线
+                if name.startswith('11B'): sw_tool+=1
+                else: sw_prod+=1
         else: unparsed.append(name)
 ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']); design=len(buckets['🚧 缺设计,要方案窗口补'])
 if machine:
@@ -2735,11 +2745,15 @@ if machine:
         pass
     except OSError:
         pending='?'
-    print(f"ready={ready} selfwrite={writable} design={design} pending={pending}")
+    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool}")
     sys.exit(0)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
     for n in v[:6]: print(f"      · {n}")
+print(f"  ✏️ 可自写拆分:产品 {sw_prod} / 工具 {sw_tool}(合计数 ⛔ 读成产品线有活——2026-08-28 那 8 件全是工具件而两条开发轨空着)")
+if short_rows:
+    print(f"  ⚠️ 格数不足 {len(short_rows)} 行(不足四格,分桶读不到 ⇒ 既不进已识别也不进未识别=静默漏行;补齐四格):")
+    for x in short_rows: print(f"      · {x}")
 if unparsed:
     print(f"  ❓ 状态未识别 {len(unparsed)} 行(状态格首段无已知标记;分桶只认首个<br>前的片段,解释文字请放 <br> 之后):")
     for n in unparsed: print(f"      · {n}")

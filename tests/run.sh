@@ -3508,7 +3508,32 @@ mkdir -p "$T137/home/.laixin-events.d"
 printf '1|待验片|P\n' > "$T137/home/.laixin-events.d/pending.ack"
 t "#夜间断链:stats --machine 复用既有四桶分桶,输出可自写/缺设计/待认领读数" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
-  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1" ]' _ "$T137" "$LANE"
+  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1 short=0 selfwrite_product=1 selfwrite_tool=0" ]' _ "$T137" "$LANE"
+# 第一片(2026-08-28 创始人改判后首片,创始人窗口直修;料窗 B 附带发现 a+b):
+#   a 三格行原被 len(cells)<4 静默跳过——既不进已识别也不进未识别(总表 L8032 实撞)⇒ 报「格数不足」;
+#   b 可自写合计会被读成产品线有活(当日 8 件全是 11B 工具件而两条开发轨空)⇒ 按片名前缀拆产品/工具。
+#   回退验证:拆掉 a ⇒ short 字段消失且三格片无声;拆掉 b ⇒ product/tool 字段消失。
+T1S="$(mktemp -d)"
+cat > "$T1S/table.md" <<'EOF'
+## 进行中(=轨道占用)
+| 片 | 轨 | 分支 | 状态 |
+## 验收中
+| 片 | 轨 | 分支 | 状态 |
+## 已完成
+| 片 | 轨 | 分支 | 状态 |
+## 排队
+| 片 | 轨 | 内容 | 状态 |
+| 三格片 | x | 待写 |
+| 11B:工具片 | A | x | 待写 |
+| 产品片 | B | x | 待写 |
+EOF
+mkdir -p "$T1S/home/.laixin-events.d" "$T1S/kb"; : > "$T1S/board"   # 人读面读看板节奏节,夹具须有空看板 ⛔ 只给 --machine 用的最小集
+t "第一片a:排队节三格行报 short=1 ⛔ 静默跳过(machine 行)" bash -c '
+  out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
+  [ "$out" = "ready=0 selfwrite=2 design=0 pending=0 short=1 selfwrite_product=1 selfwrite_tool=1" ]' _ "$T1S" "$LANE"
+t "第一片a+b:人读面点名三格片且可自写拆分为 产品 1 / 工具 1" bash -c '
+  out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats 2>/dev/null)"
+  grep -q "格数不足 1 行" <<< "$out" && grep -q "· 三格片" <<< "$out" && grep -q "产品 1 / 工具 1" <<< "$out"' _ "$T1S" "$LANE"
 { sed -n "/^wd_fuel()/,/^}/p" "$LANE"; sed -n "/^wd_fuel_advice()/,/^}/p" "$LANE"; sed -n "/^wd_nudge_text()/,/^}/p" "$LANE"; } > "$T137/f.sh"
 t "#137:wd_fuel 认可空闲轨 ready/可自写/待认领 P;忙轨 ready、verify/工具等待窗、relay outbox 都不算;总表不可读朝告警侧" bash -c '
   source "$1/f.sh"; SESSION=s; TABLE="$1/table.md"; : > "$TABLE"; EV_PENDING="$1/pending"; RELAY_OUTBOX="$1/outbox"; : > "$EV_PENDING"; : > "$RELAY_OUTBOX"

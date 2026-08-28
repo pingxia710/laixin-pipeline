@@ -2873,7 +2873,7 @@ ev_scan_deliveries(){  # 末行行首标记 + mtime(整改重交同文件也能�
     #   去全文复读确认「提交与报告内容不变」。⇒ 改哈希后:**整改重交(内容真变了)照旧触发**,
     #   而 touch / 备份工具改 mtime / 编辑器保存同内容,一律不再制造假交付事件。
     #   ⚠️ mtime 仍要用于「陈旧报告」判据,但那是在消费处按需现取,⛔ 塞进去重键。
-    if last_contract_line "$f" | grep -qE '^【交付完成】|^【验收回执】|^【中转回执】|^【中转回复】|^【工具件完成】|^【写单完成】|^【写单停车】'; then printf '%s|%s\n' "$f" "$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)"; fi
+    if last_contract_line "$f" | grep -qE '^【交付完成】|^【交付停车】|^无完成信号:本报告为停车报告,未使用 `【交付完成】` 标记|^【验收回执】|^【中转回执】|^【中转回复】|^【工具件完成】|^【写单完成】|^【写单停车】'; then printf '%s|%s\n' "$f" "$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)"; fi
   done | sort
   return 0
 }
@@ -3013,6 +3013,105 @@ ev_material_targets(){  # <材料清单文件> → 真正在飞且 prompt 引用
 }
 
 ev_same_contract_mode(){ case "$1" in 【交付完成】*) printf quiet ;; *) printf notify ;; esac; }
+
+ev_prompt_report_path(){  # <prompt> → stdout=唯一交付报告绝对路径；1=缺失，2=多义
+  local prompt="$1" paths count
+  [ -r "$prompt" ] || return 1
+  paths="$(grep -oE '/[^[:space:]`]*4-开发层/记录/[^[:space:]`]*\.md' "$prompt" 2>/dev/null | sort -u)"
+  [ -n "$paths" ] || return 1
+  count="$(wc -l <<< "$paths" | tr -d ' ')"
+  [ "$count" = 1 ] || return 2
+  printf '%s\n' "$paths"
+}
+
+ev_terminal_report_kind(){  # <报告路径> → complete|parking|missing|invalid
+  local report="$1" last
+  [ -f "$report" ] || { printf missing; return 0; }
+  last="$(last_contract_line "$report" 2>/dev/null || true)"
+  case "$last" in
+    【交付完成】*) printf complete ;;
+    【交付停车】*|无完成信号:本报告为停车报告,未使用\ \`【交付完成】\`\ 标记) printf parking ;;
+    *) printf invalid ;;
+  esac
+}
+
+ev_terminal_report_ready(){  # <报告路径>；该报告由已终态 native run 放行，绕过本拍写入去抖
+  local report="$1" lane root run
+  for lane in a b c; do
+    root="$(lane_native_root "$lane")"
+    run="$(cat "$root/current" 2>/dev/null || true)"
+    [ -f "$run/terminal-report" ] && [ "$(cat "$run/terminal-report" 2>/dev/null)" = "$report" ] && return 0
+  done
+  return 1
+}
+
+ev_terminal_deliver(){  # <run> <lane> <status> <文本>；同一 native run 只投一次，重启后仍去重
+  local run="$1" lane="$2" status="$3" text="$4"
+  [ -e "$run/terminal-event" ] && return 0
+  ev_deliver "交付" "$text"
+  # tool_native_status 已为真实 failed run 写过同一事实时不重复刷看板；缺此标记才补来源可辨的一条。
+  [ -e "$run/alerted" ] || board "事件总线" "${text%%$'\n'*}；lane=${lane};native账=${run};status=${status}"
+  printf '%s\n' "$status" > "$run/terminal-event"
+}
+
+ev_native_terminal_scan(){  # print lane 的终态只认 native 账；报告事件仍由既有扫描/分流投递
+  local lane root prompt run state status report kind last path_rc note
+  for lane in a b c; do
+    root="$(lane_native_root "$lane")"
+    native_print_active "$root" || continue
+    prompt="$EV_PROMPT_DIR/lane-$lane"
+    [ -r "$prompt" ] || continue  # fresh/bootstrap 无业务 prompt，⛔ 误报「无报告」
+    run="$(cat "$root/current" 2>/dev/null || true)"
+    [ -d "$run" ] || continue
+    state="$(tool_native_status read "$run" 2>/dev/null || true)"
+    status="${state%%$'\n'*}"
+    case "$status" in
+      settled\ *)
+        if report="$(ev_prompt_report_path "$prompt")"; then
+          kind="$(ev_terminal_report_kind "$report")"
+          case "$kind" in
+            complete|parking)
+              # 终态已到即放行本拍的既有报告扫描，⛔ 让 ev_unsettled 再拖一拍；不另投同义终态。
+              printf '%s\n' "$report" > "$run/terminal-report"
+              continue
+              ;;
+          esac
+          last="$(last_contract_line "$report" 2>/dev/null || true)"
+          note="预期报告路径=${report};报告判定=${kind};末行=${last:-无}"
+        else
+          path_rc=$?
+          case "$path_rc" in
+            1) note="预期报告路径不可判(prompt 未给唯一交付报告路径:${prompt})" ;;
+            *) note="预期报告路径不可判(prompt 内多义:${prompt})" ;;
+          esac
+        fi
+        ev_terminal_deliver "$run" "$lane" "$status" "【事件】开发轨已 settled、无合法报告：lane-${lane}
+native账:${run}
+status:${status}
+${note}
+下一步:读 prompt 与 native 账核交付路径；⛔ 自动重派、⛔ 自动重启、⛔ 自动回落 TUI。"
+        ;;
+      failed\ *)
+        if report="$(ev_prompt_report_path "$prompt")"; then
+          kind="$(ev_terminal_report_kind "$report")"
+          last="$(last_contract_line "$report" 2>/dev/null || true)"
+          note="预期报告路径=${report};报告判定=${kind};末行=${last:-无}"
+        else
+          path_rc=$?
+          case "$path_rc" in
+            1) note="预期报告路径不可判(prompt 未给唯一交付报告路径:${prompt})" ;;
+            *) note="预期报告路径不可判(prompt 内多义:${prompt})" ;;
+          esac
+        fi
+        ev_terminal_deliver "$run" "$lane" "$status" "【事件】开发轨崩溃：lane-${lane}
+native账:${run}
+status:${status}
+${note}
+下一步:读 native 账与报告判定后转派工归口；⛔ 自动 retry、⛔ 自动回落 TUI。"
+        ;;
+    esac
+  done
+}
 
 # ── #105/#106/#107/#108(复盘页 §十六,方案窗口第十四任收班盘点;创始人 2026-08-20 07:0x 直令实现)──
 # 四条共同的形状:把「靠人记得」的搬运/自查换成机器可见——判据函数全部纯化(stdin→stdout),绊线直测。
@@ -3482,6 +3581,8 @@ ev_loop(){
       done < "$EV_PENDING"
       mv -f "$EV_PENDING.new" "$EV_PENDING"
     fi
+    # native print lane 的终态先落 durable 放行/告警标记；报告仍走下面唯一的扫描与投递通道。
+    ev_native_terminal_scan
     # 1) 新交付 → 投递(或暂存);mtime 早于心跳截止线的是重扫陈旧报告,记日志不投递
     cur="$(ev_scan_deliveries)"
     : > "$EV_SETTLING"   # 本拍待稳定候选清零(循环体在管道子 shell 里,靠文件把名单带出来)
@@ -3494,12 +3595,13 @@ ev_loop(){
         continue
       fi
       # 去抖:一拍之内还被写过的报告本拍不投、不进 seen(见 ev_unsettled 注;2026-08-22 20% 重投实证)
-      if ev_unsettled "$m" "$(date +%s)" "$EV_TICK"; then
+      # 已由终态 native run 放行的报告例外:终态与报告都已齐,再等一拍就是停车/收班静默。
+      if ! ev_terminal_report_ready "$f" && ev_unsettled "$m" "$(date +%s)" "$EV_TICK"; then
         printf '%s|%s\n' "$f" "$_h" >> "$EV_SETTLING"
         ev_log "交付候选待稳定(mtime 距今 $(( $(date +%s) - m ))s < ${EV_TICK}s,疑仍在写;下拍再核):$f"
         continue
       fi
-      lastline="$(tail -1 "$f")"
+      lastline="$(last_contract_line "$f" 2>/dev/null || true)"
       # 🔴 末行未变的内容变更 ⇒ 降级(2026-08-23 方案窗口第二十三任规格;dispatch 57 02:47/03:49 两次「假交付事件」实撞):
       #   验收方会往交付报告里追加修订结论,内容哈希一变就被当新交付重投,dispatch 花好几轮核 mtime/diff 才判出是假事件。
       #   末行=契约(标记+commit):它没变就不是新交付,只投一条轻量「更新」指针(⛔ 进 M1 ⛔ 提 verify-from);
@@ -3561,6 +3663,10 @@ ev_loop(){
   认可 ⇒ laixin-lane tool-down <件名> 回收本窗(⛔ 让它自收:看板要留「回收」条且来源是回收方);
   不认可 ⇒ 把缺口写清楚再 laixin-lane tool-up 起新件(**同一时刻只允许一个工具窗**,先 tool-down 再起)。
 ⚠️ 工具件 ⛔ 起验收窗 ⛔ 进 M1 台账(它不改产品代码,两条销账判据都够不着)。" ;;
+        【交付停车】*|无完成信号:本报告为停车报告,未使用\ \`【交付完成】\`\ 标记)
+          ev_deliver "交付" "【事件】开发轨停车报告落盘:$f
+末行:$lastline
+下一步:读报告中的缺口与待裁定项，转派工/方案归口处理；⛔ 自动重派、⛔ 自动重启、⛔ 自动回落 TUI。" ;;
         【验收回执】*)
           # 2026-08-23:末行分类 × 正文一致性自检(receipt_consistency)——冲突时把命中句附在事件里,派工方按正文人判 ⛔ 按末行自动转整改/计挂起
           _rcx="$(receipt_consistency "$f")"

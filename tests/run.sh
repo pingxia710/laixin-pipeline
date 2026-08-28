@@ -4916,6 +4916,74 @@ sgrep "seat_src_infer 认写单窗" 'prompt-*)  echo "写单窗"'
 
 rm -f "$PK"
 
+# ── #172 开发轨终端态事件:真实函数 + 隔离 native 账夹具(停车/崩溃不能再静默)──
+echo "== 开发轨终端态事件 =="
+N172="$(mktemp -d)"; F172="$N172/events.sh"
+for fn in last_contract_line ev_scan_deliveries ev_unsettled ev_last_get ev_last_set ev_same_contract_mode ev_prompt_report_path ev_terminal_report_kind ev_terminal_report_ready ev_terminal_deliver ev_native_terminal_scan ev_loop; do
+  sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$F172"
+done
+
+t "停车报告只认新标记或精确历史末行(正文/错拼不误报)" env N172="$N172" F172="$F172" bash -c '
+  source "$F172"; KB="$N172/kb"; mkdir -p "$KB/4-开发层/记录"
+  printf "正文\\n【交付停车】tool-a 缺裁定\\n" > "$KB/4-开发层/记录/new.md"
+  printf "正文\\n无完成信号:本报告为停车报告,未使用 \`【交付完成】\` 标记\\n" > "$KB/4-开发层/记录/legacy.md"
+  printf "【交付停车】在正文\\n普通末行\\n" > "$KB/4-开发层/记录/body-only.md"
+  printf "正文\\n【交付 停车】tool-a\\n" > "$KB/4-开发层/记录/misspelled.md"
+  out="$(ev_scan_deliveries)"
+  grep -qF "$KB/4-开发层/记录/new.md|" <<< "$out" && grep -qF "$KB/4-开发层/记录/legacy.md|" <<< "$out" && [ "$(ev_terminal_report_kind "$KB/4-开发层/记录/legacy.md")" = parking ] && ! grep -qE "body-only|misspelled" <<< "$out"'
+
+t "native settled/failed/running/bootstrap:一次事件且不重复刷看板" env N172="$N172" F172="$F172" bash -c '
+  source "$F172"; T="$N172/native"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"; mkdir -p "$EV_PROMPT_DIR" "$T/run-a" "$T/run-b" "$T/run-c" "$T/kb/4-开发层/记录"
+  lane_native_root(){ printf "%s/native/lane-%s\\n" "$EV_DIR" "$1"; }
+  native_print_active(){ return 0; }
+  board(){ printf "%s\\n" "$2" >> "$T/board"; }
+  ev_deliver(){ printf "%s|%s\\n" "$1" "$2" >> "$T/delivered"; }
+  tool_native_status(){ case "$1" in read) cat "$2/status" ;; esac; }
+  mkdir -p "$(lane_native_root a)" "$(lane_native_root b)" "$(lane_native_root c)"
+  printf "%s\\n" "$T/run-a" > "$(lane_native_root a)/current"; printf "settled fixture\\n" > "$T/run-a/status"
+  printf "%s\\n" "$T/missing-prompt.md" > "$EV_PROMPT_DIR/lane-a"
+  ev_native_terminal_scan; ev_native_terminal_scan
+  [ "$(grep -c "已 settled、无合法报告" "$T/delivered")" -eq 1 ] && [ "$(wc -l < "$T/board" | tr -d " ")" -eq 1 ]
+  printf "%s\\n" "$T/run-b" > "$(lane_native_root b)/current"; printf "failed fixture\\n" > "$T/run-b/status"; touch "$T/run-b/alerted"
+  printf "正文\\n【交付完成】b abcdef0\\n" > "$T/kb/4-开发层/记录/b.md"; printf "%s\\n" "$T/kb/4-开发层/记录/b.md" > "$EV_PROMPT_DIR/lane-b"
+  ev_native_terminal_scan; ev_native_terminal_scan
+  [ "$(grep -c "开发轨崩溃" "$T/delivered")" -eq 1 ] && [ "$(wc -l < "$T/board" | tr -d " ")" -eq 1 ]
+  printf "%s\\n" "$T/run-c" > "$(lane_native_root c)/current"; printf "running fixture\\n" > "$T/run-c/status"
+  printf "正文\\n【交付完成】c abcdef0\\n" > "$T/kb/4-开发层/记录/c.md"; printf "%s\\n" "$T/kb/4-开发层/记录/c.md" > "$EV_PROMPT_DIR/lane-c"
+  ev_native_terminal_scan; rm -f "$EV_PROMPT_DIR/lane-c"; printf "settled fixture\\n" > "$T/run-c/status"; ev_native_terminal_scan
+  [ ! -e "$T/run-c/terminal-event" ] && [ ! -e "$T/run-c/terminal-report" ]'
+
+run_terminal_tick(){ # <events source> <dead=0|1> <complete|parking> → 真实 ev_loop 一拍；删除接线应超时无投递
+  local source_file="$1" dead="$2" marker="$3"
+  local root="$N172/tick-${dead}-${marker}" one_tick="$N172/tick-${dead}-${marker}.sh"
+  rm -rf "$root"; mkdir -p "$root"
+  sed 's/^  while true; do$/  for _terminal_one_tick in 1; do/' "$source_file" > "$one_tick"
+  env ROOT172="$root" F172="$one_tick" MARKER172="$marker" bash -c '
+    source "$F172"; T="$ROOT172"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"; EV_SEEN="$EV_DIR/seen"; EV_SETTLING="$EV_DIR/settling"; EV_LAST="$EV_DIR/last"; EV_HB="$EV_DIR/hb"; EV_BOARD_POS="$EV_DIR/board.pos"; EV_VAULT="$T/vault"; KB="$T/kb"; BOARD="$T/board"; EV_TICK=60; EV_STALL=360; EV_PENDING="$T/pending"; EV_SPOOL="$T/spool"; RELAY_OUTBOX="$T/outbox"; RELAY_OUTBOX_D="$T/outbox.d"
+    mkdir -p "$EV_PROMPT_DIR" "$EV_DIR/native/lane-a" "$T/run" "$KB/4-开发层/记录" "$EV_VAULT"; : > "$BOARD"; printf "keep|hash\\n" > "$EV_SEEN"
+    report="$KB/4-开发层/记录/tick.md"; printf "正文\\n" > "$report"
+    if [ "$MARKER172" = parking ]; then printf "【交付停车】tick 缺裁定\\n" >> "$report"; else printf "【交付完成】tick abcdef0\\n" >> "$report"; fi
+    printf "%s\\n" "$report" > "$EV_PROMPT_DIR/lane-a"; printf "%s\\n" "$T/run" > "$EV_DIR/native/lane-a/current"; printf "settled fixture\\n" > "$T/run/status"
+    lane_native_root(){ printf "%s/native/lane-%s\\n" "$EV_DIR" "$1"; }; native_print_active(){ return 0; }; tool_native_status(){ cat "$2/status"; }; ev_log(){ :; }; board(){ :; }; loop_self_gen(){ :; }; loop_gen_record(){ :; }; loop_reload_due(){ return 1; }; wd_alive(){ return 0; }; ev_hb_cutoff(){ date +%s; }; dispatch_alive(){ return 1; }; tmux(){ return 0; }
+    sleep(){ :; }
+    ev_deliver(){ printf "%s|%s\\n" "$1" "$2" > "$T/delivered"; }
+    ev_loop'
+  local rc=$?
+  if [ "$dead" = 1 ]; then
+    [ "$rc" -eq 0 ] && [ ! -e "$root/delivered" ]
+  elif [ "$marker" = parking ]; then
+    [ "$rc" -eq 0 ] && grep -qF "【事件】开发轨停车报告落盘" "$root/delivered" && [ -f "$root/run/terminal-report" ]
+  else
+    [ "$rc" -eq 0 ] && grep -qF "【事件】交付落盘" "$root/delivered" && [ -f "$root/run/terminal-report" ]
+  fi
+}
+
+t "settled 完成报告在同一 tick 投既有交付事件(绕过去抖)" run_terminal_tick "$F172" 0 complete
+t "settled 停车报告在同一 tick 投停车事件" run_terminal_tick "$F172" 0 parking
+sed '/^[[:space:]]*ev_native_terminal_scan$/d' "$F172" > "$N172/events-without-terminal-scan.sh"
+t "反事实:删去终态接线后新报告留在去抖,本拍无投递" run_terminal_tick "$N172/events-without-terminal-scan.sh" 1 complete
+rm -rf "$N172"
+
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

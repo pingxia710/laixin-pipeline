@@ -2729,7 +2729,7 @@ def _blocked(cells,st):
     if re.search(r'(前置|等|待).*(合入|定稿|待拆|裁定|细化)',both): return True
     if re.search(r'不可立即发车|不可发车|暂不可发|不能发车|前置未解|前置未满足',both): return True
     return False
-short_rows=[]; sw_prod=0; sw_tool=0   # 第一片(2026-08-28):格数不足行 / 可自写按产品·工具拆分
+short_rows=[]; sw_prod=0; sw_tool=0; sw_other=0   # 第一片(2026-08-28):格数不足行 / 可自写按轨列拆 产品·工具·其他
 if m:
     for line in m.group(1).split('\n'):
         if not line.startswith('|') or '---' in line: continue
@@ -2757,9 +2757,13 @@ if m:
             if _blocked(cells,st): blocked_rows.append(name)
             else:
                 buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)'].append(name)
-                # 工具件判据=片名以 11B 起头(总表既有写法:「11B:…」「11B/落卡:…」);其余算产品线
-                if name.startswith('11B'): sw_tool+=1
-                else: sw_prod+=1
+                # 判据=读现成的轨列 ⛔ 片名前缀名单(主持 2026-08-29 复核:前缀只挡 11B、其余一律计产品 ⇒「产品 4」为假,真值 0;
+                #   前缀名单要穷举而漏一个的表现恰是「把非产品件报成产品线有活」,漏了不会有人告诉你)。
+                #   产品=轨列以 A/B/C 起头(A/B 开发轨、C 常设第三轨);工具=轨列含「工具」或片名 11B 起头;其余=其他(档面/台账/卡面/基座债/M 件…)
+                _trk=re.sub(r'[*`]','',cells[1]).strip()
+                if name.startswith('11B') or '工具' in _trk: sw_tool+=1
+                elif re.match(r'^[ABC](\b|轨|/| )', _trk): sw_prod+=1
+                else: sw_other+=1
         else: unparsed.append(name)
 ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']); design=len(buckets['🚧 缺设计,要方案窗口补'])
 if machine:
@@ -2771,12 +2775,12 @@ if machine:
         pass
     except OSError:
         pending='?'
-    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool}")
+    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool} selfwrite_other={sw_other}")
     sys.exit(0)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
     for n in v[:6]: print(f"      · {n}")
-print(f"  ✏️ 可自写拆分:产品 {sw_prod} / 工具 {sw_tool}(合计数 ⛔ 读成产品线有活——2026-08-28 那 8 件全是工具件而两条开发轨空着)")
+print(f"  ✏️ 可自写拆分(按轨列):产品 {sw_prod}(A/B/C 轨)/ 工具 {sw_tool} / 其他 {sw_other}(档面·台账·卡面·基座债等)——派工窗口看的是「产品」这一格 ⛔ 合计")
 if short_rows:
     print(f"  ⚠️ 格数不足 {len(short_rows)} 行(不足四格,分桶读不到 ⇒ 既不进已识别也不进未识别=静默漏行;补齐四格):")
     for x in short_rows: print(f"      · {x}")

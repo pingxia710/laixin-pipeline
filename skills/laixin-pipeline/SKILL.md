@@ -52,7 +52,7 @@ description: 来信平台 11B 开发流水线操作卡。派工、开发轨、�
     laixin-lane kb-commit "<说明>" "<vault相对路径>"
 
 - B/C 每片独立 worktree；C 轨 fresh 强制 --dir。
-- 🔴 **全切 print 后 C 轨(kimi)起窗须带前缀**:`LAIXIN_LANE_TRANSPORT=tui laixin-lane fresh c --dir <worktree>` —— `bin/laixin-lane:542` 的守卫在 `transport=print` 且轨引擎非 codex 时**无条件拒**(带不带 `--dir` 都拒)。**这是过渡态**:终态=守卫改按轨解析(codex 轨 print / kimi 轨恒 tui,零前缀),已登 11B。
+- 🔴 **C 轨(kimi)起窗须带前缀**:`LAIXIN_LANE_TRANSPORT=tui laixin-lane fresh c --dir <worktree>` —— `bin/laixin-lane:542` 守卫**无条件拒**(带不带 `--dir` 都拒)。过渡态,终态已登 11B。
 - send 后看落地校验；可疑时先 peek 至少 30 行，确认被吞再重发。
 - MCP 默认关闭；只有 prompt 明确需要时在 fresh 加已有 --with-mcp。
 - 不自行改模型、账号、专线或 credential 配置。
@@ -174,7 +174,7 @@ prompt 宪法头、测试矩阵、交付契约正文见：
 
 - M 件只做非产品代码的执行类活；报告末行 【交付完成】M轨-...，按任务单轻量复核，不起验收窗。
 - tool-up 只维护 11B/11C，自建分支，不提交 main；报告末行 【工具件完成】。
-- Claude print 传输 `--engine claude --transport print`(**默认已是 `print`**,2026-08-27 10:10:35 起)**no-go 已解除**(2026-08-27 方案侧裁;沿革=`f1427b8` 两前置闭环〔告警双向自证 + 隔离载体〕)。**已全切**(创始人 2026-08-27 直令「现在、立刻全切」,10:10:35 写 `lane-transport=print`;切前解析实测 `tui`、切后 `print`);**切后监控**=第一件真跑核「告警回传 + 运行可见」两面留读数(**⛔ 读成切的前置,它是切后监控**);**回退开关保留,遇异常即回退并报方案侧**。解析顺序与回退跑 `--dry` 自看。
+- Claude print 传输 `--engine claude --transport print`(**默认已是 `print`**,2026-08-27 起全切)。**回退开关保留,遇异常即回退并报方案侧**;解析顺序与回退跑 `--dry` 自看。沿革(no-go 解除 · 全切令 · 切后监控)见看板 2026-08-27 段。
 - relay-once 是按件快查/书记，不替代常驻 relay；需要 relay-msg 代发时常驻 relay 必须在班。
 - 等待这些窗口产出不构成派工燃料；各自的超时和回执由 events 管。
 

@@ -3642,6 +3642,29 @@ t "accept-preflight:四行只出三态之一,且未给 prompt 时硬边界/绊�
     grep -E "^$ln: " <<< "$out" | grep -qE "^$ln: (成立|不成立|未判|命中|未命中)" || { echo "$ln 行非三态"; exit 3; }
   done
   grep -q "影子运行:本单 ⛔ 算替代" <<< "$out"' _ "$APF" "$APFT" "$(cd "$(dirname "$0")/.." && pwd)"
+# ── 测试入口按仓可配(七步第 3 步在途③;2026-08-29 方案窗口第三十七任)──────────────────────
+#   原实现把入口 `bash tests/run.sh` 与结果解析 `^结果:N 过 / M 败` **双双硬编码成工具仓形态**,
+#   历史回放跨不到别的仓(钓不钓基座仓无 tests/run.sh、输出是 unittest 风格,两处都对不上)。
+#   ⚠️ 用真 commit + 假测试命令 ⇒ worktree 真建、全量不真跑,几秒完事。
+APFC="$(mktemp -d)"; APFREPO="$(cd "$(dirname "$0")/.." && pwd)"; APFCAND="$(git -C "$APFREPO" rev-parse --short HEAD)"
+t "accept-preflight:--test-cmd 覆盖入口,且结果行仍按既有格式解析" bash -c '
+  out="$("$1" 片X "$4" --repo "$3" --evidence-dir "$2/e1" --test-cmd "echo \"结果:7 过 / 0 败\"" 2>&1)"
+  grep -qE "^全量: 成立" <<< "$out" || { echo "未判成立:$(grep ^全量: <<< "$out")"; exit 1; }
+  grep -qF "passed=7 failed=0" <<< "$out" || exit 2' _ "$APF" "$APFC" "$APFREPO" "$APFCAND"
+# 🔴 判据反向锚:仓**没有**显式声明 judge=rc 时,解析不出必须是「未判」⛔ 因为退出码是 0 就判绿。
+#   「未判」在三态硬规则里的存在理由正是**判不出就说判不出**;默认按 rc 定论 = 把未判偷偷变成绿。
+t "accept-preflight:未声明 judge=rc 时,无计数即使 rc=0 也判「未判」⛔ 当绿" bash -c '
+  out="$("$1" 片X "$4" --repo "$3" --evidence-dir "$2/e2" --test-cmd "true" 2>&1)"
+  grep -qE "^全量: 未判" <<< "$out" || { echo "应未判,实得:$(grep ^全量: <<< "$out")"; exit 1; }
+  grep -qF "⛔ 当绿" <<< "$out" || exit 2' _ "$APF" "$APFC" "$APFREPO" "$APFCAND"
+t "accept-preflight:仓内 11b/test-entry.conf 声明 cmd+judge=rc ⇒ 按退出码定论(跨仓回放所需)" bash -c '
+  git -C "$3" worktree add -f --detach "$2/wt" "$4" >/dev/null 2>&1 || exit 9
+  mkdir -p "$2/wt/11b"; printf "cmd=true\njudge=rc\n" > "$2/wt/11b/test-entry.conf"
+  out="$("$1" 片X "$4" --repo "$2/wt" --evidence-dir "$2/e3" 2>&1)"
+  git -C "$3" worktree remove --force "$2/wt" >/dev/null 2>&1
+  grep -qE "^全量: 成立" <<< "$out" || { echo "conf 未生效:$(grep ^全量: <<< "$out")"; exit 1; }
+  grep -qF "仓声明 judge=rc" <<< "$out" || exit 2' _ "$APF" "$APFC" "$APFREPO" "$APFCAND"
+rm -rf "$APFC"
 rm -rf "$APFT"
 t "#186 第四载体:ev_selfwrite_pending 按**产品格** ⇒ 产品0/工具33 时判「有意空闲」(返 1)⛔ 对产品轨告警" bash -c '
   source "$1/f.sh"; TABLE="$1/t186d"; : > "$TABLE"; EV_PENDING="$1/p186d"; : > "$EV_PENDING"

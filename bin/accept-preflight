@@ -10,18 +10,20 @@
 #    **「未判」必须显式写出并交 AI ⛔ 写成绿或零** —— 判不出就说判不出,是本件存在的理由。
 # 🔴 **只拼既有命令 ⛔ 重写判定逻辑**:merge-base / tests/run.sh / git diff / 拆修法复跑。
 #
-# 用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo <仓路径>]
+# 用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo <仓路径>] [--test-cmd <全量命令>]
+#       测试入口优先级: --test-cmd > <仓>/11b/test-entry.conf(cmd= / judge=rc|count) > bash tests/run.sh
 # 输出: stdout=事实单;证据 tee 到 --evidence-dir(默认 mktemp);退出码 0=事实单已出(⛔ 表示通过)
 set -uo pipefail
 
 # 🔴 参数解析:位置参数与旗标**统一在一个循环里取** ⛔ 先 `PROMPT=$3` 再无条件 `shift 3`。
 #    2026-08-29 实撞(方案窗口第三十七任跑第 3 步复验时):省略可选的 prompt 直接给 `--repo` ⇒
 #    `$3` 把 `--repo` 吃成 prompt 值、`shift 3` 又吃掉仓路径 ⇒ **两个旗标全部失效**。
-SLICE=""; CAND=""; PROMPT=""; REPO=""; EVID=""
+SLICE=""; CAND=""; PROMPT=""; REPO=""; EVID=""; TESTCMD=""; TESTJUDGE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
     --evidence-dir) EVID="${2:-}"; shift 2 ;;
+    --test-cmd) TESTCMD="${2:-}"; shift 2 ;;
     --*) shift ;;
     *)
       if   [ -z "$SLICE"  ]; then SLICE="$1"
@@ -45,7 +47,7 @@ if [ -z "$REPO" ]; then
     exit 2
   fi
 fi
-[ -n "$SLICE" ] && [ -n "$CAND" ] || { echo "用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo 仓] [--evidence-dir 目录]" >&2; exit 2; }
+[ -n "$SLICE" ] && [ -n "$CAND" ] || { echo "用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo 仓] [--evidence-dir 目录] [--test-cmd 全量命令]" >&2; exit 2; }
 [ -n "$EVID" ] || EVID="$(mktemp -d)"
 mkdir -p "$EVID"
 
@@ -87,19 +89,36 @@ if git -C "$REPO" cat-file -e "${CAND}^{commit}" 2>/dev/null; then
   fi
 fi
 
-# ② 全量(既有命令:tests/run.sh;隔离 worktree + 隔离状态根)
+# ② 全量(既有命令;隔离 worktree + 隔离状态根)
+# ── 测试入口**按仓可配**(2026-08-29 方案窗口第三十七任;七步第 3 步在途③)────────────────────
+#   原实现把入口(`bash tests/run.sh`)与结果解析(`^结果:N 过 / M 败`)**双双硬编码成工具仓的形态**,
+#   于是历史回放跨不到别的仓:钓不钓基座仓无 `tests/run.sh`,其输出是 unittest 风格,两处都对不上。
+# 🔴 口径:**让仓自己声明入口与判据 ⛔ 工具替它猜**。优先级 = `--test-cmd` > 仓内 `11b/test-entry.conf` > 回落工具仓形态。
+#   `judge=rc` 必须由仓**显式声明**才生效 —— ⛔ 默认「解析不出就看退出码」:那等于把「未判」偷偷变成绿,
+#   而三态硬规则里「未判」的存在理由正是**判不出就说判不出**。默认仍是 count(解析不出 ⇒ 未判)。
+TESTCONF="$REPO/11b/test-entry.conf"
+if [ -z "$TESTCMD" ] && [ -r "$TESTCONF" ]; then
+  TESTCMD="$(sed -nE 's/^[[:space:]]*cmd=(.*)$/\1/p' "$TESTCONF" | tail -1)"
+  TESTJUDGE="$(sed -nE 's/^[[:space:]]*judge=([a-z]+).*$/\1/p' "$TESTCONF" | tail -1)"
+fi
+[ -n "$TESTCMD" ] || TESTCMD="bash tests/run.sh"
+[ -n "$TESTJUDGE" ] || TESTJUDGE="count"
 r_full="未判"; d_full="worktree 建不起来"
 if git -C "$REPO" worktree add -f --detach "$WT" "$CAND" >"$EVID/worktree.log" 2>&1; then
-  ( cd "$WT" && HOME="$STATE" bash tests/run.sh ) >"$EVID/full.log" 2>&1
+  ( cd "$WT" && HOME="$STATE" eval "$TESTCMD" ) >"$EVID/full.log" 2>&1
   rc_full=$?
   line="$(grep -E '^结果:' "$EVID/full.log" | tail -1)"
   p="$(sed -nE 's/^结果:([0-9]+) 过.*/\1/p' <<< "$line")"
   f="$(sed -nE 's/.*\/ ([0-9]+) 败.*/\1/p' <<< "$line")"
   if [ -n "$p" ] && [ -n "$f" ]; then
     if [ "$f" -eq 0 ] && [ "$p" -gt 0 ]; then r_full="成立"; else r_full="不成立"; fi
-    d_full="passed=$p failed=$f rc=$rc_full"
+    d_full="passed=$p failed=$f rc=$rc_full(入口:$TESTCMD)"
+  elif [ "$TESTJUDGE" = rc ]; then
+    # 仓显式声明按退出码判(unittest / pytest 等框架保证 rc 语义)⇒ 才允许无计数也定论。
+    if [ "$rc_full" -eq 0 ]; then r_full="成立"; else r_full="不成立"; fi
+    d_full="rc=$rc_full(仓声明 judge=rc;无过/败计数)(入口:$TESTCMD)"
   else
-    d_full="解析不出「结果:N 过 / M 败」⇒ 未判(⛔ 当绿);rc=$rc_full;末行:$(tail -1 "$EVID/full.log" | cut -c1-80)"
+    d_full="解析不出「结果:N 过 / M 败」且仓未声明 judge=rc ⇒ 未判(⛔ 当绿);rc=$rc_full;入口:$TESTCMD;末行:$(tail -1 "$EVID/full.log" | cut -c1-80)"
   fi
 fi
 

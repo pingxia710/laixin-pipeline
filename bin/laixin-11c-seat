@@ -106,6 +106,35 @@ launcher_cfg_dir(){  # <入口名> → stdout=该包装器里的 CLAUDE_OFFICIAL
 die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
 note(){ printf '   %s\n' "$*" >&2; }
 
+# [trust-nav v1 2026-08-28] claude 2.1.250 起 trust 对话框默认项反转(❯ 停在「No, exit」),
+#   原「见框即 C-m」按下去的是退出(当日两次实撞,窗口静默死)。
+# 处置=阳性锚导航:读 ❯ 行 → 停在 Yes 才 C-m;停在 No 则 Down 导航后复读;按后核进程仍活。
+#   判据=复核选中项读数 ⛔ 发键计数(总纲白名单条);4 轮导航不到 Yes ⇒ fail-closed 不按。
+# 同源两份:laixin-11c-dispatch / laixin-11c-seat(改一处必同步另一处);
+#   laixin-lane 侧(cmd_dispatch 接管指令 C-m 键序)归 dispatch 热修件 ⛔ 本函数射程。
+trust_nav_confirm(){  # <tmux target>  → 0=已核 ❯=Yes 确认且进程存活  1=fail-closed(未按/按后死)
+  local t="$1" pane sel i pc
+  for i in 1 2 3 4; do
+    pane="$(tmux capture-pane -p -t "$t" 2>/dev/null || true)"
+    sel="$(grep '❯' <<< "$pane" | tail -1 | tr -s ' ' || true)"
+    case "$sel" in
+      *"Yes, I trust"*)
+        tmux send-keys -t "$t" C-m; sleep 2
+        pc="$(tmux display -p -t "$t" '#{pane_current_command}' 2>/dev/null || true)"
+        if [ -n "$pc" ] && [ "$pc" != "zsh" ] && [ "$pc" != "bash" ]; then
+          note "trust → 已核 ❯=Yes 才确认(选中项读数:$(printf '%.48s' "$sel");确认后进程=$pc)"; return 0
+        fi
+        note "⚠️ trust 确认后进程退出(❯ 读数:$sel;pc=${pc:-空})"; return 1 ;;
+      *"No,"*)
+        tmux send-keys -t "$t" Down; sleep 0.6 ;;
+      *) sleep 0.6 ;;
+    esac
+  done
+  note "⚠️ trust 对话框 4 轮未能把 ❯ 导航到 Yes(末读数:${sel:-空})——fail-closed 不按"
+  return 1
+}
+
+
 usage(){
   cat >&2 <<'USAGE'
 用法:
@@ -294,7 +323,7 @@ answer_prompts(){  # <window> <pane文本>
       # 安全默认:全部拒绝。席位不需要 MCP;MCP=任意可执行程序,能读 OAuth 凭据(01A 封号路径)
       tmux send-keys -t "$SESSION:$w" Escape; note "MCP 提示 → 全部拒绝(Escape)"; return 0 ;;
     *"trust this folder"*|*"Do you trust the files"*)
-      tmux send-keys -t "$SESSION:$w" C-m; note "trust 提示 → 确认(暂存区为本机自建目录)"; return 0 ;;
+      trust_nav_confirm "$SESSION:$w" || note "⚠️ trust 导航 fail-closed 未按(现场在,watcher 超时线照旧)"; return 0 ;;
     *"external"*"imports"*|*"CLAUDE.md file imports"*)
       tmux send-keys -t "$SESSION:$w" C-m; note "外部 import 提示 → 确认(本机自有文件)"; return 0 ;;
     *"Update available"*)

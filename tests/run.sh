@@ -2297,10 +2297,14 @@ TLV="$(mktemp -d)"; git init -q -b main "$TLV"; git -C "$TLV" config user.email 
 printf '| 角色 | 地址 |\n|---|---|\n| 甲 | a |\n' > "$TLV/来信平台-窗口角色注册表.md"
 git -C "$TLV" add -A; git -C "$TLV" commit -qm seed
 printf '| 乙 | 劈行 || 形态 |\n' >> "$TLV/来信平台-窗口角色注册表.md"
-tout "kb-commit 涉注册表 ⇒ 自动断言并拦下新增劈行(⛔ 阻断,报警由人核)" "列数断言" \
+tfail "kb-commit 涉注册表 ⇒ 新增劈行被**闸**在提交前(2026-08-29 由警升闸:#51 注册表劈 10 列 + 事实归一 16 行劈表照样入库=两次实撞)" "表结构断言未过,未提交" \
   env LAIXIN_VAULT="$TLV" "$LANE" kb-commit "test: 注册表劈行" 来信平台-窗口角色注册表.md
-t "断言未过但提交已落库(⛔ 阻断=分桶钩同哲学)" bash -c \
-  'git -C "$1" log --oneline -1 | grep -q "注册表劈行"' tl "$TLV"
+t "劈行未进库(HEAD 仍是 seed)——闸是真的拦了 ⛔ 只是喊了一声" bash -c \
+  'git -C "$1" log --oneline -1 | grep -q "seed"' tl "$TLV"
+tout "显式 LAIXIN_KB_LINT_WARN=1 才能越过(留痕形态)" "照提交" \
+  env LAIXIN_VAULT="$TLV" LAIXIN_KB_LINT_WARN=1 "$LANE" kb-commit "test: 注册表劈行越过" 来信平台-窗口角色注册表.md
+t "越过后已入库(证明越过路径可用 ⛔ 死锁)" bash -c \
+  'git -C "$1" log --oneline -1 | grep -q "注册表劈行越过"' tl "$TLV"
 printf '| 丙 | c |\n' >> "$TLV/来信平台-窗口角色注册表.md"
 tout "kb-commit 新增好行 ⇒ 断言过报绿(#50)" "✅ table-lint" \
   env LAIXIN_VAULT="$TLV" "$LANE" kb-commit "test: 注册表好行" 来信平台-窗口角色注册表.md

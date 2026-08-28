@@ -2037,6 +2037,32 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
   done
   # #61 (b) 写盘闸:排在**一切 add/commit 之前**,且排在只告警的三个钩之前——本闸会 die,
   # 让它先跑就不会出现「先打一串告警再拒绝」的输出(操作者要读到的是唯一那条阻断原因)。
+  # #51-bis 表结构断言**前置为闸**(2026-08-29;第二次实撞:事实归一第三批 16 行劈表而 kb-commit 照样提交——警 ⛔ 闸)。
+  #   只核本次新增行(与提交后 #51 同口径,取 diff HEAD 的 + 行号);断言失败 rc=1 ⇒ 拒提交;lint 自身跑不了(rc≥2)⇒ 只警不拦(三约束②);
+  #   确需越过:LAIXIN_KB_LINT_WARN=1(显式 env;kb-commit ⛔ 旗标)。⛔ 扩到非台账族文件(噪声与目标行为同向,三约束③)。
+  local _gf _glines _grc
+  for _gf in "${args[@]}"; do
+    case "$_gf" in *执行总表*|*注册表*|*看板*|*走查底册*) : ;; *) continue ;; esac
+    if git -C "$vault" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+      _glines="$(git -C "$vault" diff --unified=0 HEAD -- "$_gf" 2>/dev/null \
+        | awk '/^@@/ {if (match($0, /\+[0-9]+(,[0-9]+)?/)) {s=substr($0, RSTART+1, RLENGTH-1); split(s, a, ","); n=(a[2]=="")?1:a[2]+0; for(i=0;i<n;i++) print a[1]+i}}' \
+        | paste -s -d, - || true)"
+      [ -n "$_glines" ] || continue
+    else
+      _glines=""   # 仓库尚无 HEAD(首次提交):整份都是新增行 ⇒ 核全文(⛔ 让 git diff HEAD 的失败在 set -e 下杀掉整个 kb-commit——6g 夹具实撞)
+    fi
+    _grc=0
+    if [ -n "$_glines" ]; then cmd_table_lint "$_gf" --lines "$_glines" >/dev/null 2>&1 || _grc=$?
+    else cmd_table_lint "$_gf" >/dev/null 2>&1 || _grc=$?; fi
+    if [ "$_grc" -eq 1 ]; then
+      if [ "${LAIXIN_KB_LINT_WARN:-0}" = 1 ]; then echo "⚠️ 表结构断言未过但 LAIXIN_KB_LINT_WARN=1 ⇒ 照提交(越过须留痕)"
+      else
+        { if [ -n "$_glines" ]; then cmd_table_lint "$_gf" --lines "$_glines"; else cmd_table_lint "$_gf"; fi; } 2>&1 | tail -6 || true
+        die "⛔ 表结构断言未过,未提交:$(basename "$_gf") 本次新增行有列数不齐/表外残留竖线——修好再 kb-commit(注册表被劈 10 列坏 20 分钟、事实归一 16 行劈表照样入库,均此形态);确需越过 LAIXIN_KB_LINT_WARN=1"
+      fi
+    elif [ "$_grc" -ge 2 ]; then echo "⚠️ 表结构断言自身跑不了(rc=$_grc),只警不拦(三约束②失效降级)"
+    fi
+  done
   kb_inventory_h3_check "${args[@]}"
   # #9 撞号自检必须在 add/commit **之前**跑:它比对的是工作树与 HEAD 的差(新增了哪些行),
   # 提交之后这个差就没了;且先报后交,操作者看到告警时下一步动作是明确的。

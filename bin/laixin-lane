@@ -5938,16 +5938,23 @@ except OSError as exc:
     print(f"BU 自检读账失败:{exc}", file=sys.stderr)
     raise SystemExit(1)
 
+bu_ok = ready_ok = False
 for row in rows:
+    item = row.get("item")
+    if row.get("item_type") == "agent_message" and isinstance(item, dict) and item.get("text") == "READY":
+        ready_ok = True
     if row.get("phase") != "tool_finished" or row.get("item_type") != "command_execution":
         continue
     if row.get("exit_code") != 0:
         continue
     output = row.get("aggregated_output")
     if isinstance(output, str) and output.splitlines() == [expected_name, expected_url]:
-        raise SystemExit(0)
+        bu_ok = True
 
-print("BU 自检失败:窗内未读到匹配的 BU_NAME/BU_CDP_URL；native 账已留存", file=sys.stderr)
+if bu_ok and ready_ok:
+    raise SystemExit(0)
+
+print("BU 自检失败:窗内未同时读到匹配的 BU_NAME/BU_CDP_URL 与逐字 READY；native 账已留存", file=sys.stderr)
 raise SystemExit(1)
 PY
 }

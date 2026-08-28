@@ -4605,14 +4605,41 @@ t "#165-4 tool-up 的 print native runner 走隔离 server，默认窗只作回�
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'")"
   grep -q "native_tmux_start \"\$native_run\" \"\$dir_r\" \"\$launch\"" <<< "$seg" &&
   grep -q "默认窗只作回收载体" <<< "$seg"'
-t "#165-4 BU 自检只接受 native shell 的精确通道输出，缺失或错值必失败" bash -c '
-  T="$(mktemp -d)"; sed -n "/^native_bu_self_check()/,/^}/p" "'$LANE'" > "$T/f.sh"; source "$T/f.sh"
-  mkdir -p "$T/run"; python3 - "$T/run/events.jsonl" <<"PY"
-import json, sys
-json.dump({"phase":"tool_finished", "item_type":"command_execution", "exit_code":0,
-           "aggregated_output":"lane-a\nhttp://127.0.0.1:9231\n"}, open(sys.argv[1], "w"))
+# 守护: 11B-三个探针面选错
+C3P="$(mktemp -d)"; sed -n "/^native_bu_self_check()/,/^}/p" "$LANE" > "$C3P/f.sh"
+python3 - "$C3P" <<'PY'
+import json, os, sys
+
+root = sys.argv[1]
+started = {"phase":"tool_started", "item_type":"command_execution", "exit_code":None,
+           "aggregated_output":""}
+good = {"phase":"tool_finished", "item_type":"command_execution", "exit_code":0,
+        "aggregated_output":"lane-a\nhttp://127.0.0.1:9231\n"}
+ready = {"phase":"notice", "item_type":"agent_message", "item":{"type":"agent_message", "text":"READY"}}
+settled = {"phase":"settled", "exit_code":0}
+cases = {
+    "historical": [started, good, ready, settled],
+    "later-command": [started, {**good, "aggregated_output":""}, good, ready, settled],
+    "missing-ready": [started, good, settled],
+    "not-ready": [started, good, {**ready, "item":{**ready["item"], "text":"NOT READY"}}, settled],
+    "wrapped-ready": [started, good, {**ready, "item":{**ready["item"], "text":"READY now"}}, settled],
+    "wrong-bu": [started, {**good, "aggregated_output":"lane-b\nhttp://127.0.0.1:9231\n"}, ready, settled],
+    "failed-command": [started, {**good, "exit_code":1}, ready, settled],
+}
+for name, rows in cases.items():
+    run = os.path.join(root, name)
+    os.makedirs(run)
+    with open(os.path.join(run, "events.jsonl"), "w") as out:
+        for row in rows:
+            out.write(json.dumps(row, ensure_ascii=False) + "\n")
 PY
-  native_bu_self_check "$T/run" lane-a 9231 && ! native_bu_self_check "$T/run" lane-b 9231; rc=$?; rm -rf "$T"; exit "$rc"'
+t "三探针 C 阳性2/2:历史顺序与首 command 空、后续正确均成功" bash -c '
+  source "$1/f.sh"; native_bu_self_check "$1/historical" lane-a 9231 && native_bu_self_check "$1/later-command" lane-a 9231' _ "$C3P"
+t "三探针 C 阴性3/5:缺 READY、NOT READY、带后缀 READY 均失败" bash -c '
+  source "$1/f.sh"; ! native_bu_self_check "$1/missing-ready" lane-a 9231 && ! native_bu_self_check "$1/not-ready" lane-a 9231 && ! native_bu_self_check "$1/wrapped-ready" lane-a 9231' _ "$C3P"
+t "三探针 C 阴性5/5:BU 错值或 command 非成功 finished 均失败" bash -c '
+  source "$1/f.sh"; ! native_bu_self_check "$1/wrong-bu" lane-a 9231 && ! native_bu_self_check "$1/failed-command" lane-a 9231' _ "$C3P"
+rm -rf "$C3P"
 t "#165-4 tmux 回收杀掉 native 进程后，read 不得把旧账读成 running" bash -c '
   T="$(mktemp -d)"; sed -n "/^tool_native_status()/,/^}/p" "'"$LANE"'" > "$T/f.sh"; source "$T/f.sh"
   board(){ printf "| 00-00 00:00 | %s | %s |\\n" "$1" "$2" >> "$T/board"; }

@@ -1,0 +1,131 @@
+#!/bin/bash
+# accept-preflight —— 验收事实单(M1;**影子运行**)
+# ─────────────────────────────────────────────────────────────────────────────
+# 权威 : ~/Obsidian/.../raw/提案-机器替代AI替代表-20260829.md §二 M1
+# 裁定 : 来信 KB .../议题-来信流水线系统性优化-20260828.md §九(创始人 2026-08-29 02:03:07 拍板)
+#
+# 🔴 **影子运行** —— M1 未在一张真实片上与验收窗逐项一致之前:
+#    本程序的输出 **⛔ 算作替代**,**⛔ 删验收窗的任何动作**。它只出**事实单**,⛔ 出结论。
+# 🔴 **三态硬规则**:每行只许 成立 / 不成立 / 未判(硬边界行为 命中 / 未命中 / 未判)。
+#    **「未判」必须显式写出并交 AI ⛔ 写成绿或零** —— 判不出就说判不出,是本件存在的理由。
+# 🔴 **只拼既有命令 ⛔ 重写判定逻辑**:merge-base / tests/run.sh / git diff / 拆修法复跑。
+#
+# 用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo <仓路径>]
+# 输出: stdout=事实单;证据 tee 到 --evidence-dir(默认 mktemp);退出码 0=事实单已出(⛔ 表示通过)
+set -uo pipefail
+
+SLICE="${1:-}"; CAND="${2:-}"; PROMPT="${3:-}"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+EVID=""
+shift $(( $# > 3 ? 3 : $# )) 2>/dev/null || true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --evidence-dir) EVID="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$SLICE" ] && [ -n "$CAND" ] || { echo "用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo 仓] [--evidence-dir 目录]" >&2; exit 2; }
+[ -n "$EVID" ] || EVID="$(mktemp -d)"
+mkdir -p "$EVID"
+
+TIERS="$REPO/11b/risk-tiers.conf"
+VER="$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+CMDLINE="accept-preflight $SLICE $CAND ${PROMPT:-—}"
+
+# ── 隔离:临时 verify worktree + 隔离状态根(HOME 覆盖 ⇒ EV_DIR 随之落到临时目录,
+#    绕开 tool-versions 版本账与固定名会话两处全局单例;⛔ 等 T0 ⛔ 加全局锁)──
+WT="$(mktemp -d)/wt"
+# 🔴 **状态根必须落在 `/Users` 下 ⛔ `mktemp -d`(macOS 落 /var/folders)** —— 2026-08-29 影子第二火实撞:
+#    `review-env` 有硬规则「评审 worktree 必须放 /Users 下」(Turbopack 拒绝指向 worktree 外的 node_modules symlink),
+#    状态根在 /var/folders ⇒ 该族 10 项全假红。⇒ 隔离要**换位置 ⛔ 换文件系统语义**。
+STATE="$HOME/.laixin-m1-state-$$"; mkdir -p "$STATE"
+# 🔴 **隔离状态根 ≠ 隔离整个 HOME**(2026-08-29 影子首火实撞:直接 HOME=临时目录 ⇒ vault / 产品仓 /
+#    .codex/skills 一并失效,47 项假红 —— `stats` Traceback、产品仓路径变成 /var/folders/…)。
+#    ⇒ 只把 `.laixin-*` 状态(含 EV_DIR 的 tool-versions 版本账)留在临时根,**其余顶层条目软链回真身**。
+#    这一条是影子运行第一次跑就抓出来的:若当时直接转正,本程序会把合格交付判成 47 项失败。
+for _e in "$HOME"/* "$HOME"/.[!.]*; do
+  [ -e "$_e" ] || continue
+  case "$(basename "$_e")" in .laixin-*) continue ;; esac
+  ln -sfn "$_e" "$STATE/$(basename "$_e")" 2>/dev/null || true
+done
+cleanup(){ git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1; rm -rf "$STATE" 2>/dev/null; }
+trap cleanup EXIT
+
+BASE="$(git -C "$REPO" rev-parse --short main 2>/dev/null || echo unknown)"
+say(){ printf '%s\n' "$*"; }
+
+# ① 基点(既有命令:merge-base --is-ancestor)
+r_base="未判"; d_base="候选或 main 解析不出"
+if git -C "$REPO" cat-file -e "${CAND}^{commit}" 2>/dev/null; then
+  if git -C "$REPO" merge-base --is-ancestor "$CAND" main 2>/dev/null; then
+    r_base="成立"; d_base="候选 commit 已是 main 祖先(已合入形态)"
+  else
+    if git -C "$REPO" merge-base --is-ancestor main "$CAND" 2>/dev/null; then
+      r_base="成立"; d_base="候选领先 main 且含其全部历史(可 ff-only)"
+    else r_base="不成立"; d_base="候选与 main 已分叉,需 rebase 到 $BASE"; fi
+  fi
+fi
+
+# ② 全量(既有命令:tests/run.sh;隔离 worktree + 隔离状态根)
+r_full="未判"; d_full="worktree 建不起来"
+if git -C "$REPO" worktree add -f --detach "$WT" "$CAND" >"$EVID/worktree.log" 2>&1; then
+  ( cd "$WT" && HOME="$STATE" bash tests/run.sh ) >"$EVID/full.log" 2>&1
+  rc_full=$?
+  line="$(grep -E '^结果:' "$EVID/full.log" | tail -1)"
+  p="$(sed -nE 's/^结果:([0-9]+) 过.*/\1/p' <<< "$line")"
+  f="$(sed -nE 's/.*\/ ([0-9]+) 败.*/\1/p' <<< "$line")"
+  if [ -n "$p" ] && [ -n "$f" ]; then
+    if [ "$f" -eq 0 ] && [ "$p" -gt 0 ]; then r_full="成立"; else r_full="不成立"; fi
+    d_full="passed=$p failed=$f rc=$rc_full"
+  else
+    d_full="解析不出「结果:N 过 / M 败」⇒ 未判(⛔ 当绿);rc=$rc_full;末行:$(tail -1 "$EVID/full.log" | cut -c1-80)"
+  fi
+fi
+
+# ③ 硬边界扫描(既有命令:git diff --name-only / --stat × 配置文件禁止路径集)
+r_edge="未判"; d_edge="risk-tiers.conf 读不到 ⇒ 禁止路径集无来源"
+git -C "$REPO" diff --stat "$BASE...$CAND" >"$EVID/diff.stat" 2>/dev/null
+if [ -f "$TIERS" ]; then
+  git -C "$REPO" diff --name-only "$BASE...$CAND" >"$EVID/diff.files" 2>/dev/null
+  cpaths="$(sed -n '/^\[C_PATHS\]/,/^\[/p' "$TIERS" | grep -vE '^\[|^#|^$')"
+  hit=""
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    while IFS= read -r fp; do
+      [ -n "$fp" ] || continue
+      case "$fp" in ${pat//\*\*/*}) hit="$hit $fp($pat)" ;; esac
+    done < "$EVID/diff.files"
+  done <<< "$cpaths"
+  if [ -n "$hit" ]; then r_edge="命中"; d_edge="C_PATHS:$hit"; else r_edge="未命中"; d_edge="C_PATHS 零命中(⛔ 读成语义边界也干净——语义边界归验收 AI 四问之三)"; fi
+fi
+if [ -z "${PROMPT:-}" ] || [ ! -f "${PROMPT:-/nonexistent}" ]; then
+  r_edge="未判"; d_edge="prompt 边界段无机读路径(未给 prompt 或文件不存在)⇒ 该项未判 ⛔ 当未命中"
+fi
+
+# ④ 绊线(既有命令:拆修法复跑;影子版只做「签名解析 + 三态」⛔ 自造签名)
+r_trip="未判"; d_trip="无预期失败签名(prompt/交付报告未点名回归测试 id)⇒ 未判 ⛔ 当绿"
+if [ -n "${PROMPT:-}" ] && [ -f "${PROMPT:-/nonexistent}" ]; then
+  sig="$(grep -oE '#[A-Za-z0-9_-]{3,}|test_[A-Za-z0-9_]+' "$PROMPT" 2>/dev/null | head -1)"
+  [ -n "$sig" ] && d_trip="签名=$sig;影子版未执行拆修法复跑 ⇒ 未判(转正前不声称成立)"
+fi
+
+# ── 事实单 ──
+{
+say "候选 commit: $CAND"
+say "最终 main 基点: $BASE"
+say "运行命令: $CMDLINE"
+say "程序版本: accept-preflight@$VER (影子运行)"
+say "退出码: 见各行"
+say "证据路径: $EVID"
+say ""
+say "基点: $r_base — $d_base"
+say "全量: $r_full — $d_full"
+say "硬边界: $r_edge — $d_edge"
+say "绊线: $r_trip — $d_trip"
+say "证据: $EVID/full.log · $EVID/diff.stat · $EVID/diff.files · $EVID/worktree.log"
+say ""
+say "⚠️ 影子运行:本单 ⛔ 算替代 ⛔ 删验收窗动作;任一行「未判」须由验收窗自判并写进回执。"
+say "【验收事实单】$SLICE $CAND $BASE"
+} | tee "$EVID/factsheet.txt"
+exit 0

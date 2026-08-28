@@ -14,17 +14,37 @@
 # 输出: stdout=事实单;证据 tee 到 --evidence-dir(默认 mktemp);退出码 0=事实单已出(⛔ 表示通过)
 set -uo pipefail
 
-SLICE="${1:-}"; CAND="${2:-}"; PROMPT="${3:-}"
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
-EVID=""
-shift $(( $# > 3 ? 3 : $# )) 2>/dev/null || true
+# 🔴 参数解析:位置参数与旗标**统一在一个循环里取** ⛔ 先 `PROMPT=$3` 再无条件 `shift 3`。
+#    2026-08-29 实撞(方案窗口第三十七任跑第 3 步复验时):省略可选的 prompt 直接给 `--repo` ⇒
+#    `$3` 把 `--repo` 吃成 prompt 值、`shift 3` 又吃掉仓路径 ⇒ **两个旗标全部失效**。
+SLICE=""; CAND=""; PROMPT=""; REPO=""; EVID=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) REPO="$2"; shift 2 ;;
-    --evidence-dir) EVID="$2"; shift 2 ;;
-    *) shift ;;
+    --repo) REPO="${2:-}"; shift 2 ;;
+    --evidence-dir) EVID="${2:-}"; shift 2 ;;
+    --*) shift ;;
+    *)
+      if   [ -z "$SLICE"  ]; then SLICE="$1"
+      elif [ -z "$CAND"   ]; then CAND="$1"
+      elif [ -z "$PROMPT" ]; then PROMPT="$1"; fi
+      shift ;;
   esac
 done
+# 🔴 仓路径判不出就**显式报错** ⛔ 静默退回一个不是 git 仓的路径。
+#    旧默认 `dirname($0)/..` 在**发布版**下是 `~/.local/libexec/laixin-lane-releases/`——不是 git 仓,
+#    于是基点与全量双双「未判」、1 秒返回,而**那个形态与「真的判不出」在事实单上完全同形**。
+#    首火没撞上只因它跑的是仓库里的脚本(那时 `dirname($0)/..` 正好是工具仓)。
+#    ⚠️ M1 转正后是从**发布版**调用的 ⇒ 不修这条,转正当天整单全「未判」而没人看得出是坏了。
+if [ -z "$REPO" ]; then
+  _selfup="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)"
+  if [ -n "$_selfup" ] && git -C "$_selfup" rev-parse --git-dir >/dev/null 2>&1; then REPO="$_selfup"
+  elif git -C "$PWD" rev-parse --git-dir >/dev/null 2>&1; then REPO="$PWD"
+  else
+    echo "⛔ 仓路径判不出:本脚本上级($_selfup)不是 git 仓(**从发布版调用时的常态**),当前目录也不是。" >&2
+    echo "   请显式传 --repo <仓路径>。⛔ 让本程序静默用一个非仓路径跑——那会出一张整单「未判」的事实单,与「真的判不出」同形。" >&2
+    exit 2
+  fi
+fi
 [ -n "$SLICE" ] && [ -n "$CAND" ] || { echo "用法: accept-preflight <片名> <候选commit> [prompt路径] [--repo 仓] [--evidence-dir 目录]" >&2; exit 2; }
 [ -n "$EVID" ] || EVID="$(mktemp -d)"
 mkdir -p "$EVID"

@@ -4,6 +4,7 @@
 set -uo pipefail
 LANE="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-lane"
 MIGRATE="$(cd "$(dirname "$0")/.." && pwd)/bin/migrate-11b-windows-from-11c"
+APF="$(cd "$(dirname "$0")/.." && pwd)/bin/accept-preflight"   # M1 影子版(#九之九);零测试是它转正前的缺口
 PASS=0; FAIL=0
 # 🔴 套件判据必须只依赖被测对象,⛔ 依赖调用者所在窗口/环境(2026-08-22 实撞:dispatch 窗口里跑本套件,shell 带着
 #   LAIXIN_WINDOW / TMUX_PANE ⇒ 来源推断类 3 条 + 1 条误红,而干净 shell 全绿——「同一套测试两处两种结果」)。
@@ -3615,6 +3616,33 @@ t "#186 降级:机器行**不含** selfwrite_product ⇒ 回落合计并**照常
   grep -qF "无产品格,降级按合计" <<< "$(wd_nudge_text 900)"' _ "$T137"
 # 🔴 第四载体:ev_selfwrite_pending 是**每拍都在跑的活判定**(lane 轨空闲告警),口径必须与 wd_fuel 同步。
 #   上一轮 P0 的教训逐字记在该函数注释里:三份文字改完、第四份活逻辑照旧 ⇒ 三份全绿而行为不变。
+# ── accept-preflight(M1 影子版)首批测试(2026-08-29 方案窗口第三十七任;此前**零测试**)────────────
+#   缺口本身值得记:一个即将在七步第 5 步转正、成为验收组成部分的程序,一条测试都没有。
+#   ⚠️ 全部用**不存在的候选 commit** ⇒ 在 `worktree add` 那步即停,**⛔ 触发全量**(跑一次 9 分钟)。
+APFT="$(mktemp -d)"
+# 实撞:省略可选的 prompt 直接给 --repo ⇒ 旧解析 `PROMPT=$3` + 无条件 `shift 3` 把旗标吃掉,
+#   REPO 静默退回 dirname($0)/..;从**发布版**调用时那是 releases 目录(非 git 仓)⇒ 整单「未判」1 秒返回。
+t "accept-preflight:省略 prompt 时 --repo 与 --evidence-dir 仍生效(⛔ 被位置参数 \$3 吃掉)" bash -c '
+  out="$("$1" 片X deadbeef00 --repo "$3" --evidence-dir "$2/ev" 2>&1)"
+  grep -q "最终 main 基点: unknown" <<< "$out" && { echo "--repo 未生效(基点 unknown)"; exit 1; }
+  grep -qF "证据路径: $2/ev" <<< "$out" || { echo "--evidence-dir 未生效"; exit 2; }' _ "$APF" "$APFT" "$(cd "$(dirname "$0")/.." && pwd)"
+# 🔴 失败要**显式** ⛔ 静默出一张整单「未判」的事实单——那与「真的判不出」在事实单上完全同形。
+t "accept-preflight:仓路径判不出 ⇒ 显式报错并 exit 2 ⛔ 静默用非仓路径出「未判」单" bash -c '
+  mkdir -p "$2/fake/bin"; cp "$1" "$2/fake/bin/"
+  out="$(cd / && "$2/fake/bin/accept-preflight" 片X deadbeef00 2>&1)"; rc=$?
+  [ $rc -eq 2 ] || { echo "退出码=$rc,应为 2"; exit 1; }
+  grep -q "仓路径判不出" <<< "$out" || { echo "无显式报错:$out"; exit 2; }
+  ! grep -q "【验收事实单】" <<< "$out" || { echo "判不出却仍出了事实单"; exit 3; }' _ "$APF" "$APFT"
+# 三态硬规则(§九之三 通则 3):只许 成立 / 不成立 / 未判,「未判」必须显式写出 ⛔ 写成绿或零。
+t "accept-preflight:四行只出三态之一,且未给 prompt 时硬边界/绊线为「未判」⛔ 当未命中/当绿" bash -c '
+  out="$("$1" 片X deadbeef00 --repo "$3" --evidence-dir "$2/ev2" 2>&1)"
+  grep -qE "^硬边界: 未判" <<< "$out" && grep -qE "^绊线: 未判" <<< "$out" || { echo "未判未显式"; exit 1; }
+  grep -qF "⛔ 当未命中" <<< "$out" && grep -qF "⛔ 当绿" <<< "$out" || exit 2
+  for ln in 基点 全量 硬边界 绊线; do
+    grep -E "^$ln: " <<< "$out" | grep -qE "^$ln: (成立|不成立|未判|命中|未命中)" || { echo "$ln 行非三态"; exit 3; }
+  done
+  grep -q "影子运行:本单 ⛔ 算替代" <<< "$out"' _ "$APF" "$APFT" "$(cd "$(dirname "$0")/.." && pwd)"
+rm -rf "$APFT"
 t "#186 第四载体:ev_selfwrite_pending 按**产品格** ⇒ 产品0/工具33 时判「有意空闲」(返 1)⛔ 对产品轨告警" bash -c '
   source "$1/f.sh"; TABLE="$1/t186d"; : > "$TABLE"; EV_PENDING="$1/p186d"; : > "$EV_PENDING"
   stat(){ printf "1\n"; }; ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }

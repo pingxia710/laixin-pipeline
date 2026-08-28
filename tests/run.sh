@@ -1543,7 +1543,7 @@ t "#44 绊线:relay 死跑 wd_loop 一拍——宿主存活+重生失败大声�
   'out="$(bash "$0" beat "$1")"; grep -q "HOST=alive" <<< "$out" && grep -q "中继重生失败" <<< "$out" && ! grep -q "起窗中止" <<< "$out"' \
   "$WDD" "$LANE"
 t "#夜间断链:全轨空闲且 0/0/缺设计 fixture 跑真 wd_loop 两拍——料断档与戳派工各恰一次,并留下三桶读数" bash -c \
-  'out="$(bash "$0" fuelgap "$1")"; grep -q "FUELGAP_COUNT=1" <<< "$out" && grep -q "NUDGE_COUNT=1" <<< "$out" && grep -q "燃料读数 ready=0 selfwrite=0 design=2 pending=0" <<< "$out" && grep -q "料断档:缺设计 2 件" <<< "$out"' \
+  'out="$(bash "$0" fuelgap "$1")"; grep -q "FUELGAP_COUNT=1" <<< "$out" && grep -q "NUDGE_COUNT=1" <<< "$out" && grep -q "燃料读数 ready=0 selfwrite=0(产品0·工具0·其他0) design=2 pending=0" <<< "$out" && grep -q "料断档:缺设计 2 件" <<< "$out"' \
   "$WDD" "$LANE"
 # ⭐ 豁免不泄漏:首起路径(人手跑 relay,无豁免旗)守卫必须照旧拦
 t "#44 绊线:首起路径双中继守卫照旧(无豁免旗;2026-08-23 起判据=tmux 外有会话名 relay* 即真双中继,必拦且 rc 非零)" bash -c \
@@ -2735,6 +2735,24 @@ t "#108 配对:dispatch 在射程(删掉其盘点节即报其任次)" bash -c 's
 #   而症状=「dispatch 一条都不报」,**与射程里根本没有 dispatch 的旧行为一模一样**,肉眼查不出。
 #   2026-08-22 实撞:同一份看板,传文件 27 条、经管道只剩 7 条。
 t "#108-fix2 经管道传 /dev/stdin 结果必须与传文件一致(⛔ 第二遍读空)" bash -c 'source "'"$V16F"'"; a="$(handover_unpaired "'"$V16"'/board" "'"$V16"'/page3" | wc -l)"; b="$(cat "'"$V16"'/board" | handover_unpaired /dev/stdin "'"$V16"'/page3" | wc -l)"; [ "$a" = "$b" ] && [ "$a" != "0" ]'
+# ── #108-fix3(2026-08-29 方案窗口第三十七任):方案窗口/中继窗口席也须认**倒装**语序 ──────────
+#   实撞=第三十六任交班条写成「🔄 **交班 方案窗口第三十六任 `x` → 第三十七任 `y`」——动词在任次**前**,
+#   「第三十六任」后 24 字内无动词 ⇒ 原正装正则认不出 ⇒ handover_missing_pred 误报 ①态「前任无交班条」,
+#   而 ①态的字面处置是「**先补交班条**再盘点」⇒ 照做就是**往台账补一条假交班记录**(交班条其实存在且完整)。
+#   🔴 根因是判据缺口 ⛔ 谁写错了:dispatch 席 :3370 认的**本就是倒装**,两席判据语序相反,
+#   而书写习惯已经漂过去了。全量回扫另查出第二十/三十二/三十三/三十四任同为倒装 ⇒ ②态对这 4 任一直是盲的。
+FIX3="$(mktemp -d)"
+printf '%s\n' '| 08-29 03:34 | 方案窗口 | 🔄 **交班 方案窗口第三十六任 `x` → 第三十七任 `y`(创始人当轮令) |' > "$FIX3/board"
+printf '## 占位\n' > "$FIX3/page"
+t "#108-fix3 倒装交班条(动词在任次前)方案窗口席须认出" bash -c 'source "'"$V16F"'"; handover_unpaired "'"$FIX3"'/board" "'"$FIX3"'/page" | grep -q "方案窗口第三十六任"'
+# ⚠️ 倒装交班条**常含两个任次**(「交班 X 第N任 → 第N+1任」)。BSD grep/sed 无非贪婪,贪婪匹配会抽到**继任号**
+#   ⇒ 报错人;:3370 的 dispatch 段靠 head 取第一个绕开,本处靠 python 非贪婪 {0,24}? 取第一个。
+t "#108-fix3 倒装条含两个任次 ⇒ 取**交出的那任** ⛔ 取继任号" bash -c 'source "'"$V16F"'"; ! handover_unpaired "'"$FIX3"'/board" "'"$FIX3"'/page" | grep -q "第三十七任"'
+printf '%s\n' '| 08-29 03:37 | 方案窗口 | 🟢 接班 方案窗口 第三十七任 y(起手式六步全过;前任交班条见看板) |' > "$FIX3/b2"
+t "#108-fix3 接班条 ⛔ 被倒装分支认成交班条" bash -c 'source "'"$V16F"'"; [ -z "$(handover_unpaired "'"$FIX3"'/b2" "'"$FIX3"'/page")" ]'
+# 反向锚:正装形态**不得回归**(改倒装时最容易把原分支挤掉)
+printf '%s\n' '| 08-20 10:58 | 方案窗口 | 方案窗口第十五任 pingxia-8a 交班(date 10:58 实测封班) |' > "$FIX3/b3"
+t "#108-fix3 反向:正装形态仍须认出(⛔ 加倒装把正装挤掉)" bash -c 'source "'"$V16F"'"; handover_unpaired "'"$FIX3"'/b3" "'"$FIX3"'/page" | grep -q "方案窗口第十五任"'
 t "#106 接线:ev_loop 含直令搬运游标" bash -c 'grep -q "EV_BOARD_POS" "'"$LANE"'" && grep -q "ev_directive_filter | while" "'"$LANE"'"'
 t "#105 接线:ev_loop 含 vault HEAD 基线" bash -c 'grep -q "EV_VAULT_HEAD" "'"$LANE"'" && grep -q "ev_material_filter | sort -u" "'"$LANE"'"'
 t "#107 接线:cmd_log 与 kb-commit 各挂一处 ph_time_hits" bash -c '[ "$(grep -c "ph_time_hits 2>/dev/null" "'"$LANE"'")" -ge 2 ]'
@@ -3539,7 +3557,7 @@ t "第一片a:排队节三格行报 short=1 ⛔ 静默跳过(machine 行)" bash 
 t "第一片a+b:人读面点名三格片且可自写按轨列拆为 产品 1 / 工具 1 / 其他 1(⛔ 前缀名单)" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats 2>/dev/null)"
   grep -q "格数不足 1 行" <<< "$out" && grep -q "· 三格片" <<< "$out" && grep -q "产品 1(A/B/C 轨)/ 工具 1 / 其他 1" <<< "$out"' _ "$T1S" "$LANE"
-{ sed -n "/^wd_fuel()/,/^}/p" "$LANE"; sed -n "/^wd_fuel_advice()/,/^}/p" "$LANE"; sed -n "/^wd_nudge_text()/,/^}/p" "$LANE"; } > "$T137/f.sh"
+{ sed -n "/^wd_fuel()/,/^}/p" "$LANE"; sed -n "/^wd_fuel_advice()/,/^}/p" "$LANE"; sed -n "/^wd_nudge_text()/,/^}/p" "$LANE"; sed -n "/^ev_selfwrite_pending()/,/^}/p" "$LANE"; } > "$T137/f.sh"
 t "#137:wd_fuel 认可空闲轨 ready/可自写/待认领 P;忙轨 ready、verify/工具等待窗、relay outbox 都不算;总表不可读朝告警侧" bash -c '
   source "$1/f.sh"; SESSION=s; TABLE="$1/table.md"; : > "$TABLE"; EV_PENDING="$1/pending"; RELAY_OUTBOX="$1/outbox"; : > "$EV_PENDING"; : > "$RELAY_OUTBOX"
   ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }; tmux(){ :; }; stat(){ printf "mtime\n"; }; cmd_stats(){ printf "ready=0 selfwrite=0 design=0 pending=0\n"; }
@@ -3555,13 +3573,57 @@ t "#137:wd_fuel 认可空闲轨 ready/可自写/待认领 P;忙轨 ready、verif
   rm -f "$TABLE"; grep -q "不可读" <<< "$(wd_fuel)"' _ "$T137"
 t "#夜间断链:可自写 fixture 进入 wd_fuel,nudge 给三桶事实+默认建议+收方判断" bash -c '
   source "$1/f.sh"; TABLE="$1/table"; : > "$TABLE"; EV_PENDING="$1/pending"; : > "$EV_PENDING"; STAMP=1
-  stat(){ printf "%s\n" "$STAMP"; }; cmd_stats(){ printf "ready=0 selfwrite=1 design=0 pending=0\n"; }
+  stat(){ printf "%s\n" "$STAMP"; }; cmd_stats(){ printf "ready=0 selfwrite=1 design=0 pending=0 short=0 selfwrite_product=1 selfwrite_tool=0 selfwrite_other=0\n"; }
   ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
   wd_fuel >/dev/null; out="$(wd_nudge_text 900)"
-  grep -q "可自写:1件" <<< "$WD_FUEL" && grep -qF "三桶读数: ready=0 / 可自写=1 / 待认领=0" <<< "$out" &&
-    grep -qF "默认建议:可自写非空通常适合起写单" <<< "$out" &&
+  grep -q "可自写(产品):1件" <<< "$WD_FUEL" && grep -qF "三桶读数: ready=0 / 可自写=产品1·工具0·其他0(派工席只看产品格) / 待认领=0" <<< "$out" &&
+    grep -qF "默认建议:可自写**产品**格非空通常适合起写单" <<< "$out" &&
     grep -qF "若你判断另有更优动作,照你的判断办并留痕。" <<< "$out" &&
     ! grep -qE "同一轮完成|fresh\\+send|立刻|必须" <<< "$out"' _ "$T137"
+# ── #186(2026-08-29 方案窗口第三十七任):可自写按**轨列分格**判,派工席只对「产品」格负责 ────────
+#   实撞=看门狗连催派工窗口 6 次「可自写=37 建议起写单」,而 stats 新判据(6b29398)实测 产品 0 / 工具 33 / 其他 4。
+#   根因:wd_fuel 的 case 只有 `selfwrite=*` 分支,而 `selfwrite_product=` 第 10 字符是 `_` 不是 `=`
+#   ⇒ 落不进任何分支、**被静默丢弃 ⛔ 报错**。数据源里有产品格,看门狗没取 ——「修了一半,两半在读数面同形」。
+#   🔴 三向缺一不可:①阳性(功能对)②阴性(反例不误催)③降级(探针坏掉倒向安全的一侧)。
+t "#186 阴性:产品 0 / 工具 33 ⇒ ⛔ 判为可自写燃料、⛔ 建议派工席起写单(工具格归 11B 线)" bash -c '
+  source "$1/f.sh"; TABLE="$1/t186"; : > "$TABLE"; EV_PENDING="$1/p186"; : > "$EV_PENDING"
+  stat(){ printf "1\n"; }; ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+  cmd_stats(){ printf "ready=0 selfwrite=37 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=33 selfwrite_other=4\n"; }
+  WD_STATS_TABLE_MTIME=""; wd_fuel >/dev/null
+  [ -z "$WD_FUEL" ] || { echo "阴性态不应有燃料:$WD_FUEL"; exit 1; }
+  [ "${WD_FUEL_SELFWRITE:-0}" -eq 0 ] || exit 2
+  ! grep -q "起写单" <<< "$(wd_fuel_advice)" || exit 3
+  grep -qF "可自写=产品0·工具33·其他4" <<< "$(wd_nudge_text 900)"' _ "$T137"
+# ⚠️ 本条专抓一个只在**阳性向**暴露的 bug:降级标记曾用 ${WD_STATS_SW_DEGRADED:+…} 拼接,而非降级态写的是
+#   字符串 "0"(非空)⇒ `:+` 恒触发 ⇒ 有产品格时也标「降级」。阴性向 WD_FUEL 为空、降级向标记本就该有,
+#   两向都看不见它。⇒ 断言必须含「**不带**降级标记」这一句 ⛔ 只断言「有燃料」。
+t "#186 阳性:产品 2 ⇒ 判为燃料且建议起写单;⛔ 误带降级标记(该标记只在无产品格时出现)" bash -c '
+  source "$1/f.sh"; TABLE="$1/t186b"; : > "$TABLE"; EV_PENDING="$1/p186b"; : > "$EV_PENDING"
+  stat(){ printf "1\n"; }; ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+  cmd_stats(){ printf "ready=0 selfwrite=5 design=0 pending=0 short=0 selfwrite_product=2 selfwrite_tool=3 selfwrite_other=0\n"; }
+  WD_STATS_TABLE_MTIME=""; wd_fuel >/dev/null
+  grep -qF "可自写(产品):2件" <<< "$WD_FUEL" || { echo "阳性未判燃料:$WD_FUEL"; exit 1; }
+  ! grep -q "降级" <<< "$WD_FUEL" || { echo "误带降级标记:$WD_FUEL"; exit 2; }
+  grep -q "起写单" <<< "$(wd_fuel_advice)"' _ "$T137"
+t "#186 降级:机器行**不含** selfwrite_product ⇒ 回落合计并**照常催** ⛔ 静默;降级态显式标出" bash -c '
+  source "$1/f.sh"; TABLE="$1/t186c"; : > "$TABLE"; EV_PENDING="$1/p186c"; : > "$EV_PENDING"
+  stat(){ printf "1\n"; }; ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+  cmd_stats(){ printf "ready=0 selfwrite=7 design=0 pending=0\n"; }
+  WD_STATS_TABLE_MTIME=""; wd_fuel >/dev/null
+  grep -qF "可自写(产品):7件" <<< "$WD_FUEL" || { echo "降级未回落合计(静默了):$WD_FUEL"; exit 1; }
+  grep -q "降级按合计" <<< "$WD_FUEL" || exit 2
+  grep -qF "无产品格,降级按合计" <<< "$(wd_nudge_text 900)"' _ "$T137"
+# 🔴 第四载体:ev_selfwrite_pending 是**每拍都在跑的活判定**(lane 轨空闲告警),口径必须与 wd_fuel 同步。
+#   上一轮 P0 的教训逐字记在该函数注释里:三份文字改完、第四份活逻辑照旧 ⇒ 三份全绿而行为不变。
+t "#186 第四载体:ev_selfwrite_pending 按**产品格** ⇒ 产品0/工具33 时判「有意空闲」(返 1)⛔ 对产品轨告警" bash -c '
+  source "$1/f.sh"; TABLE="$1/t186d"; : > "$TABLE"; EV_PENDING="$1/p186d"; : > "$EV_PENDING"
+  stat(){ printf "1\n"; }; ev_next_ready(){ :; }; win_exists(){ return 1; }; lane_busy(){ return 1; }
+  cmd_stats(){ printf "ready=0 selfwrite=37 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=33 selfwrite_other=4\n"; }
+  WD_STATS_TABLE_MTIME=""; ev_selfwrite_pending && { echo "产品0仍判非空(会对产品轨误告警)"; exit 1; }
+  cmd_stats(){ printf "ready=0 selfwrite=5 design=0 pending=0 short=0 selfwrite_product=2 selfwrite_tool=3 selfwrite_other=0\n"; }
+  WD_STATS_TABLE_MTIME=""; ev_selfwrite_pending || { echo "产品2却判为空(漏告警)"; exit 2; }
+  cmd_stats(){ printf "ready=0 selfwrite=7 design=0 pending=0\n"; }
+  WD_STATS_TABLE_MTIME=""; ev_selfwrite_pending || { echo "降级态应回落合计并判非空 ⛔ 静默"; exit 3; }' _ "$T137"
 t "#夜间断链:同一 TABLE mtime 连跑 wd_fuel 只调一次 stats,mtime 变化才重跑" bash -c '
   source "$1/f.sh"; TABLE="$1/table"; : > "$TABLE"; EV_PENDING="$1/pending"; : > "$EV_PENDING"; STAMP=1; COUNT="$1/count"
   stat(){ printf "%s\n" "$STAMP"; }; cmd_stats(){ echo run >> "$COUNT"; printf "ready=0 selfwrite=1 design=0 pending=0\n"; }
@@ -3752,6 +3814,12 @@ t "doctor 8b:方案窗口交班条**或接班条**(近 N 天)× 总表请裁未�
   d="$(sed -n "/^cmd_doctor()/,/^}$/p" "$1")"
   grep -q "table_pending_rulings \"\$TABLE\"" <<< "$d" && grep -q "未销号行——核它们是否进了交接快照" <<< "$d" && grep -q "head -5" <<< "$d" && grep -q "无「候/已请方案窗口裁」未销号行(8b)" <<< "$d" &&
   grep -qF "|接班 ?方案窗口 ?第[一二三四五六七八九十]+任)" <<< "$d"' _ "$LANE"
+# #108-fix3:8b 触发面也须认倒装(方案窗口交班条实际写法)。⛔ 把新分支加在「接班…第N任)」之后——
+#   上一行那条断言是**字面锚且带闭合括号**,新分支插在它后面会让固定串失配(本轮实撞,1123/1)。
+t "#108-fix3 doctor 8b 触发面含倒装分支「(交班|封班|收班)…第N任」,且既有接班分支仍在末尾" bash -c '
+  d="$(sed -n "/^cmd_doctor()/,/^}$/p" "$1")"
+  grep -qF "|(交班|封班|收班)[^|]{0,24}第[一二三四五六七八九十]+任|" <<< "$d" &&
+  grep -qF "|接班 ?方案窗口 ?第[一二三四五六七八九十]+任)" <<< "$d"' _ "$LANE"
 rm -rf "$TPR"
 
 # ── #108 ①态:接班条纳入交班配对(方案窗口第二十三任 2026-08-23 裁;样本=第二十二任零交班条) ──────────────
@@ -3765,6 +3833,15 @@ t "#108①:复盘页已有「方案窗口第二十二任收班盘点」节 ⇒ �
   printf "## 三十一、方案窗口第二十二任收班盘点\n" > "$1/p2.md"; [ -z "$(handover_missing_pred "$1/recent.md" "$1/full.md" "$1/p2.md")" ] || exit 1
   printf "| 08-23 06:57 | 方案窗口 | 方案窗口第二十二任 交班(快照 0823晨)… |\n" >> "$1/full.md"; [ -z "$(handover_missing_pred "$1/recent.md" "$1/full.md" "$1/page.md")" ] || exit 2
   printf "| 08-23 07:05 | 方案窗口 | 接班 方案窗口 第一任 x |\n" > "$1/r1.md"; [ -z "$(handover_missing_pred "$1/r1.md" "$1/r1.md" "$1/page.md")" ]' _ "$TMP108"
+# #108①-fix3:前任交班条为**倒装**形态 ⇒ 视为「有交班条」归 ②态,⛔ 报 ①态「无交班条」。
+#   ⛔ 只测「认出来了」:①态与 ②态**处置相反**(①先补交班条 / ②直接盘点),报错族比漏报更贵。
+printf '| 08-29 03:37 | 方案窗口 | 接班 方案窗口 第三十七任 y |\n| 08-29 03:34 | 方案窗口 | 🔄 **交班 方案窗口第三十六任 x → 第三十七任 y |\n' > "$TMP108/inv.md"
+t "#108①-fix3:前任交班条为倒装语序 ⇒ ⛔ 报①态(有交班条,归②态)" bash -c '
+  source "$1/f.sh"; [ -z "$(handover_missing_pred "$1/inv.md" "$1/inv.md" "$1/page.md")" ]' _ "$TMP108"
+# 反向锚:前任**真的**没有交班条时,①态仍须报(⛔ 因加倒装分支而漏报)
+printf '| 08-29 03:37 | 方案窗口 | 接班 方案窗口 第三十七任 y |\n| 08-29 03:20 | 方案窗口 | 🟢 A 轨解卡(方案窗口第三十六任晨间第一件) |\n' > "$TMP108/noh.md"
+t "#108①-fix3 反向:前任真无交班条 ⇒ 仍报①态(提及型⛔当交班条)" bash -c '
+  source "$1/f.sh"; [ "$(handover_missing_pred "$1/noh.md" "$1/noh.md" "$1/page.md")" = "方案窗口 第三十六任" ]' _ "$TMP108"
 t "#108①:中文数字递减(第十→第九 / 第二十→第十九 / 第二十一→第二十 / 第三十三→第三十二)" bash -c '
   source "$1/f.sh"; for pair in "十:九" "二十:十九" "二十一:二十" "三十三:三十二"; do n="${pair%%:*}"; e="${pair##*:}"
     printf "| 08-23 07:05 | 方案窗口 | 接班 方案窗口 第%s任 x |\n" "$n" > "$1/r.md"; : > "$1/e.md"

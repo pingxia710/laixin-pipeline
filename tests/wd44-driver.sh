@@ -132,7 +132,10 @@ case "$MODE" in
     relay_enabled(){ return 1; }
     loop_reload_due(){ return 1; }
     lane_busy(){ return 1; }
-    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0\n'; }
+    # #186(2026-08-29):夹具须带轨列三格——真实 stats 自 6b29398 起就输出它们。
+    #   ⛔ 停在旧四字段:那会让本条一直跑**降级路径**,而降级路径与正常路径的日志/判据都不同,
+    #   于是「测的是哪条路」和「口径对不对」在绿灯面同形。降级路径由 #186 降级向那条专测。
+    cmd_stats(){ printf 'ready=0 selfwrite=0 design=2 pending=0 short=0 selfwrite_product=0 selfwrite_tool=0 selfwrite_other=0\n'; }
     wd_nudge(){ printf '%s\n' "$1" >> "$TMPD/nudge.txt"; }
     export WD_INTERVAL=1
     wd_loop >/dev/null 2>&1 &

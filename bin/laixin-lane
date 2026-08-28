@@ -2611,7 +2611,7 @@ cmd_doctor() {
       local _dp2; _dp2="$(mktemp)"; printf '%s\n' "$_datepat" | grep -vE '^$' > "$_dp2" || true
       # 触发=方案窗口的交班条**或继任的接班条**(2026-08-23 首跑实撞:第二十二任只写了快照+注册表「待接」,看板零交班条 ⇒ 只认交班条就漏掉
       #   这次真实交班;接班条是继任必写的落盘,更稳)。⛔ 动 handover_unpaired 的 #108 口径(它配对的是交班条↔盘点节)。
-      _hb_plan="$(grep -F -f "$_dp2" "$BOARD" 2>/dev/null | grep -E '^\|[^|]+\| 方案窗口 \| ?(方案窗口)?[^|]{0,10}(第[一二三四五六七八九十]+任[^|]{0,24}(交班|封班|收班完成)|接班 ?方案窗口 ?第[一二三四五六七八九十]+任)' | tail -1 | cut -d'|' -f2 | sed -E 's/^ +//; s/ +$//' || true)"
+      _hb_plan="$(grep -F -f "$_dp2" "$BOARD" 2>/dev/null | grep -E '^\|[^|]+\| 方案窗口 \| ?(方案窗口)?[^|]{0,10}(第[一二三四五六七八九十]+任[^|]{0,24}(交班|封班|收班完成)|(交班|封班|收班)[^|]{0,24}第[一二三四五六七八九十]+任|接班 ?方案窗口 ?第[一二三四五六七八九十]+任)' | tail -1 | cut -d'|' -f2 | sed -E 's/^ +//; s/ +$//' || true)"
       rm -f "$_dp2"
     fi
     if [ "${_npr:-0}" -gt 0 ] && [ -n "$_hb_plan" ]; then
@@ -3014,9 +3014,16 @@ ev_selfwrite_pending(){  # 0=可自写桶非空或探针失效(⇒ 空闲**不�
   # P0 同批(2026-08-28):补上「有意空闲」判据缺的第三桶。复用 wd_fuel 的解析与 mtime 缓存 ⛔ 另起一份读法——
   #   两份读法会各自漂移,而这正是本次要修的病(同一条判据散在四个载体里,第四份是活的判定逻辑)。
   # 失效降级方向与 wd_fuel 一致:**读不出按有燃料** ⛔ 因探针失效而静默。
+  # 🔴 #186(2026-08-29 方案窗口第三十七任):判据由**合计**改**产品格**。本函数服务的是 lane-a/b/c
+  #   轨空闲告警,而 lane 轨是**产品开发轨** ⇒ 工具格(归 11B 线)/ 其他格(档面台账)非空
+  #   **不是**产品轨该动作的理由。旧判据下工具件长期 33 ⇒ 本函数恒返「非空」⇒ 产品轨永远不被判
+  #   「有意空闲」⇒ 每拍都对派工席告警。⚠️ 这是同一个 #186 的**第四份载体,且是每拍在跑的活逻辑**——
+  #   本函数自己的注释就记着上一轮同款教训(三份文字改完、第四份活逻辑照旧 ⇒ 三份全绿而行为不变)。
+  # 降级方向与 wd_fuel 一致:产品格读不出时 WD_STATS_SW_PRODUCT 已由 wd_fuel 回落为合计 ⇒ 退回旧行为,
+  #   **⛔ 因字段缺失而静默**(静默=不告警=看起来一切正常,正是最贵的失效方向)。
   wd_fuel >/dev/null 2>&1 || true
   [ "${WD_STATS_SELFWRITE:-?}" != "?" ] || return 0
-  [ "${WD_STATS_SELFWRITE:-0}" -gt 0 ]
+  [ "${WD_STATS_SW_PRODUCT:-0}" -gt 0 ]
 }
 
 ev_lane_assigned(){  # <A|B|C> → 当前「进行中」表里的片名;0=有分配 1=确认空闲 2=表结构未知
@@ -3307,7 +3314,19 @@ try: page=open(p,encoding="utf-8",errors="replace").read()
 except Exception: page=""
 succ=re.compile(r'^\|[^|]+\| 方案窗口 \| ?(?:方案窗口)?[^|]{0,10}接班 ?方案窗口 ?第([一二三四五六七八九十]+)任')
 hand=re.compile(r'^\|[^|]+\| 方案窗口 \| ?(?:方案窗口)?[^|]{0,10}第([一二三四五六七八九十]+)任[^|]{0,24}(?:交班|封班|收班完成)')
-handed={m.group(1) for l in lines(fb) for m in [hand.match(l)] if m}
+# 倒装语序(2026-08-29 方案窗口第三十七任补;#108-fix3)。实撞=第三十六任把交班条写成
+#   「🔄 **交班 方案窗口第三十六任 `pingxia-36` → 第三十七任…」——动词在任次**前**,「第三十六任」后 24 字内无动词
+#   ⇒ 正装 hand 认不出 ⇒ 误报 ①态「前任**无交班条**」,而 ①态的字面处置是「**先补交班条**再盘点」
+#   ⇒ 照做就是**往台账补一条假交班记录**(交班条其实真实存在且完整)。
+# 🔴 根因是判据缺口 ⛔ 谁写错了:dispatch 席的 handover_unpaired:3370 认的**本就是倒装**
+#   「(收班|交班|换班) dispatch 第N任」,两席判据语序相反而书写习惯已经漂过去了。
+# 两个防误伤:① 非贪婪 {0,24}? 取**第一个**任次=交出的那任 ⛔ 取到继任号(倒装交班条常含两个任次);
+#   ② 排除 succ 命中的接班条,防「接班…(正文里提到)交班」被认成交班条。
+hand_inv=re.compile(r'^\|[^|]+\| 方案窗口 \| ?(?:方案窗口)?[^|]{0,10}(?:交班|封班|收班)[^|]{0,24}?第([一二三四五六七八九十]+)任')
+# 🔴 两侧都排除接班条(同 handover_unpaired):正装 hand 亦会误认含「交班」二字的接班条。
+# 接班条若被计入 handed ⇒ 前任被误当「已交班」⇒ ①态漏报,而漏报与「真的交了班」在告警面同形。
+handed={m.group(1) for l in lines(fb) for m in [hand.match(l)] if m and not succ.match(l)}
+handed|={m.group(1) for l in lines(fb) for m in [hand_inv.match(l)] if m and not succ.match(l)}
 heads=re.findall(r'^## .*$', page, flags=re.M)
 seen=[]
 for l in lines(rb):
@@ -3356,14 +3375,35 @@ handover_unpaired(){  # <看板尾部文件> <复盘页文件> → stdout=有交
   # #108-fix(2026-08-20 十五任优化轮):只认**正文开头形态**的真交班条(「第N任…交班/封班/收班」出现在
   # 正文头 24 字内)——首跑 3 警 2 误报,误报全是窗口条目里【提及】他窗口交班的句子(F-bis 元文本污染):
   # 提及型的「第N任」在长句中部,真交班条的任次紧跟正文开头。
-  grep -E '^\|[^|]+\| (方案窗口|中继窗口) \| ?(方案窗口|中继窗口)?[^|]{0,10}第[一二三四五六七八九十]+任[^|]{0,24}(交班|封班|收班完成)' "$b" 2>/dev/null \
-    | grep -oE '(方案窗口|中继窗口) \| ?(方案窗口|中继窗口)?[^|]{0,10}第[一二三四五六七八九十]+任' \
-    | grep -oE '(方案窗口|中继窗口)$|(方案窗口|中继窗口)[^|]*第[一二三四五六七八九十]+任' \
-    | sed -E 's/(方案窗口|中继窗口).*第/\1 第/' | grep '第' | sort -u \
+  # #108-fix3(2026-08-29 方案窗口第三十七任):抽取由 4 层 grep -oE|sed 链改 python,并同时认**两种语序**——
+  #   正装「第N任…(交班|封班|收班完成)」与倒装「(交班|封班|收班)…第N任」。倒装是 dispatch 席 :3370 的形态,
+  #   方案窗口席实际已在用(实撞=第三十六任交班条),而本处原只认正装 ⇒ 认不出 ⇒ 交班漏盘点这件事
+  #   被 handover_missing_pred 误报成 ①态「无交班条」,处置指引相反(该补盘点节,却叫人补交班条)。
+  # ⛔ 用 grep -oE 链做倒装:BSD grep/sed 无非贪婪,而倒装交班条常含两个任次(「交班 X 第N任 → 第N+1任」)
+  #   ⇒ 贪婪匹配会抽到**继任号**,与 :3370 注释里 dispatch 段记的是同一个坑(那里靠 head 取第一个绕开)。
+  # 输出格式与原链逐字等价=「<窗口> 第N任」,下游 while 与配对逻辑不动。
+  local _pw; _pw="$(mktemp)"
+  python3 - "$b" > "$_pw" 2>/dev/null <<'PYUP'
+import re,sys
+fwd=re.compile(r'^\|[^|]+\| (方案窗口|中继窗口) \| ?(?:方案窗口|中继窗口)?[^|]{0,10}第([一二三四五六七八九十]+)任[^|]{0,24}(?:交班|封班|收班完成)')
+inv=re.compile(r'^\|[^|]+\| (方案窗口|中继窗口) \| ?(?:方案窗口|中继窗口)?[^|]{0,10}(?:交班|封班|收班)[^|]{0,24}?第([一二三四五六七八九十]+)任')
+suc=re.compile(r'^\|[^|]+\| (方案窗口|中继窗口) \| ?(?:方案窗口|中继窗口)?[^|]{0,10}接班')
+try:
+    for l in open(sys.argv[1],encoding='utf-8',errors='replace'):
+        # 🔴 接班条**最先短路** —— 正装 fwd 同样会误认它(#108-fix3 新增测试撞出的**既有**缺陷,⛔ 本次倒装引入):
+        #   接班条正文里提到「…前任交班条…」时,`[^|]{0,10}` 正好吃掉「🟢 接班 方案窗口 」10 字、接上「第N任」、
+        #   再在 24 字内撞到「交班」⇒ fwd 命中 ⇒ 把**刚接班**的那一任判成「交班了没写盘点」。suc 得管住两侧 ⛔ 只管倒装侧。
+        if suc.match(l): continue
+        m=fwd.match(l) or inv.match(l)
+        if m: print('%s 第%s任'%(m.group(1),m.group(2)))
+except Exception: pass
+PYUP
+  sort -u "$_pw" \
     | while IFS=' ' read -r win ren; do
         [ -n "$win" ] && [ -n "$ren" ] || continue
         grep '^## ' "$p" 2>/dev/null | grep "$win" | grep "$ren" | grep -q '收班盘点' || printf '%s%s\n' "$win" "$ren"
       done
+  rm -f "$_pw"
   # 派工窗口 dispatch:来源列是「派工窗口」而正文里的角色名是「dispatch」,复盘页标题同样写
   # 「派工窗口 dispatch 第N任收班盘点」⇒ 用 dispatch 作配对键。⚠️ 交班条常含两个任次
   # (「交班 dispatch 第三十九任 → 第四十任」)—— 取**第一个**(交出的那任),⛔ 取到继任号。
@@ -7446,7 +7486,7 @@ ctx_watch_tick() {
 #   在跑与 relay outbox 都是等待态,各自由 events 管,不是催派工席的理由。三桶全空且全轨空闲=料断档,不是健康态。
 #   失效降级:总表读不到 ⇒ 按有燃料(⛔ 因探针失效而静默)。
 wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在 set -e 下用命令替换接)
-  local src="" n table_mtime stats field ready selfwrite design
+  local src="" n table_mtime stats field ready selfwrite design sw_prod sw_tool sw_other
   WD_FUEL_READY=0; WD_FUEL_SELFWRITE=0; WD_FUEL_PENDING=0
   if [ ! -r "$TABLE" ]; then
     WD_STATS_READY="?"; WD_STATS_SELFWRITE="?"; WD_STATS_DESIGN="?"; WD_STATS_PENDING="?"
@@ -7459,11 +7499,16 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
   fi
   if [ "${WD_STATS_TABLE_MTIME:-}" != "$table_mtime" ]; then
     stats="$(cmd_stats --machine 2>/dev/null)" || stats=""
-    ready=""; selfwrite=""; design=""
+    ready=""; selfwrite=""; design=""; sw_prod=""; sw_tool=""; sw_other=""
     for field in $stats; do
       case "$field" in
         ready=*) ready="${field#ready=}" ;;
+        # ⚠️ 顺序有意义:`selfwrite=*` 匹配不到 `selfwrite_product=`(第 10 字符是 `_` 不是 `=`),
+        #   两者互不遮蔽;但**新格必须各自列分支** —— 否则字段被静默丢弃 ⛔ 报错,这正是 #186 难查的原因。
         selfwrite=*) selfwrite="${field#selfwrite=}" ;;
+        selfwrite_product=*) sw_prod="${field#selfwrite_product=}" ;;
+        selfwrite_tool=*) sw_tool="${field#selfwrite_tool=}" ;;
+        selfwrite_other=*) sw_other="${field#selfwrite_other=}" ;;
         design=*) design="${field#design=}" ;;
       esac
     done
@@ -7473,6 +7518,21 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
     fi
     WD_STATS_TABLE_MTIME="$table_mtime"
     WD_STATS_READY="$ready"; WD_STATS_SELFWRITE="$selfwrite"; WD_STATS_DESIGN="$design"
+    # #186(2026-08-29 方案窗口第三十七任):可自写按**轨列分格**判,派工席只对「产品」格负责。
+    # 🔴 降级 ⛔ 静默:产品格解析不到(旧版 stats / 字段改名)⇒ **回落到合计并照常催**,
+    #   照 wd_fuel 既有原则「探针失效按有燃料」。反过来做会让「真断料」与「字段读不到」同形,
+    #   而后者更危险——真断料时无人知。降级态在 nudge 文本里显式标出。
+    if [[ "$sw_prod" =~ ^[0-9]+$ ]]; then
+      # ⚠️ 非降级态必须是**空串** ⛔ 写 0:下游用 ${WD_STATS_SW_DEGRADED:+…}(「已设置且非空」)拼降级标记,
+      #   而字符串 "0" 是非空 ⇒ 恒触发 ⇒ 有产品格时也标「降级」。实测抓出:阴性向(WD_FUEL 空)与
+      #   降级向(标记本就该有)**都看不见这个错,只有阳性向暴露**。
+      WD_STATS_SW_PRODUCT="$sw_prod"; WD_STATS_SW_DEGRADED=""
+      [[ "$sw_tool"  =~ ^[0-9]+$ ]] && WD_STATS_SW_TOOL="$sw_tool"   || WD_STATS_SW_TOOL="?"
+      [[ "$sw_other" =~ ^[0-9]+$ ]] && WD_STATS_SW_OTHER="$sw_other" || WD_STATS_SW_OTHER="?"
+    else
+      WD_STATS_SW_PRODUCT="$selfwrite"; WD_STATS_SW_DEGRADED=1
+      WD_STATS_SW_TOOL="?"; WD_STATS_SW_OTHER="?"
+    fi
   fi
   if [ -e "$EV_PENDING" ] && [ ! -r "$EV_PENDING" ]; then
     WD_STATS_PENDING="?"; WD_FUEL="待认领台账不可读(探针失效按有燃料)"; printf '%s' "$WD_FUEL"; return 0
@@ -7482,7 +7542,9 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
   if ! lane_busy a; then n="$(ev_next_ready A 2>/dev/null || true)"; [ -n "$n" ] && { src="A:${n}"; WD_FUEL_READY=1; }; fi
   if ! lane_busy b; then n="$(ev_next_ready B 2>/dev/null || true)"; [ -n "$n" ] && { src="${src:+$src }B:${n}"; WD_FUEL_READY=1; }; fi
   if win_exists "lane-c" && ! lane_busy c; then n="$(ev_next_ready C 2>/dev/null || true)"; [ -n "$n" ] && { src="${src:+$src }C:${n}"; WD_FUEL_READY=1; }; fi
-  if [ "$WD_STATS_SELFWRITE" -gt 0 ] && { ! lane_busy a || ! lane_busy b || { win_exists "lane-c" && ! lane_busy c; }; }; then src="${src:+$src }可自写:${WD_STATS_SELFWRITE}件"; WD_FUEL_SELFWRITE=1; fi
+  # #186:判据取**产品格** ⛔ 取合计,也 ⛔ 取「合计减工具」——后者会把「其他」格算回产品,
+  #   那正是 6b29398 轨列判据刚修掉的病(旧 stats 只挡 11B 前缀,其余一律计产品)。
+  if [ "${WD_STATS_SW_PRODUCT:-0}" -gt 0 ] && { ! lane_busy a || ! lane_busy b || { win_exists "lane-c" && ! lane_busy c; }; }; then src="${src:+$src }可自写(产品):${WD_STATS_SW_PRODUCT}件${WD_STATS_SW_DEGRADED:+ ⚠️降级按合计}"; WD_FUEL_SELFWRITE=1; fi
   if [ "$WD_STATS_PENDING" -gt 0 ]; then src="${src:+$src }待认领交付"; WD_FUEL_PENDING=1; fi
   WD_FUEL="$src"; printf '%s' "$WD_FUEL"; return 0
 }
@@ -7490,7 +7552,7 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
 wd_fuel_advice(){  # 三桶事实 → 默认建议;判断仍归收方
   local advice=""
   [ "${WD_FUEL_READY:-0}" -gt 0 ] && advice="ready 非空通常适合发车"
-  [ "${WD_FUEL_SELFWRITE:-0}" -gt 0 ] && advice="${advice:+${advice}；}可自写非空通常适合起写单"
+  [ "${WD_FUEL_SELFWRITE:-0}" -gt 0 ] && advice="${advice:+${advice}；}可自写**产品**格非空通常适合起写单"
   [ "${WD_FUEL_PENDING:-0}" -gt 0 ] && advice="${advice:+${advice}；}待认领非空通常适合先核交付"
   printf '%s' "$advice"
 }
@@ -7498,8 +7560,17 @@ wd_fuel_advice(){  # 三桶事实 → 默认建议;判断仍归收方
 wd_nudge_text(){  # <静默秒数> → 事实 + 默认建议 + 收方判断,⛔ 命令形
   local silent="$1" advice
   advice="$(wd_fuel_advice)"
+  # #186:可自写**分列** ⛔ 只报合计——收方(派工席)只对「产品」格负责,工具格归 11B 线、其他格归档面。
+  #   只报合计时,派工席每次被催都要自己复测一轮才能证明「这不是我的活」(实测连催 6 次)。
+  local swtxt
+  if [ "${WD_STATS_SW_DEGRADED:-0}" = 1 ]; then
+    swtxt="$WD_STATS_SELFWRITE(⚠️ 无产品格,降级按合计)"
+  else
+    # 内层用「·」⛔ 用「/」——外层三桶已用 " / " 分隔,内层再用 / 会把一格读成三桶之一。
+    swtxt="产品${WD_STATS_SW_PRODUCT:-?}·工具${WD_STATS_SW_TOOL:-?}·其他${WD_STATS_SW_OTHER:-?}(派工席只看产品格)"
+  fi
   printf '【看门狗】已静默 %s 分钟。三桶读数: ready=%s / 可自写=%s / 待认领=%s。默认建议:%s。若你判断另有更优动作,照你的判断办并留痕。' \
-    "$((silent/60))" "$WD_STATS_READY" "$WD_STATS_SELFWRITE" "$WD_STATS_PENDING" "$advice"
+    "$((silent/60))" "$WD_STATS_READY" "$swtxt" "$WD_STATS_PENDING" "$advice"
 }
 
 wd_nudge(){  # <正文> → 复用既有 tmux 注入路径
@@ -7685,7 +7756,7 @@ wd_loop() {
     # #137:只要存在空闲轨,就按「行动燃料」判是否该打扰;其他轨/验收窗仍在跑不构成燃料。
     wd_fuel >/dev/null
     local _fuel="$WD_FUEL"
-    echo "[$(date '+%F %T')] 燃料读数 ready=${WD_STATS_READY} selfwrite=${WD_STATS_SELFWRITE} design=${WD_STATS_DESIGN} pending=${WD_STATS_PENDING}; action=${_fuel:-无}" >> "$WD_LOG"
+    echo "[$(date '+%F %T')] 燃料读数 ready=${WD_STATS_READY} selfwrite=${WD_STATS_SELFWRITE}(产品${WD_STATS_SW_PRODUCT:-?}·工具${WD_STATS_SW_TOOL:-?}·其他${WD_STATS_SW_OTHER:-?}${WD_STATS_SW_DEGRADED:+ ⚠️降级}) design=${WD_STATS_DESIGN} pending=${WD_STATS_PENDING}; action=${_fuel:-无}" >> "$WD_LOG"
     if [ -z "$_fuel" ]; then
       local all_idle=1
       lane_busy a && all_idle=0

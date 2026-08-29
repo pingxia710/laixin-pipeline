@@ -216,6 +216,43 @@ def prefix_link(a, b, minlen=12):
     return a[:n] == b[:n]
 
 
+def merge_row_names(rows):
+    """从看板「<片名> 已合入 main =」条里抽出**该条实际用的那个片名写法**。
+
+    ⛔ 假定各条对同一片用同一个写法 —— 2026-08-29 实撞:同一片在发车/起验收条里是全名
+    「钓不钓:融合四c-主片-生产入口与身份中间件」,在合入条里是简名「钓不钓:融合四c-主片」。
+    """
+    out = []
+    for r in rows:
+        if "派工窗口" not in r.src:
+            continue
+        m = re.search(r"([^\s*`」|]{4,60}?)\s*已合入\s*main\s*[=＝]", r.body)
+        if not m:
+            continue
+        nm = m.group(1).strip().strip("*").strip()
+        if nm:
+            out.append((nm, r))
+    return out
+
+
+def name_candidates(names, wanted, minlen=8):
+    """给出与 wanted **有前缀/包含关系**的看板实际写法(只作候选提示)。
+
+    🔴 **只提示 ⛔ 自动采用** —— 料 B §〇 记过 find_key 按 6 字前缀配对把
+    「融合片四a / 四b / 三」撞成同键;这里同样 ⛔ 越过人自动改键,只把候选摆出来让调用方逐字给。
+    """
+    nw = re.sub(r"[-:：\s*]", "", wanted)
+    out = []
+    for nm in names:
+        nn = re.sub(r"[-:：\s*]", "", nm)
+        if nn == nw:
+            continue
+        n = min(len(nn), len(nw))
+        if n >= minlen and nn[:n] == nw[:n] and nm not in out:
+            out.append(nm)
+    return out
+
+
 def locate_prompt_slugs(rows, names, day):
     """从「起写单窗 prompt-<slug> ← 片「<片名>」」取全部 slug(窗口名会被截断,故 ⛔ 由片名推)。
 
@@ -313,8 +350,20 @@ class Replay(object):
                 if re.search(r"已合入\s*main\s*=", r.body) and "派工窗口" in r.src:
                     hit = r
             if hit is None:
-                self.gap(1, "Cpp", "前片「%s」全库无「已合入 main =」条" % a.pred_piece, read_fail=True)
-                return Ev(None, "前片合入字面不存在", "-", None)
+                # 🔴 两态必须分开:「片名字面没对上」与「锚真的不存在」在输出上一旦同形,
+                #    调用方会去补一个本来就在的字面(2026-08-29 值守窗实撞:传全名读不到、
+                #    传简名才出数,而两次的输出长得一样)。
+                cands = name_candidates([n for n, _ in merge_row_names(self.rows)], a.pred_piece)
+                if cands:
+                    self.gap(1, "Cpp",
+                             "**未命中:片名字面**(⛔ 读成锚不存在)——看板合入条用的是别的写法;"
+                             "候选:%s;逐字改 --pred-piece 或加 --alias,⛔ 让程序自动前缀匹配"
+                             % " · ".join(cands[:4]), read_fail=True)
+                    return Ev(None, "未命中:片名字面(候选:%s)" % " · ".join(cands[:4]), "-", None)
+                self.gap(1, "Cpp", "前片「%s」全库无「已合入 main =」条(**锚真的不存在**;"
+                                   "看板合入条里没有任何与该片名有前缀/包含关系的写法)"
+                                   % a.pred_piece, read_fail=True)
+                return Ev(None, "锚真的不存在:无「已合入 main =」条", "-", None)
             s = hit.sec()
             return Ev(s or hit.dt, "已合入 main =", "[%d]" % hit.lineno, "sec" if s else "min")
         self.gap(1, "E", "未给 --pred-*,且排队行无登记时刻", read_fail=True)
@@ -562,7 +611,18 @@ class Replay(object):
         e_deliver = self.ev_deliver(lane_runs, dev_run, vstart)
         e_receipt = self.ev_receipt(vslug, v_open) if vslug else Ev(None, "无验收窗", "-", None)
         if vslug is None:
-            self.gap(5, "C", "本片无「起验收窗口」条", read_fail=True)
+            vnames = []
+            for r in self.rows:
+                m = re.search(r"起验收窗口\s+verify-\S+?\s*←\s*([^(（|]{4,60})", r.body)
+                if m:
+                    vnames.append(m.group(1).strip())
+            cands = name_candidates(vnames, self.piece)
+            if cands:
+                self.gap(5, "C", "**未命中:片名字面**(⛔ 读成没起过验收窗)——起验收条用的是别的写法;"
+                                 "候选:%s;逐字改 --piece,⛔ 让程序自动前缀匹配"
+                                 % " · ".join(cands[:4]), read_fail=True)
+            else:
+                self.gap(5, "C", "本片无「起验收窗口」条(**锚真的不存在**)", read_fail=True)
         v_close = [r for r in self.rows
                    if "派工窗口" in r.src and vslug and ("回收验收窗口 %s" % vslug) in r.body] if vslug else []
         e_merge = self.ev_merge(vslug, v_close)
@@ -849,6 +909,28 @@ def selftest():
         chk("缺口列出 Cpp(产品片合入字面缺失)且归「读不到」",
             any(g[1] == "Cpp" and g[3] for g in r4["gaps"]))
 
+        print("== 3b. 阴性:片名两种写法 ⇒ 报「未命中:片名字面」并给候选 ⛔ 自动前缀匹配 ==")
+        b7 = os.path.join(tmp, "board-shortname.md")
+        with open(b7, "w", encoding="utf-8") as fh:
+            fh.write(src.replace("片乙 已合入 main = deadbeef",
+                                 "t:片乙-社区层数据面 已合入 main = deadbeef"))
+        # 归一后长度须 ≥ minlen(8),否则连「候选」都不该给——短名与长名的前缀关系不足以指认同一片
+        r7 = Replay(_args_for(b7, native, "t:片甲",
+                              pred_piece="t:片乙-社区层数据面-生产入口与身份中间件")).run()
+        s7 = {x["idx"]: x for x in r7["segs"]}
+        chk("① 起读不到但写明是「未命中:片名字面」",
+            s7[1]["start"].dt is None and "未命中:片名字面" in s7[1]["start"].literal,
+            s7[1]["start"].literal)
+        chk("候选里逐字给出看板实际写法",
+            "t:片乙-社区层数据面" in s7[1]["start"].literal, s7[1]["start"].literal)
+        chk("缺口正文提示 --pred-piece/--alias 且 ⛔ 自动前缀匹配",
+            any("⛔ 让程序自动前缀匹配" in g[2] for g in r7["gaps"]), str(r7["gaps"][:1]))
+        chk("⛔ 自动采用候选:① 仍然读不到 ⛔ 出数", s7[1]["dur"] is None, str(s7[1]["dur"]))
+        r8 = Replay(_args_for(b7, native, "t:片甲", pred_piece="完全不相干的片名XYZ")).run()
+        s8 = {x["idx"]: x for x in r8["segs"]}
+        chk("无关系时报「锚真的不存在」⛔ 报成片名未命中",
+            "锚真的不存在" in s8[1]["start"].literal, s8[1]["start"].literal)
+
         print("== 4. 阴性三:a 类字面命中只出候选 ⛔ 结论 ==")
         b5 = os.path.join(tmp, "board-a-class.md")
         with open(b5, "w", encoding="utf-8") as fh:
@@ -990,6 +1072,35 @@ def selftest_live(args):
          and "22m" not in txt.split("== 打回轮次")[0].split("流水线损耗")[1][:80], ""),
         ("JSON 面同因栏逐字=未判",
          json.loads(json.dumps({"x": "未判"}))["x"] == "未判", ""),
+    ]:
+        if cond:
+            ok += 1
+            print("  ✅ %s" % name)
+        else:
+            fail += 1
+            print("  ❌ %s  %s" % (name, got))
+
+    # ── 阴性三(真库):同一片全名/简名两种写法 ⇒ 报未命中并给候选,⛔ 自动匹配
+    print("\n== 委任验收阴性三:4c 主片全名 vs 简名(2026-08-29 值守窗实撞)==")
+    def _mk(pred):
+        ns = argparse.Namespace(board=args.board, native=args.native, table=None,
+                                piece="钓不钓:融合四c-端侧片-token存取与携带",
+                                pred_piece=pred, pred_line=None, pred_time=None,
+                                alias=[], merge_line=None, day="2026-08-29", year=2026,
+                                delivery_anchor="result", json=False, oneline=False)
+        return Replay(ns).run()
+    rfull = _mk("钓不钓:融合四c-主片-生产入口与身份中间件")
+    rshort = _mk("钓不钓:融合四c-主片")
+    sf = {x["idx"]: x for x in rfull["segs"]}
+    ss = {x["idx"]: x for x in rshort["segs"]}
+    for name, cond, got in [
+        ("传全名 ⇒ ① 读不到", sf[1]["start"].dt is None, sf[1]["start"].show()),
+        ("传全名 ⇒ 输出含「候选:钓不钓:融合四c-主片」",
+         "候选:钓不钓:融合四c-主片" in sf[1]["start"].literal, sf[1]["start"].literal),
+        ("传全名 ⇒ 写明是片名未命中 ⛔ 锚不存在",
+         "未命中:片名字面" in sf[1]["start"].literal, sf[1]["start"].literal),
+        ("⛔ 自动采用候选:传全名时 ① 仍读不到", sf[1]["dur"] is None, str(sf[1]["dur"])),
+        ("传简名 ⇒ ① 出数(证明候选是对的)", ss[1]["dur"] == 310, str(ss[1]["dur"])),
     ]:
         if cond:
             ok += 1

@@ -152,6 +152,14 @@ def read_board(path, year=None, on_error=None):
     try:
         with io.open(path, "r", encoding="utf-8", errors="replace") as fh:
             lines = fh.read().split("\n")
+        # 🔴 **文件以换行结尾时,split 会多出一个空元素** —— 它不是一行,是行尾那个换行符
+        #   的产物。不去掉,它会被下面的折行逻辑当成「不匹配行首的物理行」折进**最后一条**
+        #   的 body ⇒ **末条 body 恒以 `\n` 结尾,其余条不会**。
+        #   实撞(2026-08-29 兑现窗B 5.2 回核):拿 body 与落笔原文逐字比对,**末条永远不等**,
+        #   而「差一个换行」与「正文真的被改了」在比对结果上**都只是 False**。
+        #   ⚠️ 只去掉**一个**:文件真以空行结尾(`\n\n`)时,那个空行是**真的一行**,该折进去。
+        if lines and lines[-1] == "":
+            lines.pop()
     except IOError as e:
         msg = "看板读不到:%s(%s)" % (path, e)
         if on_error is not None:

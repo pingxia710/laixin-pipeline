@@ -985,6 +985,47 @@ def selftest():
         chk("三截逐字拼回原样",
             bd11.glued and bd11.glued[0].segs == [victim, glued_tail, third])
 
+        print("== 5.5 末条尾换行:末条 body ⛔ 因文件行尾换行而多一个 \\n ==")
+        # 症状:`split("\\n")` 在文件以换行结尾时多出一个空元素,被折进**最后一条**的 body
+        #   ⇒ **末条 body 恒以 \\n 结尾,其余条不会**。实撞:5.2 回核拿 body 与落笔原文逐字比对,
+        #   末条永远不等,而「差一个换行」与「正文真的被改了」在比对结果上**都只是 False**。
+        # ⚠️ 这几条要能在**修法被改回去时变红** ⛔ 只测「当刻是对的」。
+        b12 = os.path.join(tmp, "board-eol.md")
+        with io.open(b12, "w", encoding="utf-8") as fh:
+            fh.write("| 01-01 09:00 | 甲 | 第一条 |\n| 01-01 10:00 | 乙 | 第二条 |\n")
+        bd12 = board_read.read_board(b12, year=2026)
+        chk("末条 body ⛔ 以换行结尾", not bd12.rows[-1].body.endswith("\n"),
+            repr(bd12.rows[-1].body[-4:]))
+        chk("末条与非末条**形态一致**(都不带尾换行)",
+            bd12.rows[-1].body.endswith("\n") == bd12.rows[0].body.endswith("\n"))
+        chk("行数不因去掉那个空元素而变", len(bd12.rows) == 2, str(len(bd12.rows)))
+
+        b13 = os.path.join(tmp, "board-noeol.md")
+        with io.open(b13, "w", encoding="utf-8") as fh:
+            fh.write("| 01-01 09:00 | 甲 | 第一条 |\n| 01-01 10:00 | 乙 | 第二条 |")
+        bd13 = board_read.read_board(b13, year=2026)
+        chk("阴性:文件**不以换行结尾** ⇒ 读数与以换行结尾时一致",
+            len(bd13.rows) == 2 and not bd13.rows[-1].body.endswith("\n"))
+
+        b14 = os.path.join(tmp, "board-blank-tail.md")
+        with io.open(b14, "w", encoding="utf-8") as fh:
+            fh.write("| 01-01 09:00 | 甲 | 第一条 |\n| 01-01 10:00 | 乙 | 第二条 |\n\n")
+        bd14 = board_read.read_board(b14, year=2026)
+        chk("阴性:文件真以**空行**结尾 ⇒ 那个空行**仍该**折进末条(只去掉一个)",
+            bd14.rows[-1].body.endswith("\n"), repr(bd14.rows[-1].body[-4:]))
+
+        b15 = os.path.join(tmp, "board-one.md")
+        with io.open(b15, "w", encoding="utf-8") as fh:
+            fh.write("| 01-01 09:00 | 甲 | 只有一条 |\n")
+        bd15 = board_read.read_board(b15, year=2026)
+        chk("阴性:只有一条的看板 ⇒ 那一条既是首也是末,⛔ 带尾换行",
+            len(bd15.rows) == 1 and not bd15.rows[0].body.endswith("\n"))
+
+        b16 = os.path.join(tmp, "board-empty.md")
+        with io.open(b16, "w", encoding="utf-8") as fh:
+            fh.write("")
+        chk("阴性:空文件 ⇒ 零条且 ⛔ 抛错", len(board_read.read_board(b16, year=2026).rows) == 0)
+
         print("== 5.4 机器闸:同目录 ⛔ 再长第二份切看板行(M9 只能 import board_read)==")
         # 靠注释约束「M9 ⛔ 再长一份」= 靠自觉;这条把它变成**自测当场变红**。
         # 射程 = 本文件所在目录:开发树是 bin/,发布态是 <hash>/(helper 全集 + 兄弟脚本

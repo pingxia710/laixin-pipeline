@@ -2481,8 +2481,10 @@ tfail "#60②:fresh c --dir 目录不存在照拒(窗口未动)" "目录不存�
   env LAIXIN_SESSION=lx60c-nonexist LAIXIN_LANE_TRANSPORT=tui "$LANE" fresh c --dir "$C60/没有这个worktree"
 t "#60②:fresh c 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx60c-nonexist 2>/dev/null'
 # ⭐ --with-mcp 是 codex 专属语法:C 轨拒收(静默吞掉=调用者以为生效了),且动窗口之前拒
+# 2026-08-29:三轨 --dir 必填后,本例补上 --dir ⇒ 它继续只测「--with-mcp 被拒」这一件事,
+#   ⛔ 让 --dir 守卫为它避让(那会让守卫在 up c 这条路径上形同虚设)。
 tfail "#60②:up c --with-mcp 被拒(codex 专属参数 ⛔ 静默吞)" "codex 专属参数" \
-  env LAIXIN_SESSION=lx60c-nonexist "$LANE" up c --with-mcp aliyun-readonly
+  env LAIXIN_SESSION=lx60c-nonexist "$LANE" up c --dir "$C60" --with-mcp aliyun-readonly
 t "#60②:up c --with-mcp 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx60c-nonexist 2>/dev/null'
 # ⭐ 起动命令按引擎分派:kimi 与 Codex 都显式钉模型;Codex 的 MCP 关闭参数仍在。
 t "#60②:cmd_up 起动命令分引擎(kimi/Codex 均显式配型)" bash -c '
@@ -5689,6 +5691,40 @@ rm -rf "$N172"
 # (pgrep 遇非法字节 ⇒ 报错 + stdout 空 ⇒ 假零;ps|grep ⇒ 把提到该串的外壳算成在跑 ⇒ 假阳性)。
 # ── 要料链(§八 发车规矩;08-29 实撞:融合五 08:57 合入 → 4c 09:46:22 发车,中间 49 分钟 ready=0
 #    在等题,而那段时间没有任何一处会说出「下一片没有」)────────────────────────────────────
+# ── 三轨 --dir 必填守卫(2026-08-29 值守第 12 例)──────────────────────────────────────
+# 病灶:`up` 的 `dir="$DEFAULT_DIR"` 静默回落到来信主树,而必填守卫只装在 C 轨 ⇒ 漏传 --dir
+# 会把 A/B 轨起在另一个产品仓,而「起对仓」与「起错仓」在起窗输出上完全同形。
+echo "== 三轨 --dir 必填守卫 =="
+D21=lx21-nonexist
+tfail "--dir 必填:up a 不带 ⇒ 拒(⛔ 静默落默认仓)" "up a 必须带 --dir" \
+  env LAIXIN_SESSION="$D21" "$LANE" up a
+tfail "--dir 必填:up b 不带 ⇒ 拒" "up b 必须带 --dir" \
+  env LAIXIN_SESSION="$D21" "$LANE" up b
+# 守卫必须同时装在 fresh:内部 fresh→up 透传 --dir,但只装一处就又是「一个门」
+tfail "--dir 必填:fresh a 不带 ⇒ 拒(守卫 ⛔ 只装 up 一处)" "fresh a 必须带 --dir" \
+  env LAIXIN_SESSION="$D21" LAIXIN_LANE_TRANSPORT=tui "$LANE" fresh a
+tfail "--dir 必填:fresh b 不带 ⇒ 拒" "fresh b 必须带 --dir" \
+  env LAIXIN_SESSION="$D21" LAIXIN_LANE_TRANSPORT=tui "$LANE" fresh b
+# ⭐ 阳性对照:给了 --dir 就必须**走过守卫**继续往下判——否则「守卫太紧」与「守卫生效」同形
+tfail "--dir 阳性对照:带 --dir 即越过守卫,改报目录不存在(⛔ 卡在必填这一关)" "目录不存在" \
+  env LAIXIN_SESSION="$D21" "$LANE" up a --dir /nope-xyz-2026
+tout "--dir 报错给候选:next-worktree 在第一位" "1) laixin-lane next-worktree" \
+  env LAIXIN_SESSION="$D21" "$LANE" up a
+tout "--dir 报错给候选:来信主树明写仅来信片" "仅来信片" \
+  env LAIXIN_SESSION="$D21" "$LANE" up a
+tout "--dir 报错给候选:列现有 worktree(实时算 ⛔ 硬编码)" "3) 现有 worktree" \
+  env LAIXIN_SESSION="$D21" "$LANE" up a
+t "--dir 必填:被拒时零 tmux 副作用(窗口未动)" bash -c '! tmux has-session -t lx21-nonexist 2>/dev/null'
+# ⭐ 对照:回落源头已从 cmd_up 里去掉——留着它,守卫写了也会被默认值绕过
+t "--dir 对照:cmd_up 内不再预置 DEFAULT_DIR(静默回落的源头)" bash -c '
+  body="$(sed -n "/^cmd_up() {/,/^}/p" "$1")"
+  ! grep -q "local dir=\"\$DEFAULT_DIR\"" <<< "$body" &&
+  grep -q "lane_dir_required_die up" <<< "$body"' _ "$LANE"
+t "--dir 对照:cmd_fresh 内守卫不再只对 c 轨" bash -c '
+  body="$(sed -n "/^cmd_fresh() {/,/^}/p" "$1")"
+  ! grep -q "lane\" = \"c\" \] && \[ -z \"\$_hasdir\"" <<< "$body" &&
+  grep -q "lane_dir_required_die fresh" <<< "$body"' _ "$LANE"
+
 echo "== 要料链:料仓深度<2 推事实 =="
 FW="$(mktemp -d)"; FWF="$FW/fn.sh"
 for fn in ev_next_ready wd_fuelwant_target wd_fuelwant_lane_enabled wd_fuelwant_deliver wd_fuel_want; do

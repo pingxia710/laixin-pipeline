@@ -1,10 +1,10 @@
 #!/bin/bash
 # laixin-lane — laixin开发流水线的信使脚本(tmux 编排多轨 worker + 看板自动记录)
 # 用法:
-#   laixin-lane up <a|b|c> [--dir DIR]   确保该轨窗口存在并启动引擎(a/b=codex;c=kimi/K3 前端位,#60②;默认 DIR=~/来信平台)
+#   laixin-lane up <a|b|c> --dir DIR     确保该轨窗口存在并启动引擎(a/b=codex;c=kimi/K3 前端位,#60②;**三轨 --dir 必填**⛔ 默认目录)
 #                                    C 轨起窗前预写 kimi 信任记录免 trust 对话框(#68);该目录有 project 级 MCP 配置则拒绝起窗
-#   laixin-lane fresh <a|b|c> [--dir DIR] [--transport tui|print]
-#                                    重启该轨(down+up,全新上下文;每片派工前用;**c 必须 --dir**=每片独立 worktree)
+#   laixin-lane fresh <a|b|c> --dir DIR [--transport tui|print]
+#                                    重启该轨(down+up,全新上下文;每片派工前用;**三轨一律 --dir**=起在哪个仓必须说清)
 #   laixin-lane send <a|b|c> <文本>  向该轨输入框粘贴文本并回车(多行走 stdin)
 #   laixin-lane peek <a|b|c> [N]     看该轨最近 N 行输出(默认 60)
 #   laixin-lane log <文本>           手工追加一条事件到流水线看板(供各窗口记录)
@@ -448,10 +448,40 @@ has_window() {
   tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$(win "$1")"
 }
 
+# ── 三轨 --dir 必填(2026-08-29 值守第 12 例;创始人刚令铺满 A/B 轨跑钓不钓片)──────────────
+# 病灶:`up` 此前 `dir="$DEFAULT_DIR"` **静默回落**到来信主树,而 --dir 必填的 die 只装在 C 轨。
+#   漏传 --dir 会把 A/B 轨起在**另一个产品仓**,且「起对仓」与「起错仓」在起窗输出上完全同形
+#   ——基点零漂移核要到**发车之后**才兜得住。⇒ 机器执法 ⛔ 靠「起窗前想一下这片是哪个仓」。
+lane_dir_candidates(){  # → 现有可选 worktree 清单(**实时算 ⛔ 硬编码**:f 系列随片增删,写死当天就过时)
+  local r p out=""
+  for r in "$HOME/钓不钓-基座" "$HOME/钓不钓"; do
+    [ -e "$r/.git" ] || continue
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case "$p" in "$HOME"/*) ;; *) continue ;; esac   # 只列 $HOME 下的;临时 scratch worktree ⛔ 当候选
+      out="${out}     · ${p}
+"
+    done <<< "$(git -C "$r" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}' || true)"
+  done
+  printf '%s' "$out"
+}
+
+lane_dir_required_die(){  # <up|fresh> <轨> —— 缺 --dir 的统一报错(一处写 ⛔ 每轨各写一份)
+  local cmd="$1" lane="$2" cands
+  cands="$(lane_dir_candidates)"
+  die "${cmd} ${lane} 必须带 --dir <仓库路径>(窗口未动)
+⛔ 静默回落默认目录:漏传会把该轨起在**另一个产品仓**,而「起对仓」与「起错仓」在起窗输出上同形。
+候选(按取用顺序):
+  1) laixin-lane next-worktree —— 先取号,再 git worktree add,然后 ${cmd} ${lane} --dir <该 worktree>
+  2) ${HOME}/来信平台 —— **仅来信片**
+  3) 现有 worktree:
+${cands:-     ·(当刻 HOME 下无已注册的钓不钓/基座 worktree,走 1)}"
+}
+
 cmd_up() {
   local lane="${1:-}"; shift || true
-  [ -n "$lane" ] || die "up 需要轨道名:laixin-lane up a|b|c [--dir DIR] [--with-mcp 服务名]..."
-  local dir="$DEFAULT_DIR" mcp_keep=""
+  [ -n "$lane" ] || die "up 需要轨道名:laixin-lane up a|b|c --dir DIR [--with-mcp 服务名]..."
+  local dir="" mcp_keep=""   # ⛔ 预置 $DEFAULT_DIR:那正是静默回落的来源
   while [ $# -gt 0 ]; do
     case "$1" in
       --dir) dir="${2:?--dir 需要路径}"; shift 2 ;;
@@ -459,6 +489,7 @@ cmd_up() {
       *) die "未知参数:$1" ;;
     esac
   done
+  [ -n "$dir" ] || lane_dir_required_die up "$lane"
   [ -d "$dir" ] || die "目录不存在:$dir"
   # #60②:--with-mcp 是 codex 专属语法(-c 旗标拼进 codex 命令行)——C 轨静默吞掉会让调用者以为
   # 生效了(工具自述与行为不同步族);动窗口之前拒,⛔ 起了窗再报
@@ -473,7 +504,7 @@ cmd_up() {
   fi
   ensure_session
   if has_window "$lane"; then
-    echo "$(win "$lane") 已存在。换目录/新上下文用:laixin-lane fresh $lane [--dir DIR]"
+    echo "$(win "$lane") 已存在。换目录/新上下文用:laixin-lane fresh $lane --dir DIR"
     tmux display-message -p -t "$(target "$lane")" '#{window_name}: #{pane_current_path} [#{pane_current_command}]'
     return 0
   fi
@@ -570,9 +601,9 @@ cmd_fresh() {
   fi
   # #60②:C 轨同 B 轨形态——每片独立 worktree,fresh c **必须 --dir**(机器执法 ⛔ 靠自觉):
   # 不带 --dir 会落默认主树,与 A 轨对写同一工作树=「两轨对写同一文件」同族事故;窗口未动先拒
-  if [ "$lane" = "c" ] && [ -z "$_hasdir" ]; then
-    die "fresh c 必须带 --dir <worktree路径>(C 轨每片独立 worktree,同 B 轨形态;先 laixin-lane next-worktree 取号 + git worktree add,再 fresh c --dir。窗口未动)"
-  fi
+  # 守卫装在 fresh 与 up **两处**:内部 fresh→up 把 --dir 原样透传,但 up 也可被直接调用
+  #   ——只装一处就又是「一个门」(#60② 原本只包 C 轨,正是这个形态)。
+  [ -n "$_hasdir" ] || lane_dir_required_die fresh "$lane"
   # bash 3.2 的 set -u 不允许直接展开空数组；起窗失败时旧窗须可恢复。
   local _oldwin="" _start_rc=0
   if has_window "$lane"; then
@@ -738,7 +769,7 @@ send_swallow_check() {  # <轨道名>;由 cmd_send 的 8s 延时后台块调用
 cmd_send() {
   local lane="${1:-}"; shift || true
   [ -n "$lane" ] || die "send 需要轨道名"
-  has_window "$lane" || die "$(win "$lane") 不存在,先 laixin-lane up $lane"
+  has_window "$lane" || die "$(win "$lane") 不存在,先 laixin-lane up $lane --dir <该片仓库>"
   local text
   if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
   [ -n "$text" ] || die "没有要发送的内容"
@@ -3760,8 +3791,7 @@ ev_watch_target(){  # <窗口名> —— TUI 画面/native 进度无变化累计
         [ -f "$gf" ] && return 0   # 已告过一次,不刷屏;窗口回来后标记会被清掉,再消失还会再告
         : > "$gf"
         local _eng _fresh; _eng="$(lane_engine "${w#lane-}")"
-        _fresh="laixin-lane fresh ${w#lane-}"
-        [ "$w" = "lane-c" ] && _fresh="laixin-lane fresh c --dir <该片worktree>"
+        _fresh="laixin-lane fresh ${w#lane-} --dir <该片worktree>"   # 三轨一律必填 ⛔ 再给 a/b 一条不带 --dir 的建议
         ev_deliver "告警" "【告警】$w 窗口整个消失(不是无变化,是**不存在**)——${_eng} 已死且不会自己回来,该轨此刻零产出。
 处置:${_fresh} 重起 → 重发该轨当前片的 prompt 路径(${_eng} 从分支现场续,已落地的 commit 不丢);若该轨本无在飞片,在总表「进行中」写明空转原因。"
         ;;

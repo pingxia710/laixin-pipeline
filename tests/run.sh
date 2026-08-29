@@ -5687,6 +5687,122 @@ rm -rf "$N172"
 # ── 并发闸:运行器自取互斥锁(2026-08-29 值守窗「配合问题第 1 例」)────────────────────
 # 被替掉的是各窗「跑套件前先 pgrep 自核」这一步:该判据两种实现各自在**放行方向**失效且不可见
 # (pgrep 遇非法字节 ⇒ 报错 + stdout 空 ⇒ 假零;ps|grep ⇒ 把提到该串的外壳算成在跑 ⇒ 假阳性)。
+# ── 要料链(§八 发车规矩;08-29 实撞:融合五 08:57 合入 → 4c 09:46:22 发车,中间 49 分钟 ready=0
+#    在等题,而那段时间没有任何一处会说出「下一片没有」)────────────────────────────────────
+echo "== 要料链:料仓深度<2 推事实 =="
+FW="$(mktemp -d)"; FWF="$FW/fn.sh"
+for fn in ev_next_ready wd_fuelwant_target wd_fuelwant_lane_enabled wd_fuelwant_deliver wd_fuel_want; do
+  sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$FWF"
+done
+grep '^ev_ready_count()' "$LANE" >> "$FWF"    # 单行函数:范围 sed 会吞到下一个行首 } ⇒ 用 grep 取
+cat > "$FW/env.sh" <<'EOENV'
+source "$FWF"
+EV_DIR="$FW/ev"; WD_FUELWANT_DIR="$EV_DIR/fuelwant"; WD_LOG="$FW/wd.log"
+WD_FUELWANT_MIN="${WD_FUELWANT_MIN:-2}"; DISPATCH_WIN=dispatch; SESSION=s
+LANE_SWITCH_DIR="$FW/switch"; TABLE="$FW/table.md"
+# 🔴 每个用例自带干净状态:env.sh 由每条用例各自 source ⇒ 重置放这里就等于逐例隔离。
+#    ⛔ 共用一份 delivered/标记:上一例留下的标记会让下一例「本该出事件」变成零事件,
+#    而计数类断言(累计 N 条)在前几例又恰好蒙对 ⇒ 表现为「前面几条绿、后面几条红」,
+#    看起来像后面的实现有问题,实则是夹具串味(本件重跑实撞 5 红,全在靠后的用例)。
+rm -rf "$EV_DIR" "$LANE_SWITCH_DIR" "$FW/delivered" "$FW/board" "$FW/wd.log"
+mkdir -p "$EV_DIR" "$LANE_SWITCH_DIR"; : > "$FW/delivered"
+# ⚠️ case 候选的 `|` 必须是**源码里的字面**:来自 ${…} 展开的 | 只是普通字符,
+#    `${FW_WINS:-lane-a|lane-b}` 会变成匹配字符串 "lane-a|lane-b" ⇒ 恒不命中 ⇒ 全轨判未启用
+#    ⇒ 期望出事件的用例全红、期望零事件的用例照常绿(本件首跑实撞的正是这个方向)。改用空格成员判定。
+win_exists(){ case " ${FW_WINS:-lane-a lane-b} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+board(){ printf '%s\n' "$2" >> "$FW/board"; }
+ev_deliver(){ printf '%s\n' "$2" >> "$FW/delivered"; }
+wd_fuel(){ WD_STATS_SW_PRODUCT="$FW_SW"; WD_STATS_DG_PRODUCT="${FW_DG:-0}"; return 0; }
+fw_table(){ # <B轨ready条数> [A轨ready条数=3] —— A 默认 3 条保持 ok、不干扰对 B 的判读;
+            # 要证明「A 也被评估」的用例必须把 A 压到 0,否则 A 恒 ok ⇒ 评了与没评零事件同形
+  { echo "## 排队"; echo "| 片 | 轨 | 内容 | 状态 |"; echo "|---|---|---|---|"
+    i=0; while [ "$i" -lt "${2:-3}" ]; do i=$((i+1)); echo "| a$i | A | x | prompt ready |"; done
+    i=0; while [ "$i" -lt "$1" ];      do i=$((i+1)); echo "| b$i | B | x | prompt ready |"; done
+  } > "$TABLE"; }
+fw_b(){ grep -c "要料:lane-b" "$FW/delivered" 2>/dev/null || echo 0; }  # 投给 B 轨的**要料**事件条数
+EOENV
+
+t "要料:B 轨深度 0<2 ⇒ 恰一条,正文带轨名与三桶实数" env FW="$FW" FWF="$FWF" FW_SW=0 FW_DG=2 bash -c '
+  source "$FW/env.sh"; fw_table 0
+  wd_fuel_want
+  [ "$(fw_b)" -eq 1 ] || exit 1
+  grep -q "要料:lane-b 料仓深度 0<2(ready 0 · 可自写产品 0);缺设计 2" "$FW/delivered"'
+
+t "要料:同一状态第二拍零新事件(状态转移单次 ⛔ 时间窗)" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"; fw_table 0
+  wd_fuel_want; wd_fuel_want; wd_fuel_want
+  [ "$(fw_b)" -eq 1 ]'
+
+t "要料:标记记下进入时刻与当时深度(尺 6「料齐→发车延迟」可直接算)" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"; fw_table 0; wd_fuel_want
+  m="$(cat "$WD_FUELWANT_DIR/b")"
+  [ "${m%%|*}" = low ] || exit 1
+  ts="$(cut -d"|" -f2 <<< "$m")"; [[ "$ts" =~ ^[0-9]+$ ]] || exit 1
+  grep -q "depth=0|ready=0|sw_product=0" <<< "$m"'
+
+t "要料:深度回到 ≥2 ⇒ 清标记并落「要料解除」(阴性:深度 2 零事件)" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"; fw_table 0; wd_fuel_want
+  before="$(fw_b)"
+  fw_table 2; wd_fuel_want
+  [ ! -f "$WD_FUELWANT_DIR/b" ] || exit 1
+  grep -q "要料解除:lane-b" "$WD_LOG" || exit 1
+  [ "$(fw_b)" -eq "$before" ]'
+
+t "要料:深度 1→2→1 ⇒ 恰两次(再跌再报)" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"
+  fw_table 1; wd_fuel_want
+  fw_table 2; wd_fuel_want
+  fw_table 1; wd_fuel_want
+  [ "$(fw_b)" -eq 2 ]'
+
+t "要料:燃料读不到 ⇒ 事件写「未判」⛔ 写成要料 ⛔ 当有料/无料" env FW="$FW" FWF="$FWF" FW_SW="?" bash -c '
+  source "$FW/env.sh"; fw_table 0; wd_fuel_want
+  grep -q "未判:燃料读不到 —— lane-b" "$FW/delivered" || exit 1
+  grep -q "可自写产品=读不出(原值 ?)" "$FW/delivered" || exit 1
+  ! grep -q "要料:lane-b" "$FW/delivered"'
+
+t "要料 对照:朴素判据「深度=0 才报」在深度 1 上零输出、本闸报——绊线能分成败" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"; fw_table 1
+  naive(){ [ "$(( $(ev_ready_count B) + FW_SW ))" -eq 0 ]; }
+  naive && exit 1                       # 朴素:深度 1 ⇒ 不报
+  wd_fuel_want; [ "$(fw_b)" -eq 1 ]'    # 本闸:报
+
+t "要料:lane-c 未起 ⇒ 不评估且清掉陈标记" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"; fw_table 0
+  mkdir -p "$WD_FUELWANT_DIR"; printf "low|1|x|depth=0|ready=0|sw_product=0\n" > "$WD_FUELWANT_DIR/c"
+  wd_fuel_want
+  [ ! -f "$WD_FUELWANT_DIR/c" ] || exit 1
+  ! grep -q "lane-c" "$FW/delivered" 2>/dev/null'
+
+t "要料:无窗且不在开关的轨 ⇒ 零事件(⛔ 对不存在的席位喊话)" env FW="$FW" FWF="$FWF" FW_SW=0 FW_WINS="lane-b" bash -c '
+  source "$FW/env.sh"; fw_table 0; wd_fuel_want
+  grep -q "lane-b" "$FW/delivered" || exit 1
+  ! grep -q "lane-a" "$FW/delivered"'
+
+t "要料:开关 lanes-enabled 点名 ⇒ 无窗的轨也评估(轨该在却暂时没窗)" env FW="$FW" FWF="$FWF" FW_SW=0 FW_WINS="lane-b" bash -c '
+  source "$FW/env.sh"; fw_table 0 0
+  wd_fuel_want; [ "$(grep -c "lane-a" "$FW/delivered")" -eq 0 ] || exit 1   # 无窗又没点名 ⇒ 零
+  printf "a\n" > "$FW/switch/lanes-enabled"
+  rm -rf "$WD_FUELWANT_DIR"                                                 # 让它重判 ⛔ 被上一拍标记挡住
+  wd_fuel_want
+  grep -q "要料:lane-a" "$FW/delivered"'
+
+t "要料:投递目标可配;配的窗不在 ⇒ 回落派工并在正文说明 ⛔ 静默丢" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
+  source "$FW/env.sh"; fw_table 0
+  [ "$(wd_fuelwant_target)" = dispatch ] || exit 1          # 默认=派工
+  printf "prompt-writer\n" > "$FW/switch/fuelwant-target"
+  [ "$(wd_fuelwant_target)" = prompt-writer ] || exit 1     # 开关生效
+  wd_fuel_want                                             # 该窗不在 ⇒ 回落
+  grep -q "回落派工窗口" "$FW/delivered"'
+
+t "要料 挂点:wd_fuel_want 排在「全轨在跑=正常等待」的 continue **之前**" bash -c '
+  b="$(sed -n "/^wd_loop() {/,/^}/p" "$1")"
+  w=$(grep -n "wd_fuel_want || true" <<< "$b" | head -1 | cut -d: -f1)
+  c=$(grep -n "lane_busy a && lane_busy b && .* then continue; fi" <<< "$b" | head -1 | cut -d: -f1)
+  [ -n "$w" ] && [ -n "$c" ] && [ "$w" -lt "$c" ]' _ "$LANE"
+
+rm -rf "$FW"
+
 echo "== 并发闸:运行器自取互斥锁 =="
 LK="$(mktemp -d)"; LKF="$LK/fn.sh"; LKSELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 for fn in tests_lock_acquire tests_lock_release; do

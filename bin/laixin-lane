@@ -3026,7 +3026,13 @@ ev_unsettled(){  # <mtime> <now> <tick> → 0=内容一拍之内还在动(待稳
   [ "$age" -ge 0 ] && [ "$age" -lt "$tick" ]
 }
 
-ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认 prompt 就绪,不认设计就绪)
+ev_next_ready(){  # <A|B|C> [first|count] → first(默认):排队节第一条可发片名;count:该轨可发片数
+  # 🔴 一份判据两种取法 ⛔ 复制这段 awk:下面 5 个坑都是实撞换来的,复制出去必然漂移。
+  #    count 模式是要料链(料仓深度)的 ready 半边,与发车用的 first 模式同口径——否则会出现
+  #    「发车探针说有料可发、要料链说没料」这种两个探针各说各话、而两边都自称正常的形态。
+  # ⚠️ 模式参数挂在 **ev_next_ready 自己**身上 ⛔ 另起一个 ev_ready_scan 让本名当一行壳:
+  #    套件里有 4 处 `sed -n "/^ev_next_ready/,/^}/p"` 抽本函数体落文件再 source,壳化会让抽出来的
+  #    只有壳、真身不在 ⇒ 那 4 条全红(本件首跑实撞 14 红)。判据下沉要连它的**抽取面**一起看。
   # ⛔ 三个实撞的坑(2026-08-13 夜):
   #   1. 裸 /ready/ 会被行内 `status: design-ready` 子串击中——设计就绪 ≠ prompt 就绪,只有后者可 fresh+send
   #      (实撞:把创始人已裁后延的「评审-1处罚落地」报成可发片);
@@ -3040,7 +3046,7 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
   #   5. 分列必须用「空格|空格」不能用裸「|」——状态格里的内联代码常带竖线(实撞:1b 行的
   #      "`?? 0` 与 `|| 0` 是禁止项"把裸 | 分列切碎,状态格判定整个失效,ready 片被静默漏报)。
   # 轨列接受「A」「**A**」「A小片」等形态;片名截 60 字节后用 iconv 丢掉可能被切坏的末尾多字节字符。
-  awk -v lane="$1" '
+  awk -v lane="$1" -v mode="${2:-first}" '
     function cellname(s,  t){t=s; sub(/^\| */,"",t); sub(/[((].*/,"",t); gsub(/[* ~ ]/,"",t); return t}
     FNR==1{pass++; sec=""}
     /^## /{sec=$0; next}
@@ -3053,10 +3059,14 @@ ev_next_ready(){  # <A|B> → 排队节第一条可发片名(尽力而为;只认
       st=c[n]; sub(/ *\|? *$/,"",st); sub(/<br>.*/,"",st)
       if (st ~ /prompt ?ready|prompt ?已写|prompt ?已就绪/ && st !~ /已发车|已完成|已并入|验收中|发不了|待写/) {
         nm=cellname(c[1]); if (nm in done) next
+        if (mode == "count") { cnt++; next }
         print substr(nm,1,60); exit
       }
-    }' "$TABLE" "$TABLE" 2>/dev/null | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
+    }
+    END{ if (mode == "count") print cnt+0 }' "$TABLE" "$TABLE" 2>/dev/null | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
 }
+
+ev_ready_count(){ ev_next_ready "$1" count; }   # <A|B|C> → 该轨可发片数(要料链的 ready 半边)
 
 ev_selfwrite_pending(){  # 0=可自写桶非空或探针失效(⇒ 空闲**不是**有意的) / 1=可自写确为 0
   # P0 同批(2026-08-28):补上「有意空闲」判据缺的第三桶。复用 wd_fuel 的解析与 mtime 缓存 ⛔ 另起一份读法——
@@ -4973,6 +4983,12 @@ QUOTA_WARN="${LAIXIN_QUOTA_WARN:-96}"       # 预警线(创始人 08-23:96 提�
 QUOTA_SWITCH="${LAIXIN_QUOTA_SWITCH:-98}"   # 切换线(创始人 08-23:用到 98%=剩 2% 时切派工席)
 QUOTA_ALERTED="$EV_DIR/quota.alerted"       # 已提醒登记 mail|线|重置时刻(同一重置窗口内每线只提醒一次)
 WD_FUELGAP_ALERTED="$EV_DIR/fuelgap.alerted" # 料断档已告警标记(2026-08-29 值守实撞:fuelgap 只在内存,#136 自换代 exec 后归零 ⇒ 每次 release 都再报一次料断档并再催派工席问料;落盘后同一断档只报一次,燃料出现即清)
+WD_FUELWANT_DIR="$EV_DIR/fuelwant"          # 要料链落盘标记(每轨一份)。⛔ 与 fuelgap.alerted 共用:
+                                            #   料断档=三桶全空的兜底事故;要料=料仓深度<2 的领先探针。
+                                            #   共用一个标记会让「兜底清了标记」把「领先探针的首报」吃掉,
+                                            #   而被吃掉与本来就没有在告警面完全同形。
+WD_FUELWANT_MIN="${LAIXIN_FUELWANT_MIN:-2}" # 料仓深度下限(创始人 2026-08-29 10:31:30 逐字:
+                                            #   「一个轨道少于2片就开始催促派工」)
 quota_snapshot(){  # → stdout 每账号一行 "mail|weekly%|weekly_reset|session%|session_reset";读不到退 1(⛔ 读成充裕)
   # LAIXIN_USAGE_RAW=<json 文件> 时直接读文件(测试/离线);否则 2s 探活 + 15s 拉取(与 channel_quota_verdict 同一对超时)
   local url="${LAIXIN_USAGE_API:-http://127.0.0.1:8763/api/usage}" raw=""
@@ -7786,6 +7802,113 @@ wd_nudge(){  # <正文> → 复用既有 tmux 注入路径
   tmux send-keys -t "=$SESSION:$DISPATCH_WIN" C-m
 }
 
+# ── 要料链(§八 发车规矩;创始人 2026-08-29 10:28:27「开工端不停要料,派工、方案才会不停」)──
+# 形态:机器**只推事实**,每一跳由该席位自己判 —— ⛔ 自动发车 ⛔ 催窗 ⛔ 代判三桶。
+# 触发 ⛔ 只在发车拍:**每拍**对每条启用轨算料仓深度=(该轨 ready + 可自写产品格),<2 即推一条。
+# 单次告警按**状态转移**(进入 low/unknown 各报一次,回到 ≥2 清标记,再跌再报)⛔ 时间窗去重
+# ——时间窗会让同一场断料按钟点反复出声,而断料本身一次都没变(08-28 把看板灌到 148 条的正是那个)。
+wd_fuelwant_target(){  # → 投递目标窗名;默认派工窗口。写单席起后改开关即可改投,⛔ 改代码
+  local t
+  t="$(head -1 "${LANE_SWITCH_DIR:-$HOME/.laixin-lane-switch}/fuelwant-target" 2>/dev/null || true)"
+  t="$(printf '%s' "$t" | tr -d '[:space:]')"
+  case "$t" in ''|dispatch) printf '%s' "$DISPATCH_WIN" ;; *) printf '%s' "$t" ;; esac
+}
+
+wd_fuelwant_lane_enabled(){  # <a|b|c> → 0=该轨启用(当刻有窗 或 被开关点名)
+  # 收窄(创始人单轨试水期):对**不存在的席位**说「要料」是白说 —— 当刻 lane-a 无窗,
+  # 只有 lane-b 在飞。判据=tmux 里窗口存在;另留开关 lanes-enabled 供「轨该在却暂时没窗」时点名,
+  # ⛔ 把 a/b 写死成恒启用(那正是本次收窄要去掉的东西)。
+  local lane="$1" f w
+  if win_exists "lane-$lane"; then return 0; fi
+  f="${LANE_SWITCH_DIR:-$HOME/.laixin-lane-switch}/lanes-enabled"
+  [ -r "$f" ] || return 1
+  for w in $(tr 'A-Z,;' 'a-z  ' < "$f" 2>/dev/null || true); do
+    case "$w" in "$lane"|"lane-$lane") return 0 ;; esac
+  done
+  return 1
+}
+
+wd_fuelwant_deliver(){  # <正文> → 投给可配目标;目标窗不在 ⇒ **回落派工并在正文里说明** ⛔ 静默丢
+  local text="$1" tgt fe be sm
+  tgt="$(wd_fuelwant_target)"
+  if [ "$tgt" != "$DISPATCH_WIN" ] && ! win_exists "$tgt"; then
+    text="【注】开关配置的投递目标窗 ${tgt} 当刻不在,本条回落派工窗口(开关:${LANE_SWITCH_DIR}/fuelwant-target)
+${text}"
+    tgt="$DISPATCH_WIN"
+  fi
+  # 默认路径复用 ev_deliver 全套(派工不在时暂存、交接期旁路、落地校验)⛔ 另抄一份
+  if [ "$tgt" = "$DISPATCH_WIN" ]; then ev_deliver "要料" "$text"; return 0; fi
+  fe="$(printf '%s' "$text" | inject_features)"; be="$(inject_count_max "=$SESSION:$tgt" "$fe" || true)"
+  printf '%s' "$text" | tmux load-buffer -b laixin-fuelwant -
+  tmux paste-buffer -p -b laixin-fuelwant -t "=$SESSION:$tgt"
+  tmux delete-buffer -b laixin-fuelwant 2>/dev/null || true
+  sleep 0.4
+  tmux send-keys -t "=$SESSION:$tgt" C-m
+  if [ -n "$fe" ] && [ -n "$be" ]; then
+    sleep 1
+    sm="$(inject_settle "=$SESSION:$tgt" "$text" "$fe" "$be" laixin-fuelwant "要料投递" 2>&1)" || true
+    echo "[$(date '+%F %T')] 要料投递落地校验(${tgt}):$(head -1 <<< "$sm")" >> "$WD_LOG"
+  fi
+  return 0
+}
+
+wd_fuel_want(){  # 每拍一次;恒返 0(调用方在 set -e 下)
+  local lane LANE ready sw depth state prev mark since text
+  mkdir -p "$WD_FUELWANT_DIR" 2>/dev/null || true
+  wd_fuel >/dev/null 2>&1 || true          # 复用同一份 stats 解析与 mtime 缓存 ⛔ 另起一份读法
+  sw="${WD_STATS_SW_PRODUCT:-}"
+  for lane in a b c; do
+    mark="$WD_FUELWANT_DIR/$lane"
+    # 启用轨=当刻有窗 或 被 lanes-enabled 开关点名;未启用就把陈标记清掉 ⛔ 对不存在的席位喊话
+    if ! wd_fuelwant_lane_enabled "$lane"; then rm -f "$mark" 2>/dev/null || true; continue; fi
+    LANE="$(printf '%s' "$lane" | tr 'abc' 'ABC')"
+    ready="$(ev_ready_count "$LANE" 2>/dev/null || true)"
+    # ④ 读不出 ⇒ **unknown 自成一态** ⛔ 当有料(会瞒住真断料)⛔ 当无料(会造假要料)
+    if [[ "$ready" =~ ^[0-9]+$ ]] && [[ "$sw" =~ ^[0-9]+$ ]]; then
+      depth=$((ready + sw))
+      if [ "$depth" -lt "$WD_FUELWANT_MIN" ]; then state=low; else state=ok; fi
+    else
+      depth="?"; state=unknown
+    fi
+    # 显示串单独算:wd_fuel 探针失效时把桶设成**字面 "?"**(非空)⇒ `${sw:-读不出}` 不会生效,
+    # 事件里就会出现光秃秃的「可自写产品=?」——读的人分不清那是「读不出」还是某个真实取值。
+    # ⇒ 非数字一律渲染成「读不出(原值 X)」,⛔ 依赖 :- 这种只挡空串的写法。
+    local ready_d sw_d
+    if [[ "$ready" =~ ^[0-9]+$ ]]; then ready_d="$ready"; else ready_d="读不出${ready:+(原值 ${ready})}"; fi
+    if [[ "$sw"    =~ ^[0-9]+$ ]]; then sw_d="$sw";       else sw_d="读不出${sw:+(原值 ${sw})}"; fi
+    prev=""
+    [ ! -f "$mark" ] || prev="$(head -1 "$mark" 2>/dev/null | cut -d'|' -f1)"
+    if [ "$state" = ok ]; then
+      if [ -n "$prev" ]; then
+        since="$(head -1 "$mark" 2>/dev/null | cut -d'|' -f2)"
+        [[ "$since" =~ ^[0-9]+$ ]] || since=""
+        echo "[$(date '+%F %T')] 要料解除:lane-${lane} 深度回到 ${depth}≥${WD_FUELWANT_MIN}${since:+(低料持续 $(( $(date +%s) - since ))s)}" >> "$WD_LOG"
+        rm -f "$mark" 2>/dev/null || true
+      fi
+      continue
+    fi
+    [ "$state" != "$prev" ] || continue     # 同一状态已报过 ⇒ 本拍不再出声(状态转移单次)
+    # ③ 标记里记**进入时刻与当时深度**:第 2 条尺 6「料齐→发车延迟」以后可直接从标记算
+    printf '%s|%s|%s|depth=%s|ready=%s|sw_product=%s\n' \
+      "$state" "$(date +%s)" "$(date '+%F %T')" "$depth" "$ready_d" "$sw_d" > "$mark" 2>/dev/null || true
+    if [ "$state" = unknown ]; then
+      echo "[$(date '+%F %T')] 🟡 要料未判:lane-${lane} ready=${ready_d} 可自写产品=${sw_d}" >> "$WD_LOG"
+      board "看门狗" "🟡 要料未判:lane-${lane} 料仓深度判不出(ready=${ready_d} · 可自写产品=${sw_d})——⛔ 当有料 ⛔ 当无料,人工核 stats 分桶"
+      wd_fuelwant_deliver "【事件】未判:燃料读不到 —— lane-${lane}
+料仓深度判不出:ready=${ready_d} · 可自写产品=${sw_d}
+⛔ 当有料 ⛔ 当无料。人工核 laixin-lane stats 的分桶字段后再判。"
+    else
+      echo "[$(date '+%F %T')] 🔴 要料:lane-${lane} 深度 ${depth}<${WD_FUELWANT_MIN}(ready ${ready} · 可自写产品 ${sw});缺设计产品 ${WD_STATS_DG_PRODUCT:-?}" >> "$WD_LOG"
+      board "看门狗" "🔴 要料:lane-${lane} 料仓深度 ${depth}<${WD_FUELWANT_MIN}(ready ${ready} · 可自写产品 ${sw});缺设计 ${WD_STATS_DG_PRODUCT:-?}——机器只推事实,写不写/发不发归收方判"
+      wd_fuelwant_deliver "【事件】要料:lane-${lane} 料仓深度 ${depth}<${WD_FUELWANT_MIN}(ready ${ready} · 可自写产品 ${sw});缺设计 ${WD_STATS_DG_PRODUCT:-?}
+料仓领先律(创始人 2026-08-29):一个轨道少于 ${WD_FUELWANT_MIN} 片就该开始要料 ⛔ 等轨空 ⛔ 等验收。
+按三桶自决:可自写>0 ⇒ 写单就是当下动作;=0 且缺设计>0 ⇒ 等卡点或按现有问料程序向方案要方向。
+⛔ 自动发车 ⛔ 催窗 ⛔ 代判——机器只推事实,决定在你。"
+    fi
+  done
+  return 0
+}
+
 wd_loop() {
   local interval="${WD_INTERVAL:-60}"      # 秒
   local nudge_after="${WD_NUDGE:-900}"     # 静默多久先戳一下(15 分钟)
@@ -7957,6 +8080,10 @@ wd_loop() {
     last_hash="$h"
     # 各轨都在干活 ⇒ 派工窗口静止是正常等待,不打扰
     # #60②:lane-c 可选轨——**起了才算数**(在跑且空闲同样该被过问),没起不挡正常等待判定
+    # 要料链每拍评估,**必须排在下面「全轨在跑=正常等待」的 continue 之前**:轨正忙恰恰是最该
+    # 提前要下一片的时候。08-29 实撞:融合五 08:57 合入 → 4c 09:46:22 发车,中间 49 分钟 ready=0
+    # 在等题,而那段时间里没有任何一处会说出「下一片没有」——放在 continue 之后就永远看不见这一段。
+    wd_fuel_want || true
     if lane_busy a && lane_busy b && { ! win_exists "lane-c" || lane_busy c; }; then continue; fi
     # #137:只要存在空闲轨,就按「行动燃料」判是否该打扰;其他轨/验收窗仍在跑不构成燃料。
     wd_fuel >/dev/null

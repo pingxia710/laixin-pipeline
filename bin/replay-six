@@ -40,6 +40,13 @@ import re
 import sys
 from datetime import datetime, timedelta
 
+# 看板切行 + 粘行检出的**唯一入口**(⛔ 在本文件里再长一份;M9 组装器同样 import 它)。
+# 取 realpath 的目录:PATH 上是软链 → 发布版本目录,`bin/*.py` helper 与兄弟可执行
+# 由 `laixin-lane release` 放进**同一个** <hash>/ 目录(#59 差集自检保证它在)。
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import board_read
+from board_read import ROW_RE, TS_RE, Row  # noqa: F401  (同一处权威,⛔ 本文件另建)
+
 # ── 缺口代号(A–P;A/B/C/C′/D/E/F/G/H/I 来自 口径稿 §七,C″/K/L/M/N/O/P 来自 回放-六段账三张 §六.1)
 GAPS = {
     "A": "开发轨交付落盘无看板条(只能读 native 账)",
@@ -57,6 +64,11 @@ GAPS = {
     "N": "native status 内容与事实相反(只可取时刻)",
     "O": "写单毕分钟列与 native settled 差 <1 分钟",
     "P": "派工窗口自写 prompt 时 ①② 无分界字面",
+    # Q:看板粘行。**登记在此是为了占住码位**(⛔ 后人把 Q 派给别的缺口),说明取
+    # board_read 那一处权威 ⛔ 在此另写一句。它**不走 self.gap()** —— 粘行是**板级**缺陷、
+    # 不属任何一段,硬塞一个段号就是造事实;出口在 render 置顶块 / --oneline 计数 /
+    # --json 的 board_glued。
+    board_read.GLUE_GAP_CODE: board_read.GLUE_GAP_DESC,
 }
 
 SEG_NAMES = [
@@ -79,27 +91,8 @@ DEFAULT_TABLE = os.path.expanduser(
     "~/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md")
 DEFAULT_NATIVE = os.path.expanduser("~/.laixin-events.d/native")
 
-ROW_RE = re.compile(r"^\|\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*\|\s*([^|]*?)\s*\|\s*(.*)$")
-TS_RE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
+# ROW_RE / TS_RE / Row / read_board 现在都在 board_read.py(见文件头 import)
 RUNDIR_RE = re.compile(r"^(\d{8})-(\d{6})(?:-.*)?$")
-
-
-class Row(object):
-    __slots__ = ("lineno", "dt", "src", "body")
-
-    def __init__(self, lineno, dt, src, body):
-        self.lineno = lineno
-        self.dt = dt          # datetime,分钟精度
-        self.src = src        # 来源列
-        self.body = body      # 正文(逻辑行,已把物理换行折进来)
-
-    def sec(self):
-        """条正文内与本行同日的首个秒级时刻(口径稿 §〇 规则 a)。"""
-        for m in TS_RE.finditer(self.body):
-            y, mo, d, hh, mm, ss = (int(x) for x in m.groups())
-            if (mo, d) == (self.dt.month, self.dt.day):
-                return datetime(y, mo, d, hh, mm, ss)
-        return None
 
 
 class Ev(object):
@@ -126,32 +119,6 @@ def die(msg):
 
 
 # ────────────────────────────────────────────────────────────── 看板
-
-def read_board(path, year=None):
-    """逻辑行切分:以 `| MM-DD HH:MM |` 开头的物理行起一条,其后不匹配的物理行折进同一条。
-
-    ⛔ 按物理换行切 —— 2026-08-27 实撞:一条 log 正文里被注入了 79 个物理换行,
-    按物理行切会把一条拆成 80 条并让行号全错。
-    """
-    if year is None:
-        year = datetime.now().year
-    rows = []
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().split("\n")
-    except IOError as e:
-        die("看板读不到:%s(%s)" % (path, e))
-    cur = None
-    for i, ln in enumerate(lines, 1):
-        m = ROW_RE.match(ln)
-        if m:
-            mo, d, hh, mm, src, body = m.groups()
-            cur = Row(i, datetime(year, int(mo), int(d), int(hh), int(mm)), src, body)
-            rows.append(cur)
-        elif cur is not None:
-            cur.body += "\n" + ln
-    return rows
-
 
 # ────────────────────────────────────────────────────────────── native 账
 
@@ -317,7 +284,9 @@ class Replay(object):
         self.args = args
         self.gaps = []          # (段序号, 代号, 说明)
         self.notes = []
-        self.rows = read_board(args.board, year=args.year)
+        bd = board_read.read_board(args.board, year=args.year, on_error=die)
+        self.rows = bd.rows
+        self.board = bd            # 粘行在 bd.glued;⛔ 只取 rows 就把它丢了
         self.piece = args.piece
         self.day = datetime.strptime(args.day, "%Y-%m-%d").date() if args.day else None
 
@@ -644,7 +613,7 @@ class Replay(object):
             self.gap(1, "E", "执行总表内该片行无「登 <ISO>」字面", read_fail=True)
         return {"piece": self.piece, "day": str(self.day), "lane": lane, "vslug": vslug,
                 "v_rounds": len(v_open), "segs": segs, "rejects": rej,
-                "evs": evs, "gaps": self.gaps}
+                "evs": evs, "gaps": self.gaps, "board": self.board}
 
 
 # ────────────────────────────────────────────────────────────── 输出
@@ -670,8 +639,18 @@ def render(res, oneline=False):
                              ["有据等待候选=%d处" % a_all,
                               "读不到=" + (",".join("段%d:%s" % (g[0], g[1])
                                                         for g in res["gaps"] if g[3]) or "无"),
-                              "字面缺陷=" + (",".join(sorted({g[1] for g in res["gaps"] if not g[3]})) or "无")]))
+                              "字面缺陷=" + (",".join(sorted({g[1] for g in res["gaps"] if not g[3]})) or "无"),
+                              "看板粘行=%d处%s" % (len(res["board"].glued),
+                                                  "(缺口%s)" % board_read.GLUE_GAP_CODE
+                                                  if res["board"].glued else "")]))
         return "\n".join(out)
+
+    glue = res["board"].glue_report()
+    if glue:
+        out.extend(glue)
+        out.append("  ⚠️ 上面每处粘行都意味着**第 2 截起的那些条,本次重放根本没看见** —— "
+                   "本报告的段边界/打回轮次/四读数都可能因此失真;先拆行再重放。")
+        out.append("")
 
     out.append("片:%s   日期:%s   轨:%s   验收窗:%s(起验收 %d 次)"
                % (res["piece"], res["day"], res["lane"] or "读不到", res["vslug"] or "读不到",
@@ -950,12 +929,70 @@ def selftest():
         with open(b6, "w", encoding="utf-8") as fh:
             fh.write(src.replace("起验收窗口 verify-t-片甲 ← t:片甲(br sha)引擎=codex",
                                  "起验收窗口 verify-t-片甲 ← t:片甲(br sha)引擎=codex\n注入的裸行1\n注入的裸行2"))
-        rows6 = read_board(b6, year=2026)
-        rows0 = read_board(board, year=2026)
-        chk("逻辑行数不变", len(rows6) == len(rows0), "%d vs %d" % (len(rows6), len(rows0)))
+        bd6 = board_read.read_board(b6, year=2026)
+        bd0 = board_read.read_board(board, year=2026)
+        chk("逻辑行数不变", len(bd6.rows) == len(bd0.rows),
+            "%d vs %d" % (len(bd6.rows), len(bd0.rows)))
         r6 = Replay(_args_for(b6, native, "t:片甲", pred_piece="片乙")).run()
         chk("注入裸行后六段读数不变",
             [s["dur"] for s in r6["segs"]] == [s["dur"] for s in r["segs"]])
+        chk("阴性:正文折了物理换行的多行条 ⇒ ⛔ 报粘行", bd6.glued == [],
+            str([g.lineno for g in bd6.glued]))
+        chk("阴性:干净夹具 ⇒ ⛔ 报粘行", bd0.glued == [], str([g.lineno for g in bd0.glued]))
+
+        print("== 5.1 粘行检出(缺口 %s):报缺口 + 两截逐字,⛔ 自动拆 ==" % board_read.GLUE_GAP_CODE)
+        # 真机形态复现:上一条**无尾换行** ⇒ 下一条整条被 `>>` 粘到它行尾(配合问题第 17 例)。
+        # ⛔ 手搓一根「看起来像粘行」的字符串:这里逐字照搬 board() 的 printf 落盘字面。
+        b9 = os.path.join(tmp, "board-glued.md")
+        victim = "| 01-01 11:20 | 验收窗口 | t:片甲 独立验收完成:打回方向性;回执已落盘 |"
+        glued_tail = "| 01-01 11:25 | lane-z | ← 收到:t:片甲 第一轮打回(工程),R48 一条 |"
+        with io.open(b9, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(victim + "\n" + glued_tail + "\n",
+                                 victim + glued_tail + "\n"))
+        bd9 = board_read.read_board(b9, year=2026)
+        chk("粘行被检出(恰 1 处)", len(bd9.glued) == 1, str(len(bd9.glued)))
+        g9 = bd9.glued[0] if bd9.glued else None
+        chk("两截逐字可见且拼回原样",
+            g9 is not None and g9.segs == [victim, glued_tail], str(g9.segs if g9 else None))
+        chk("⛔ 自动拆:逻辑行数比干净版**少一条**(行为一字不变)",
+            len(bd9.rows) == len(bd0.rows) - 1,
+            "%d vs %d" % (len(bd9.rows), len(bd0.rows)))
+        t9 = render(Replay(_args_for(b9, native, "t:片甲", pred_piece="片乙")).run())
+        chk("报告置顶报缺口 %s" % board_read.GLUE_GAP_CODE,
+            ("缺口 %s" % board_read.GLUE_GAP_CODE) in t9.split("片:")[0])
+        chk("报告里两截都逐字出现", victim in t9 and glued_tail in t9)
+        chk("报告明说 ⛔ 自动拆、拆归看板维护者", "⛔ 自动拆,拆归看板维护者" in t9)
+        chk("报告明说下游读数可能失真", "本次重放根本没看见" in t9)
+
+        print("== 5.2 粘行阴性:末行无尾换行 ⛔ 误报 ==")
+        b10 = os.path.join(tmp, "board-no-eol.md")
+        with io.open(b10, "w", encoding="utf-8") as fh:
+            fh.write(src.rstrip("\n"))            # 末行无换行 = 下一次粘行的火种,本身 ⛔ 粘行
+        bd10 = board_read.read_board(b10, year=2026)
+        chk("末行无换行 ⇒ ⛔ 报粘行", bd10.glued == [], str([g.lineno for g in bd10.glued]))
+        chk("末行无换行 ⇒ 逻辑行数不变", len(bd10.rows) == len(bd0.rows),
+            "%d vs %d" % (len(bd10.rows), len(bd0.rows)))
+
+        print("== 5.3 三条粘一行 ⇒ 三截逐字 ==")
+        b11 = os.path.join(tmp, "board-glued3.md")
+        third = "| 01-01 11:50 | lane-z | ← 收到:t:片甲 第二轮打回(工程),R48 又一条 |"
+        with io.open(b11, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(victim + "\n" + glued_tail + "\n" + third + "\n",
+                                 victim + glued_tail + third + "\n"))
+        bd11 = board_read.read_board(b11, year=2026)
+        chk("三条粘一行 ⇒ 恰 1 处、3 截", len(bd11.glued) == 1 and len(bd11.glued[0].segs) == 3,
+            str([len(g.segs) for g in bd11.glued]))
+        chk("三截逐字拼回原样",
+            bd11.glued and bd11.glued[0].segs == [victim, glued_tail, third])
+
+        print("== 5.4 机器闸:同目录 ⛔ 再长第二份切看板行(M9 只能 import board_read)==")
+        # 靠注释约束「M9 ⛔ 再长一份」= 靠自觉;这条把它变成**自测当场变红**。
+        # 射程 = 本文件所在目录:开发树是 bin/,发布态是 <hash>/(helper 全集 + 兄弟脚本
+        # 由 release 放进同一目录)⇒ 开发与发布两态都扫得到。
+        _selfdir = os.path.dirname(os.path.realpath(__file__))
+        _second = board_read.find_second_splitter(_selfdir)
+        chk("同目录无第二份切行实现", _second == [],
+            "; ".join("%s:%d %s" % (f, n, l[:60]) for f, n, l in _second))
 
         print("== 6. 前缀撞键防护(缺口 I:6 字前缀会把四a/四b/三撞成同键)==")
         chk("prefix_link 短前缀拒绝", not prefix_link("融合片四a", "融合片四b", 12))
@@ -1164,6 +1201,9 @@ def main():
             "same_criterion_attribution_differs": "未判",
             "gaps": [{"seg": g[0], "code": g[1], "desc": g[2],
                       "kind": "读不到" if g[3] else "字面缺陷"} for g in res["gaps"]],
+            "board_glued": [{"code": board_read.GLUE_GAP_CODE, "lineno": g.lineno,
+                             "cuts": g.cuts, "segments": g.segs}
+                            for g in res["board"].glued],
         }, ensure_ascii=False, indent=2))
     else:
         print(render(res, oneline=args.oneline))

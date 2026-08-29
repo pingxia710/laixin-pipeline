@@ -86,6 +86,8 @@
 #   laixin-lane dispatch --handover  起派工继任；旧 dispatch 改为排空窗继续盯完在手，新活只归继任
 #   laixin-lane dispatch-drain-down --complete  排空窗确认在手与优化轮均完成后自收
 #   laixin-lane handover-mode <继任> <前任>  交班形态:同账号正常交班 or 跨账号(判不了会直说)
+#   laixin-lane seat-state [--now]   派工席当刻态(在班/排空无继任/缺/未判)+ 三路信源读数;
+#                                    ⛔ 拿「读不到」当健康——本命令会把读数龄一并报出来
 #   laixin-lane whoholds             谁当前持有派工权
 #   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
 #   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比。claude:70–75% 起交接，旧窗继续排空
@@ -2737,6 +2739,36 @@ cmd_doctor() {
     while IFS='|' read -r _r9 _n9 _w9; do [ -n "$_n9" ] && wrn "「${_r9}」(${_n9})${_w9}——可能已崩,请人工核"; done <<< "$_sl9"
   else ok "注册表在班席位活性全绿(或全为 tmux 托管/待接)"; fi
 
+  echo "== 9b. 派工席态(2.4 M-a/M-c:席位在不在班是**机器事实** ⛔ 各窗自觉) =="
+  # 落点三处、口径一处:看门狗每拍写态文件 → statusline 在**所有窗**显 → doctor 这一节给红行。
+  # 🔴 「读不到」⛔ 报成绿:08-29 12:40 那次全线合规而没人发现,靠的正是「没有人负责说这句话」。
+  local _ssf="${SEAT_STATE_FILE:-$EV_DIR/seat-state.dispatch}"
+  if [ ! -f "$_ssf" ]; then
+    wrn "派工席态文件未生成($_ssf)——看门狗没在跑 或 发布版早于 2.4;**读不到 ⛔ 当健康**。核:laixin-lane watchdog status / laixin-lane seat-state --now"
+  else
+    local _sts _sst _ssa _ssm _ssk
+    _sts="$(seat_state_read_field ts "$_ssf")"; _sst="$(seat_state_read_field state "$_ssf")"
+    _ssm="$(seat_state_read_field mismatch "$_ssf")"; _ssk="$(seat_state_read_field keepalive "$_ssf")"
+    if ! [[ "$_sts" =~ ^[0-9]+$ ]]; then
+      bad "派工席态文件损坏(ts 缺失或非数字):$_ssf —— 写它的一方出了问题,⛔ 当健康"
+    else
+      _ssa=$(( $(date +%s) - _sts ))
+      if [ "$_ssa" -gt $(( ${WD_INTERVAL:-60} * 3 )) ]; then
+        wrn "派工席态读数已陈旧 ${_ssa}s(看门狗可能没在跑)——「态一直是在班」与「没人再更新这个态」在读数面同形"
+      elif [ "$_ssk" = "off" ]; then
+        ok "派工席态=${_sst}(保活奉令关闭 ⇒ 本节只报事实 ⛔ 判错;恢复:laixin-lane keepalive on)"
+      else
+        case "$_sst" in
+          在班) ok "派工席在班(ctx $(seat_state_read_field ctx "$_ssf")% · 读数龄 ${_ssa}s)" ;;
+          排空无继任) bad "🔴 派工席「排空无继任」已 $(( $(seat_state_read_field t "$_ssf") / 60 )) 分钟——$(seat_state_read_field why "$_ssf");人工:laixin-lane dispatch --handover" ;;
+          缺) bad "🔴 派工席「缺」——$(seat_state_read_field why "$_ssf");开发轨可能正在空转。核:laixin-lane whoholds / laixin-lane seat-state" ;;
+          *) wrn "派工席态「${_sst}」——$(seat_state_read_field why "$_ssf");⛔ 当在班 ⛔ 当缺,先把读不出的那一路修好" ;;
+        esac
+      fi
+      [ -n "$_ssm" ] && wrn "派工席三路信源**不一致**:${_ssm} ⇒ 这个态**判不得**(:967 形态:不是读不到,是读到了假的)" || true
+    fi
+  fi
+
   echo
   echo "体检结果:$fail 个错误 / $warn 个警告"
   [ "$fail" -eq 0 ] && echo "可以开工。" || echo "先修错误再开工。"
@@ -3741,7 +3773,7 @@ seat_liveness(){  # [注册表文件] → stdout=「席位|名|原因」每死�
       pid="$(basename "$j" .json)"
       [ -S "${LAIXIN_CC_SOCKS:-/tmp/cc-socks}/$pid.sock" ] || continue
       upd="$(grep -oE '"updatedAt":[0-9]+' "$j" | grep -oE '[0-9]+' | head -1)"
-      [ -n "$upd" ] && [ $(( now - upd/1000 )) -lt 2700 ] && { hit=1; break; }
+      [ -n "$upd" ] && [ $(( now - upd/1000 )) -lt "${SEAT_HB_STALE:-2700}" ] && { hit=1; break; }
       # procStart 是 UTC 而未带时区；归一到 epoch 后与本机 ps 的启动时刻比对，防 PID 复用。
       proc_start="$(grep -oE '"procStart"[[:space:]]*:[[:space:]]*"[^"]+"' "$j" | sed -E 's/.*"([^"]+)"$/\1/' | head -1)"
       ps_start="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/  *$//')"
@@ -5000,6 +5032,278 @@ channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行�
       }
       exit bad
     }'
+}
+
+# ══ 2.4 席位健康与自愈 M-a/M-b(方案-席位健康与自愈-20260829 v1.2 §三)═══════════
+#
+# 病灶(2026-08-29 12:40→13:29,开发轨空转 2h25m):派工老窗判「写单归继任」后起交接
+#   (ctx 83.7%→85%),**49 分钟无继任**;看门狗按读数「无燃料」不催,方案窗口(唯一面对创始人
+#   的窗口)不知道派工席空着,直到创始人来问。三环各自合规,合起来=**有料、有轨、没人发车,
+#   且没有任何一环负责发现**。⇒ 席位在不在班要成为**机器事实** ⛔ 各窗自觉。
+#
+# 🔴 三路信源必须**读不同的字节**(§三 M-b 要害;总表 :967 那次**不是读不到,是读到了假的**——
+#   「窗口不存在」与「找错了地方」在告警面同形而方向相反)。本实现的三路各自的字节面:
+#     A=transcript 面   ~/.claude*/projects/-Users-pingxia/*.jsonl 的**文件内容与 mtime**
+#     B=派工权+tmux 面  $DISPATCH_LOCK 的内容 + tmux 窗口名表
+#     C=会话面          $CC_SOCKS_DIR/*.sock + <通道>/sessions/*.json 的 name
+#   ⛔ **A 的心跳取锁的时间戳**(dc 交接包 §三 逐字):锁**整份**归 B。共用会让 A 与 B 在
+#   **同一个文件**上「互相印证」——而那种一致是假的:它恰好在 B 读错的时候让 A 跟着错。
+#
+# 🔴 A 路怎么**独立**认出 dispatch 席位(⛔ 靠 sessions 索引——那是 C 的料):transcript 头部自带
+#   一行 {"type":"agent-name","agentName":"<席位名>"}。2026-08-29 实测:具名席位
+#   dispatch/relay/opt-11b 都有,自动命名的 pingxia-XX 没有 ⇒ A 只读 jsonl 本身即可定位,零外部索引。
+#
+# 🔴 **「心跳 <60s」已改判**(v1.1→v1.2,pingxia-47 2026-08-29 采纳):该阈值**在任何可得信源上
+#   都不成立**,实测三条——
+#     ① `sessions/*.json` 的 `updatedAt` **不是心跳**,只在状态转移时动,且**比 transcript 还陈旧**
+#        (dispatch 实测 updatedAt 185s vs transcript 32s;pingxia-cc 22 小时 vs 34 分钟);
+#     ② transcript mtime 是最新的可得信号,但它测的是「最后一次对话」⛔「还活着」——
+#        活着且健康的 relay 席实测已 789s 没动;
+#     ③ 照 60s 落地会把「安静等事件」判成非在班,而那正是 #137 已裁的健康态;M-c 又要在**所有窗**
+#        显红 ⇒ **噪声随正常运行增长**(三约束③反向)。
+#   ⇒ 心跳**只用来判「A 路读到的是不是死席的旧 transcript」**,且须与 B 路「看不到 dispatch 窗」
+#     **同时成立**才归未判。「活着但久不动」仍归 wd_loop 既有的静默戳/换窗
+#     ⛔ 在这里重造第二套判活——两套判活会在同一件事上给出不同答案,那正是 :967 的形态。
+#
+# ⚠️ 阈值单点源(47 明令 ⛔ 各抄一份):权威=下面的 SEAT_HB_STALE;seat_liveness 内写
+#   `${SEAT_HB_STALE:-2700}` 的**回退字面量**是给「函数体被抽出来单跑」用的(套件 6 处 awk/sed
+#   抽 seat_liveness 体后 source,顶层变量不随抽取走,裸引用会在 set -u 下静默炸)——
+#   这与 GATE_HARD/GATE_WARN「两处常量+绊线钉同步」是同一家法,**漂移由绊线抓** ⛔ 靠自觉。
+SEAT_HB_STALE="${LAIXIN_SEAT_HB_STALE:-2700}"      # A 路 transcript 陈旧线(45 分钟)
+SEAT_GATE_HARD="${LAIXIN_SEAT_GATE_HARD:-75}"      # 与 cmd_ctx 的 pct>=75 及 statusline.py GATE_HARD 同值(绊线钉三处一致)
+SEAT_STATE_FILE="${LAIXIN_SEAT_STATE:-$EV_DIR/seat-state.dispatch}"
+
+seat_read_a(){  # A 路(transcript 面)→ stdout "ctx=<占比|?> hb=<秒|?> n=<近期同名席位数> sid=<会话id|—> why=<读不出的原因>"
+  # ⛔ 读 $DISPATCH_LOCK ⛔ 读 sessions/*.json ⛔ 问 tmux —— 那三样分别是 B/C 的料。
+  local seat="${1:-dispatch}" proj="${LAIXIN_CTX_PROJ:-}" _d
+  if [ -z "$proj" ]; then
+    for _d in "$HOME"/.claude*/projects/-Users-pingxia; do [ -d "$_d" ] && proj="${proj:+$proj:}$_d"; done
+  fi
+  [ -n "$proj" ] || { printf 'ctx=? hb=? n=0 sid=— why=A路读不出:找不到任何 transcript 目录\n'; return 0; }
+  SEAT_STALE="${SEAT_HB_STALE:-2700}" SEAT_SCAN_MAX="${SEAT_SCAN_MAX:-120}" python3 - "$proj" "$seat" <<'PY'
+import json,os,sys,glob,time
+proj,seat=sys.argv[1],sys.argv[2]
+win=int(os.environ.get("LAIXIN_CTX_WINDOW","1000000"))
+stale=int(os.environ.get("SEAT_STALE","2700"))
+files=sum([glob.glob(os.path.join(p,"*.jsonl")) for p in proj.split(":") if p],[])
+# 🔴 **按 mtime 取最新 N 份再看内容** ⛔ 全扫:transcript 只增不减(2026-08-29 实测本机 880 份 / 3.1 GB),
+#   全扫要开 880 个文件、单次 7 秒,而看门狗**每 60 秒跑一次** ⇒ 开销随历史积累单调上涨,
+#   半年后会把保命循环拖垮。这一类「今天够快、明天不够」的写法在读数面与「一直够快」同形。
+#   窗口够不够的判据(实测):最新 80 份已覆盖 4.2 天,1 小时内只有 13 份 ⇒ 取 120 份覆盖约一周。
+#   射程说明:超出这个窗口的席位**必定早已不在**,而那时 B 路(无 dispatch 窗)/ C 路(无会话)
+#   会说话 ⇒ 结论仍是「未判」,与全扫到旧档同向 ⛔ 反向。n 的正确性不受影响:
+#   age<stale(45 分钟)的文件必然在最新 120 份之内。
+files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+files=files[:int(os.environ.get("SEAT_SCAN_MAX") or 120)]
+def agent_name(path):
+    # agent-name 行在会话开头写入 ⇒ 只读头部若干行(看门狗每拍都要跑,⛔ 全文件扫)
+    try:
+        with open(path,encoding="utf-8",errors="ignore") as fh:
+            for i,l in enumerate(fh):
+                if i>=12: break
+                try: o=json.loads(l)
+                except Exception: continue
+                if o.get("type")=="agent-name": return o.get("agentName")
+    except OSError: return None
+    return None
+cands=[f for f in files if agent_name(f)==seat]
+if not cands:
+    print("ctx=? hb=? n=0 sid=— why=A路读不出:无 agentName=%s 的 transcript" % seat); raise SystemExit
+now=time.time()
+cands.sort(key=os.path.getmtime, reverse=True)
+f=cands[0]; hb=int(now-os.path.getmtime(f))
+sid=os.path.basename(f)[:-6]   # 前任身份:自愈「每前任一次」的销账键
+# n=**近期**同名席位数(⛔ 历史全量):它回答「A 面此刻看得见几个 dispatch 在动」,
+#   与 C 路的会话面计数互为对照 —— 两者不一致正是「继任住在别处」的形态。
+n=sum(1 for c in cands if now-os.path.getmtime(c) < stale)
+last=None
+try:  # 末尾回读取最后一条 usage:ctx 只增不减,⛔ 全文件扫
+    with open(f,"rb") as fh:
+        fh.seek(0,2); size=fh.tell(); back=min(size,2_000_000); fh.seek(size-back)
+        chunk=fh.read().decode("utf-8",errors="ignore")
+    for line in reversed(chunk.split("\n")):
+        try: o=json.loads(line)
+        except Exception: continue
+        u=(o.get("message") or {}).get("usage")
+        if u: last=u; break
+except OSError: pass
+if not last:
+    print("ctx=? hb=%d n=%d sid=%s why=A路读不出:transcript 无 usage 记录" % (hb,n,sid)); raise SystemExit
+cur=sum(last.get(k,0) for k in ("input_tokens","cache_read_input_tokens","cache_creation_input_tokens"))
+print("ctx=%.1f hb=%d n=%d sid=%s why=" % (round(cur/win*100,1),hb,n,sid))
+PY
+  return 0
+}
+
+seat_read_b(){  # B 路(派工权 + tmux 窗口名面)→ stdout "holder=<名|—> lockage=<秒> drain=<窗名|—> ndisp=<个>"
+  # ⛔ 碰 transcript ⛔ 碰 sessions/socket。锁**整份**归本路(A 不许取它的时间戳)。
+  local holder age drain ndisp
+  holder="$(lock_holder)"; age="$(lock_age)"
+  drain="$(dispatch_drain_window)"
+  # 枚举 + 精确匹配 ⛔ `tmux display-message -t <目标>`:后者解析不到时**给你另一个窗口的答案**
+  #   (2026-08-19 实撞,见 dispatch_alive 上方注释)。
+  ndisp="$(tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -cx "${DISPATCH_WIN:-dispatch}" || true)"
+  printf 'holder=%s lockage=%s drain=%s ndisp=%s\n' "${holder:-—}" "${age:-?}" "${drain:-—}" "${ndisp:-0}"
+  return 0
+}
+
+seat_read_c(){  # C 路(会话面)→ stdout "nsess=<个>";⛔ 碰锁 ⛔ 碰 transcript
+  # 射程=**tmux 内外全部** claude 会话(cross-session 面);:967 那次继任真在班却住在别的会话面,
+  #   只看 tmux 的一路会判「无继任」而这一路看得见 ⇒ 两路不一致时必须**不动手**。
+  local seat="${1:-${DISPATCH_WIN:-dispatch}}" sk pid j n=0
+  for sk in "${CC_SOCKS_DIR:-/tmp/cc-socks}"/*.sock; do
+    [ -S "$sk" ] || continue
+    pid="$(basename "$sk" .sock)"
+    ps -p "$pid" >/dev/null 2>&1 || continue
+    for j in "$HOME"/.claude*/sessions/"$pid".json; do
+      [ -f "$j" ] || continue
+      grep -q "\"name\":\"$seat\"" "$j" && n=$((n+1))
+    done
+  done
+  printf 'nsess=%s\n' "$n"
+  return 0
+}
+
+seat_state_judge(){  # <A串> <B串> <C串> → stdout "state=<态>|why=<理由>|mismatch=<不一致说明>"
+  # 判定与取数**分离**(同 channel_verdict 的 #75 家法):本函数只吃三个串、⛔ 引用顶层变量,
+  #   ⇒ 四个态都能直接喂夹具测,⛔ 只能靠真环境碰运气。
+  local a="$1" b="$2" c="$3"
+  local ctx hb an why holder lockage drain ndisp nsess
+  ctx="$(sed -E 's/.*(^| )ctx=([^ ]*).*/\2/' <<< "$a")"
+  hb="$(sed -E 's/.*(^| )hb=([^ ]*).*/\2/' <<< "$a")"
+  an="$(sed -E 's/.*(^| )n=([^ ]*).*/\2/' <<< "$a")"
+  why="${a#*why=}"
+  holder="$(sed -E 's/.*(^| )holder=([^ ]*).*/\2/' <<< "$b")"
+  lockage="$(sed -E 's/.*(^| )lockage=([^ ]*).*/\2/' <<< "$b")"
+  drain="$(sed -E 's/.*(^| )drain=([^ ]*).*/\2/' <<< "$b")"
+  ndisp="$(sed -E 's/.*(^| )ndisp=([^ ]*).*/\2/' <<< "$b")"
+  nsess="$(sed -E 's/.*(^| )nsess=([^ ]*).*/\2/' <<< "$c")"
+  local gate="${SEAT_GATE_HARD:-75}" stale="${SEAT_HB_STALE:-2700}"
+  # ── 三路交叉:A 面近期 dispatch 数 与 C 面会话数 对不上 ⇒ 继任可能住在别处 ⇒ **不动手**
+  local mismatch=""
+  if [[ "$an" =~ ^[0-9]+$ ]] && [[ "$nsess" =~ ^[0-9]+$ ]] && [ "$an" -ne "$nsess" ]; then
+    mismatch="A路近期 dispatch transcript ${an} 个 ≠ C路会话面 dispatch ${nsess} 个"
+  fi
+  if [[ "$nsess" =~ ^[0-9]+$ ]] && [ "$nsess" -gt 1 ] && [ "$drain" = "—" ]; then
+    mismatch="${mismatch:+$mismatch;}C路会话面有 ${nsess} 个 dispatch 而 B路 tmux 无排空窗(继任可能在别的会话面/别的 tmux)"
+  fi
+  # ── ① A 路读不出 ⇒ 未判(⛔ 归在班 ⛔ 归缺)
+  if [ -n "$why" ]; then printf 'state=未判|why=%s|mismatch=%s\n' "$why" "$mismatch"; return 0; fi
+  # ── ② A 读到的是**死席的旧 transcript**:陈旧 且 B 路看不到 dispatch 窗(两条同时才算)
+  if [[ "$hb" =~ ^[0-9]+$ ]] && [ "$hb" -ge "$stale" ] && [[ "$ndisp" =~ ^[0-9]+$ ]] && [ "$ndisp" -eq 0 ]; then
+    printf 'state=未判|why=A路 transcript 已陈旧 %ss(≥%s)且 B路无 dispatch 窗 ⇒ 读到的可能是死席旧档,⛔ 拿它的 ctx 当当下|mismatch=%s\n' "$hb" "$stale" "$mismatch"; return 0
+  fi
+  # ── ③ 无新活派工权持有者 ⇒ 缺
+  if [ "$holder" = "—" ] || [ -z "$holder" ]; then
+    printf 'state=缺|why=派工权无持有者|mismatch=%s\n' "$mismatch"; return 0
+  fi
+  if [[ "$lockage" =~ ^[0-9]+$ ]] && [ "$lockage" -ge "${LOCK_FRESH:-1800}" ]; then
+    printf 'state=缺|why=派工权持有者 [%s] 心跳已过期 %ss(≥%s)|mismatch=%s\n' "$holder" "$lockage" "${LOCK_FRESH:-1800}" "$mismatch"; return 0
+  fi
+  # ── ④ 过硬口且继任未起 ⇒ 排空无继任(=本件要抓的 12:40 形态)
+  #    「继任已起」的机器判据=B 路存在 dispatch-drain-* 窗(cmd_dispatch_handover 会把前任改成该名)。
+  if [[ "$ctx" =~ ^[0-9.]+$ ]] && [ "${ctx%%.*}" -ge "$gate" ] && [ "$drain" = "—" ]; then
+    printf 'state=排空无继任|why=ctx %s%% ≥ 硬口 %s%% 且无 dispatch-drain-* 窗(继任未起)|mismatch=%s\n' "$ctx" "$gate" "$mismatch"; return 0
+  fi
+  printf 'state=在班|why=|mismatch=%s\n' "$mismatch"
+  return 0
+}
+
+seat_state_read_field(){  # <字段名> [文件] → stdout=值;文件/字段缺 ⇒ 空
+  local k="$1" f="${2:-${SEAT_STATE_FILE:-}}"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  sed -n "s/^${k}=//p" "$f" | head -1
+  return 0
+}
+
+seat_state_tick(){  # 每拍一次;恒返 0(调用方在 set -e 下)。判态并落**当刻态文件**;片①到此为止 ⛔ 出声
+  local a b c v state why mismatch ctx hb sid drain
+  local prev now since ticks quiet
+  a="$(seat_read_a "${DISPATCH_WIN:-dispatch}" 2>/dev/null || true)"
+  b="$(seat_read_b 2>/dev/null || true)"
+  c="$(seat_read_c 2>/dev/null || true)"
+  v="$(seat_state_judge "$a" "$b" "$c" 2>/dev/null || true)"
+  state="${v#state=}";     state="${state%%|*}"
+  why="${v#*|why=}";       why="${why%%|*}"
+  mismatch="${v##*|mismatch=}"
+  ctx="$(sed -E 's/.*(^| )ctx=([^ ]*).*/\2/' <<< "$a")"
+  hb="$(sed -E 's/.*(^| )hb=([^ ]*).*/\2/' <<< "$a")"
+  sid="$(sed -E 's/.*(^| )sid=([^ ]*).*/\2/' <<< "$a")"
+  drain="$(sed -E 's/.*(^| )drain=([^ ]*).*/\2/' <<< "$b")"
+  now="$(date +%s)"
+  prev="$(seat_state_read_field state)"
+  since="$(seat_state_read_field since)"; [[ "$since" =~ ^[0-9]+$ ]] || since="$now"
+  ticks="$(seat_state_read_field ticks)"; [[ "$ticks" =~ ^[0-9]+$ ]] || ticks=0
+  # 奉令关闭态:态照判照写(**⛔ 让文件停更** —— 停更的文件与「一直健康」在读者眼里同形),
+  #   但**不出声**(board/桌面通知/自愈全停),与 0.8 段「零拉起零告警」同一口径。
+  quiet=0; dispatch_keepalive_off && quiet=1
+  if [ "$state" != "$prev" ]; then since="$now"; ticks=0; else ticks=$((ticks+1)); fi
+  mkdir -p "$(dirname "${SEAT_STATE_FILE}")" 2>/dev/null || true
+  # 每拍**覆盖**写(⛔ 追加):这个文件是「当刻态」,历史归 WD 日志与看板
+  {
+    printf 'ts=%s\n' "$now"
+    printf 'state=%s\n' "$state"
+    printf 'since=%s\n' "$since"
+    printf 't=%s\n'  "$(( now - since ))"
+    printf 'ticks=%s\n' "$ticks"
+    printf 'ctx=%s\n' "${ctx:-?}"
+    printf 'hb=%s\n'  "${hb:-?}"
+    printf 'sid=%s\n' "${sid:-—}"
+    printf 'drain=%s\n' "${drain:-—}"
+    printf 'keepalive=%s\n' "$([ "$quiet" -eq 1 ] && echo off || echo on)"
+    printf 'why=%s\n' "$why"
+    printf 'mismatch=%s\n' "$mismatch"
+    printf 'a=%s\n' "$a"
+    printf 'b=%s\n' "$b"
+    printf 'c=%s\n' "$c"
+  } > "${SEAT_STATE_FILE}" 2>/dev/null || true
+  [ "$quiet" -eq 1 ] && return 0
+  # ── 片①只**记录**转移,⛔ 出声(board/桌面通知/滞留复述归片②「说出来 + 自愈」)。
+  #    理由=风险边界:片① 对外界零动作,读错了最多是屏幕上一行字;片② 才开始打扰人和动手。
+  [ "$state" != "$prev" ] && echo "[$(date '+%F %T')] 席位态 ${prev:-—} → ${state}(ctx ${ctx:-?}% · A路活动龄 ${hb:-?}s${why:+ · $why}${mismatch:+ · ⚠️ 三路不一致:$mismatch})" >> "$WD_LOG" || true
+  return 0
+}
+
+cmd_seat_state(){  # 人读面:当刻席位态 + 三路读数(⛔ 只给机器看的文件)
+  if [ "${1:-}" = "--now" ]; then
+    # 现算一次 ⛔ 落盘:看门狗没跑时也要能问出当刻态(⛔ 让人只能读一份可能陈旧的文件)
+    local _a _b _c
+    _a="$(seat_read_a "${DISPATCH_WIN:-dispatch}")"; _b="$(seat_read_b)"; _c="$(seat_read_c)"
+    echo "现算(⛔ 落盘;看门狗那份在 ${SEAT_STATE_FILE}):"
+    echo "  $(seat_state_judge "$_a" "$_b" "$_c")"
+    echo "  A transcript:$_a"
+    echo "  B 锁+tmux:  $_b"
+    echo "  C 会话面:   $_c"
+    return 0
+  fi
+  local f="${SEAT_STATE_FILE}"
+  if [ ! -f "$f" ]; then
+    echo "席位态文件尚未生成:$f"
+    echo "  它由看门狗每拍写(laixin-lane watchdog status 看循环在不在);看门狗没跑 ⇒ **本命令读不到 ⛔ 等于席位健康**"
+    echo "  要当刻现算一次(不落盘):laixin-lane seat-state --now"
+    return 0
+  fi
+  # ⚠️ 字段直接进算术会在文件损坏时炸出 `operand expected` **而命令仍退 0**(本件自查实撞):
+  #    那等于「坏了」与「好了」在退出码上同形。⇒ 先校验再算,校验不过**大声退非零**。
+  local _ts _t; _ts="$(seat_state_read_field ts "$f")"; _t="$(seat_state_read_field t "$f")"
+  if ! [[ "$_ts" =~ ^[0-9]+$ ]]; then
+    echo "⛔ 席位态文件损坏(ts 缺失或不是数字):$f" >&2
+    echo "   ⛔ 当健康 —— 这只说明写它的那一方出了问题;现算一次:laixin-lane seat-state --now" >&2
+    return 2
+  fi
+  [[ "$_t" =~ ^[0-9]+$ ]] || _t=0
+  local age; age=$(( $(date +%s) - _ts ))
+  echo "派工席当刻态:$(seat_state_read_field state "$f")(持续 $(( _t / 60 )) 分钟)"
+  echo "  读数龄:${age}s $([ "$age" -gt $(( ${WD_INTERVAL:-60} * 3 )) ] && echo '⚠️ **已陈旧**——看门狗可能没在跑;⛔ 拿它当当刻事实' || echo '(新鲜)')"
+  echo "  ctx=$(seat_state_read_field ctx "$f")%  A路活动龄=$(seat_state_read_field hb "$f")s  排空窗=$(seat_state_read_field drain "$f")  保活=$(seat_state_read_field keepalive "$f")"
+  local w m; w="$(seat_state_read_field why "$f")"; m="$(seat_state_read_field mismatch "$f")"
+  [ -n "$w" ] && echo "  理由:$w" || true
+  [ -n "$m" ] && echo "  ⚠️ 三路不一致:$m ⇒ M-b ⛔ 动手" || true
+  echo "  三路读数(各自的字节面):"
+  echo "    A transcript:$(seat_state_read_field a "$f")"
+  echo "    B 锁+tmux:  $(seat_state_read_field b "$f")"
+  echo "    C 会话面:   $(seat_state_read_field c "$f")"
+  return 0
 }
 
 # ── 通道额度到线提醒(2026-08-22 创始人裁「先问机器化」立):CC 双账号按额度轮换,
@@ -8140,6 +8444,11 @@ wd_loop() {
     #     (~/.claude-b/settings.json 的 statusLine 同样指向它,双通道都有);② ctx-all 只认 codex rollout,对 claude 席位
     #     本就无读数;③ 推送被撤的根因是「工具对在班席位下令」(见 ctx_watch_tick 内注),与引擎无关。
     #   ⇒ 引擎换回不是恢复巡检的理由;kimi 顶班同理(其 TUI 底栏自带 context%,1M 窗口);恢复须创始人明令。
+    # —— 0.75 席位态判定(2.4 M-a):位置**必须在保活闸门之前** —— 奉令关闭时本函数内部只是
+    #    「照判照写、不出声」(quiet 分支),⛔ 连写都停:一个**停止更新**的态文件与「一直健康」
+    #    在读者眼里完全同形,而 cmd_seat_state 正是靠读数龄把这两者分开的。
+    # #44 纪律:子 shell 隔离 —— 判态调用树里有 board/desktop_notify,将来若加 die 不得带死宿主。
+    ( seat_state_tick ) >/dev/null 2>&1 || echo "[$(date '+%F %T')] ⚠️ seat_state_tick 异常(循环存活,下拍重试)" >> "$WD_LOG"
     # —— 0.8 派工席保活总闸门(P0,2026-08-28)——————————————————————————
     # 位置**必须在派工分支之前、relay/events 保活之后**:奉令关闭的是**派工席这一段**,
     #   ⛔ 连带停掉中继保活与事件总线——那两条各有自己的闸门,且整机重启时最需要它们还活着。
@@ -9195,6 +9504,7 @@ case "${1:-}" in
   account-switch) shift; cmd_account_switch "$@" ;;  # 按剧本切账号(人/受授权者手跑;哨兵 ⛔ 调用)
   codex-tier) shift; cmd_codex_tier "$@" ;;
   handover-mode)  shift; cmd_handover_mode "$@" ;;   # 交班形态判据:同账号 or 跨账号(⛔ 靠推定)
+  seat-state)     shift; cmd_seat_state "$@" ;;      # 2.4 M-a:派工席当刻态 + 三路读数(纯读)
   dispatch) shift; cmd_dispatch "$@" ;;
   dispatch-drain-down) shift; cmd_dispatch_drain_down "$@" ;;
   keepalive) shift; cmd_keepalive "$@" ;;   # 看门狗对**派工席**的保活开关(off 奉令关闭 / on 恢复 / 无参看当刻态);⛔ 与 halt(暂停)和 watchdog stop(停整个看门狗)混同

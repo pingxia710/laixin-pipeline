@@ -15,6 +15,7 @@
 import json
 import os
 import sys
+import time
 
 # ── 交班闸门(与 laixin-lane ctx 保持一致;改这里要同步改那边)────────────
 GATE_HARD = 75   # 硬口:继任必须已起；前任继续排空在手
@@ -36,6 +37,53 @@ def human(n):
         return f"{n / 1_000:.0f}k"
     return str(int(n))
 
+
+
+# ── 2.4 M-c:席位态对**所有窗**可见 ───────────────────────────────────────────
+# 病灶(2026-08-29 12:40→13:29):派工席过硬口且无继任,**外窗没有任何输入面**——方案窗口
+#   (唯一面对创始人的窗口)不知道派工席空着,直到创始人来问。dmsg 只到派工席(正是缺的那一席),
+#   状态栏只显本窗自己 ⇒ 谁都看得见自己的 ctx,没人看得见流水线的心脏停了。
+# ⇒ 席位态文件由看门狗每拍写,**每个窗**的状态栏都读它。
+#
+# 🔴 三条失效方向,逐条朝安全侧(本文件 docstring「兜底不许静默」的同一条纪律):
+#   ① 文件**不存在** ⇒ 不显示任何东西。理由=这台机器上流水线没在跑(本状态栏也装在非流水线窗口),
+#      对它们喊「派工席未判」是纯噪声;⛔ 与「读数陈旧」混为一谈。
+#   ② 文件在但**读数陈旧** ⇒ 显式报陈旧秒数。**看门狗死了**正是这个形态,而「态一直是在班」与
+#      「没人再更新这个态」在屏幕上本来完全同形——那是本件要防的第二种假绿。
+#   ③ 态=在班 ⇒ 仍留一个**暗色对勾**(#50:「没有报警」与「没有这项检查」不得同形)。
+#   ④ 奉令关闭保活(keepalive=off)⇒ 暗色标注 ⛔ 红:关闭态下红是**不可行动的**,而不可行动的红
+#      会训练人忽略红(与 0.8 段「零告警」同口径)。
+def seat_line():
+    """→ 状态栏片段(str)或 None。⛔ 裸 except —— 2026-08-29 实撞:裸 except 把
+    「配置没设」(正常)与「代码坏了」(事故)吞成同一个结果,那道闸一次都没执行过。"""
+    path = os.environ.get("LAIXIN_SEAT_STATE") or os.path.expanduser(
+        "~/.laixin-events.d/seat-state.dispatch")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            kv = dict(l.rstrip("\n").split("=", 1) for l in fh if "=" in l)
+    except (OSError, ValueError):
+        return None                      # ① 不存在/不可读/格式坏:本机没跑流水线,⛔ 加噪
+    # ts 缺失/不是数 与 ts 太旧 是**两回事**:前者=文件坏,后者=看门狗停了,处置方向不同。
+    #   ⛔ 合成一条——把缺失当 0 会算出十几亿秒,那个数长得像**计算 bug** 而不是坏文件,
+    #   读的人会去追错方向(本文件 2026-08-29 刚因「两种原因吞成同一个结果」出过事)。
+    raw_ts = (kv.get("ts") or "").strip()
+    if not raw_ts.isdigit():
+        return f"{YELLOW}派工席 态文件不可解析(缺 ts;⛔ 当健康){R}"
+    state = kv.get("state") or "?"
+    age = int(time.time()) - int(raw_ts)
+    if age > int(os.environ.get("LAIXIN_SEAT_STALE_SECS") or 300):
+        return f"{YELLOW}派工席 读数陈旧 {age}s(看门狗可能没在跑){R}"   # ②
+    if (kv.get("keepalive") or "on") == "off":
+        return f"{DIM}派工席 {state}(保活已关闭){R}"                                        # ④
+    if state == "在班":
+        return f"{DIM}派工席 ✓{R}"                                                          # ③
+    t = kv.get("t") or "?"
+    try:
+        t = f"{int(t) // 60}m"
+    except (TypeError, ValueError):
+        pass
+    mism = "  ⚠️ 三路不一致" if (kv.get("mismatch") or "").strip() else ""
+    return f"{RED}派工席:{state} {t}{R}{RED}{mism}{R}"
 
 def main():
     try:
@@ -99,6 +147,17 @@ def main():
     else:
         # ⛔ 关键:拿不到就说拿不到,绝不填 0
         parts.append(f"{YELLOW}ctx ?{R}{DIM}(本次输入无 context_window 字段){R}")
+
+    # 🔴 seat_line 的**代码级异常必须显形,且 ⛔ 带死整条状态栏**(2026-08-29 本片实撞:
+    #    seat_line 用了 os,而 2.4a 那条「拆掉 import os」的对照绊线一跑,NameError 从这里
+    #    直穿出去 ⇒ **整条状态栏一个字都不打印** —— 屏幕全空与「本窗没问题」在人眼里同形,
+    #    而 ctx 闸门那半边本来是好的,被我这段连坐了)。⇒ 与绝对余量闸同款:窄捕不吞,宽捕显形。
+    try:
+        _seat = seat_line()
+    except Exception as exc:
+        _seat = f"{YELLOW}席位态:读取异常({type(exc).__name__}){R}"
+    if _seat:
+        parts.append(_seat)
 
     cost = (d.get("cost") or {}).get("total_cost_usd")
     if isinstance(cost, (int, float)) and cost > 0:

@@ -3186,9 +3186,33 @@ if [ ! -e "$SL_STABLE" ]; then
 else
   t "状态栏单点源 真环境:线上 statusline.py 是软链且解析到当前发布版" \
     bash -c 'sl_single_source_ok "$HOME/.claude-official/statusline.py" "$1"' _ "$SL_STABLE"
-  t "状态栏单点源 真环境:发布版内容 = 仓内已提交版(换代自动跟随)" bash -c '
+  # 🔴 2026-08-29 本片改判:原判据比的是 `HEAD:contrib-statusline.py`,而 HEAD 在**任何开发分支**上
+  #   都是那条分支的版本 ⇒ 它把「开发分支有尚未发布的改动」(完全正常)与「发布版与仓库脱节」
+  #   (真缺陷)判成同一件事。本片改这个文件时它当场必红,而红的原因**恰恰是流程正常**。
+  #   ⇒ 改为**与分支无关**的两条真不变量:
+  #     ① 发布出去的那份 == **它自称的那个 sha** 的已提交版(抓「发布物被手改/半写」);
+  #     ② 那个 sha 在 **main 的历史里**(抓「线上跑的是某条开发分支的版本」)。
+  #   两条都不依赖当前 checkout 是谁,且在真环境上始终应当成立。
+  t "状态栏单点源 真环境:发布物 = 它自称那个 sha 的已提交版(抓发布物被手改/半写)" bash -c '
+    a="$(readlink -f "$1" 2>/dev/null)"; [ -n "$a" ] || { echo "线上链解析不出"; exit 1; }
+    sha="$(basename "$(dirname "$a")")"
+    case "$sha" in *[!0-9a-f]*|"") echo "发布路径不含 sha 段:$a"; exit 1 ;; esac
+    r="$(cd "$(dirname "$2")/.." && pwd)"
+    git -C "$r" cat-file -e "${sha}^{commit}" 2>/dev/null || { echo "发布版 sha 在仓里不存在:$sha"; exit 1; }
+    git -C "$r" show "${sha}:contrib-statusline.py" 2>/dev/null | diff -q - "$a" >/dev/null' _ "$SL_STABLE" "$LANE"
+  # 判据先证明分得开成败,再拿去断言真环境(⛔ 只断言真环境:那样「判据太松」与「真环境合格」同形)
+  t "状态栏单点源 对照:发布物被改一个字节 ⇒ 必不一致(证明内容判据 ⛔ 摆设)" bash -c '
+    r="$(cd "$(dirname "$1")/.." && pwd)"; sha="$(git -C "$r" rev-parse --short HEAD)"
+    d="$(mktemp -d)"; git -C "$r" show "${sha}:contrib-statusline.py" > "$d/f" || exit 9
+    git -C "$r" show "${sha}:contrib-statusline.py" | diff -q - "$d/f" >/dev/null || { rm -rf "$d"; exit 1; }
+    printf "#\n" >> "$d/f"
+    if git -C "$r" show "${sha}:contrib-statusline.py" | diff -q - "$d/f" >/dev/null; then rm -rf "$d"; exit 2; fi
+    rm -rf "$d"' _ "$LANE"
+  t "状态栏单点源 真环境:发布版 sha 在 main 历史里(⛔ 线上跑着某条开发分支的版本)" bash -c '
     a="$(readlink -f "$1" 2>/dev/null)"; [ -n "$a" ] || exit 1
-    git -C "$(dirname "$2")/.." show HEAD:contrib-statusline.py 2>/dev/null | diff -q - "$a" >/dev/null' _ "$SL_STABLE" "$LANE"
+    sha="$(basename "$(dirname "$a")")"
+    r="$(cd "$(dirname "$2")/.." && pwd)"
+    git -C "$r" merge-base --is-ancestor "$sha" main' _ "$SL_STABLE" "$LANE"
 fi
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
@@ -5907,6 +5931,7 @@ t "要料 挂点:wd_fuel_want 排在「全轨在跑=正常等待」的 continue 
   c=$(grep -n "lane_busy a && lane_busy b && .* then continue; fi" <<< "$b" | head -1 | cut -d: -f1)
   [ -n "$w" ] && [ -n "$c" ] && [ "$w" -lt "$c" ]' _ "$LANE"
 
+
 rm -rf "$FW"
 
 # ── 料仓读数写回断言范围 + 路线图指路(值守例 16;2026-08-29)────────────────────────
@@ -6335,6 +6360,265 @@ t "M-d 挂钩:kb-commit 里真接上了 handover-lint(⛔ 只看脚本自己能�
   sed -n "/^cmd_kb_commit/,/^}/p" "$1" | grep -qF "readlink -f" || { echo "未解软链:发布版下找不到兄弟文件"; exit 2; }' _ "$LANE"
 
 rm -rf "$HVX"
+
+# ══ 2.4-① 席位健康:**看得见**(M-a 判态 · M-c 的 doctor/statusline 两个落点 · M-e ③)═══════
+# 📌 本片按 pingxia-47 2026-08-29 排期切为可发布两片,边界=**风险**⛔ 工作量:
+#   片①(本片)对外界**零动作** —— 只判态、落态文件、在 doctor 与所有窗的状态栏显出来;判错了
+#     最多是屏幕上一行字。片②「说出来 + 自愈」才开始 board/桌面通知/代跑 handover。
+#   ⇒ 片①先合先发,片②随后各自全量绿、各自看板条(47 明令:⛔ 为了切片缩阴性)。
+# 失败样本=2026-08-29 12:40→13:29 开发轨空转 2h25m:派工席过硬口、继任未起,而**没有任何一环
+#   负责发现**。判据必须能区分成败 ⇒ 四个态各一条阳性 + 每条改判各一条阴性。
+echo "== 2.4a-seat. M-a 席位态判定(纯函数,喂三路串;⛔ 碰真锁/真窗)=="
+T24="$(mktemp -d)"
+sed -n "/^seat_state_judge()/,/^}/p" "$LANE" > "$T24/judge.sh"
+# 判定与取数分离 ⇒ judge 单独可跑;⛔ 依赖顶层变量(套件 set -u,顶层变量不随函数抽取走)
+jd(){ bash -c 'source "$1/judge.sh"; seat_state_judge "$2" "$3" "$4"' _ "$T24" "$2" "$3" "$4"; }
+A_OK="ctx=30.0 hb=5 n=1 sid=s1 why="
+A_HI="ctx=83.7 hb=5 n=1 sid=s1 why="
+B_OK="holder=dispatch lockage=20 drain=— ndisp=1"
+C_OK="nsess=1"
+
+t "M-a 在班:持有者在 · ctx 低 · 无排空窗" bash -c '
+  source "$1/judge.sh"; grep -q "^state=在班|" <<< "$(seat_state_judge "$2" "$3" "$4")"' _ "$T24" "$A_OK" "$B_OK" "$C_OK"
+
+t "M-a 排空无继任:ctx≥硬口 且 无 dispatch-drain-*(=08-29 12:40 实撞形态)" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "$2" "$3" "$4")"
+  grep -q "^state=排空无继任|" <<< "$o" && grep -q "继任未起" <<< "$o"' _ "$T24" "$A_HI" "$B_OK" "$C_OK"
+
+t "M-a 阴性:ctx≥硬口 但**继任已起**(有 drain 窗)⇒ 在班 ⛔ 排空无继任" bash -c '
+  source "$1/judge.sh"; grep -q "^state=在班|" <<< "$(seat_state_judge "$2" "holder=dispatch lockage=20 drain=dispatch-drain-20260829-165337 ndisp=1" "$3")"' _ "$T24" "$A_HI" "$C_OK"
+
+t "M-a 缺:派工权无持有者" bash -c '
+  source "$1/judge.sh"; grep -q "^state=缺|" <<< "$(seat_state_judge "$2" "holder=— lockage=999999 drain=— ndisp=0" "$3")"' _ "$T24" "$A_OK" "$C_OK"
+
+t "M-a 缺:持有者在但锁心跳已过期(残锁 ⛔ 当在班)" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "$2" "holder=someone lockage=99999 drain=— ndisp=1" "$3")"
+  grep -q "^state=缺|" <<< "$o" && grep -q "心跳已过期" <<< "$o"' _ "$T24" "$A_OK" "$C_OK"
+
+t "M-a 未判:A 路读不出 ⇒ 未判 ⛔ 归在班 ⛔ 归缺(方案 §三 逐字)" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=? hb=? n=0 sid=— why=A路读不出:无 agentName=dispatch 的 transcript" "$2" "$3")"
+  grep -q "^state=未判|" <<< "$o" && grep -q "A路读不出" <<< "$o"' _ "$T24" "$B_OK" "$C_OK"
+
+# ── 🔴 「心跳<60s」改判的两侧(方案 v1.2;pingxia-47 2026-08-29 采纳,两侧各钉一条)────────
+#   实测三条促成改判:① sessions/*.json 的 updatedAt **不是心跳**,比 transcript 还陈旧
+#   (dispatch 185s vs 32s;pingxia-cc 22 小时 vs 34 分钟);② transcript mtime 测的是「最后一次
+#   对话」⛔「还活着」——**活着且健康的 relay 席实测已 789s 没动**;③ 照 60s 落地会把「安静等事件」
+#   判成非在班,而那是 #137 已裁的健康态,且 M-c 要在**所有窗**显红 ⇒ 噪声随正常运行增长。
+t "M-a 改判阴性①:席位安静 789s(远超原 60s)但窗还在 ⇒ **仍在班**(⛔ 把健康的安静判成故障)" bash -c '
+  source "$1/judge.sh"; grep -q "^state=在班|" <<< "$(seat_state_judge "ctx=30.0 hb=789 n=1 sid=s1 why=" "$2" "$3")"' _ "$T24" "$B_OK" "$C_OK"
+
+t "M-a 改判阳性②:transcript 陈旧≥2700s **且** B 路无 dispatch 窗 ⇒ 未判(读到的是死席旧档)" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=83.7 hb=3000 n=1 sid=s1 why=" "holder=dispatch lockage=20 drain=— ndisp=0" "$2")"
+  grep -q "^state=未判|" <<< "$o" && grep -q "死席旧档" <<< "$o"' _ "$T24" "$C_OK"
+
+t "M-a 改判阴性③:transcript 陈旧但**窗还在** ⇒ ⛔ 未判(两条须同时成立;⛔ 单凭陈旧就弃判)" bash -c '
+  source "$1/judge.sh"; ! grep -q "^state=未判|" <<< "$(seat_state_judge "ctx=30.0 hb=3000 n=1 sid=s1 why=" "$2" "$3")"' _ "$T24" "$B_OK" "$C_OK"
+
+# ── 三路交叉(:967 根因面:**不是读不到,是读到了假的**)───────────────────────────
+t "M-a 不一致:C 路会话面 2 个 dispatch 而 B 路无排空窗 ⇒ mismatch 非空(继任可能在别处)" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=83.7 hb=5 n=2 sid=s1 why=" "$2" "nsess=2")"
+  m="${o##*|mismatch=}"; [ -n "$m" ] && grep -q "别的会话面" <<< "$m"' _ "$T24" "$B_OK"
+
+t "M-a 不一致:A 面近期 dispatch 数 ≠ C 面会话数 ⇒ 点名是哪两路对不上" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=30.0 hb=5 n=1 sid=s1 why=" "$2" "nsess=3")"
+  grep -q "A路近期 dispatch transcript 1 个 ≠ C路会话面 dispatch 3 个" <<< "$o"' _ "$T24" "$B_OK"
+
+t "M-a 交接期零误报(真机 16:55 样本:n=2 · nsess=2 · drain 在)⇒ 在班且 mismatch 空" bash -c '
+  source "$1/judge.sh"
+  o="$(seat_state_judge "ctx=9.9 hb=4 n=2 sid=919d492c why=" "holder=dispatch lockage=26 drain=dispatch-drain-20260829-165337 ndisp=1" "nsess=2")"
+  grep -q "^state=在班|" <<< "$o" && [ -z "${o##*|mismatch=}" ]' _ "$T24"
+
+t "M-a 对照:朴素判据「只看 ctx≥75 就报」在「ctx 高 + 继任已起」上会误报,本闸不报——绊线分得开成败" bash -c '
+  source "$1/judge.sh"
+  naive(){ [ "${1%%.*}" -ge 75 ]; }                       # 朴素判据:只看占比
+  naive 83.7 || exit 1                                     # 它确实会报
+  grep -q "^state=在班|" <<< "$(seat_state_judge "$2" "holder=dispatch lockage=20 drain=dispatch-drain-x ndisp=1" "$3")"' _ "$T24" "$A_HI" "$C_OK"
+
+# ── 三路信源必须读**不同的字节**(结构断言;共用信源=假一致,:967 形态)───────────────
+t "M-a 独立性:A 路(transcript)体内 ⛔ 出现 派工权锁 / sessions —— 那是 B/C 的料" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1" | grep -v "^[[:space:]]*#")"; [ -n "$b" ] || exit 9
+  ! grep -qE "DISPATCH_LOCK|lock_holder|lock_age|/sessions/" <<< "$b"' _ "$LANE"
+t "M-a 独立性 阳性对照:同一判据喂一段**真的读锁**的代码 ⇒ 必红(证明剥注释没把判据剥成永远绿)" bash -c '
+  fake="seat_read_a(){\n  x=\"\$(lock_holder)\"\n}"
+  b="$(printf "%b" "$fake" | sed -n "/^seat_read_a()/,/^}/p" | grep -v "^[[:space:]]*#")"
+  grep -qE "DISPATCH_LOCK|lock_holder|lock_age|/sessions/" <<< "$b"'
+t "M-a 独立性:B 路(锁+tmux)体内 ⛔ 读 transcript" bash -c '
+  b="$(sed -n "/^seat_read_b()/,/^}/p" "$1" | grep -v "^[[:space:]]*#")"; [ -n "$b" ] || exit 9
+  ! grep -qE "jsonl|projects/" <<< "$b"' _ "$LANE"
+t "M-a 独立性:C 路(会话面)体内 ⛔ 碰锁 ⛔ 碰 transcript" bash -c '
+  b="$(sed -n "/^seat_read_c()/,/^}/p" "$1" | grep -v "^[[:space:]]*#")"; [ -n "$b" ] || exit 9
+  ! grep -qE "DISPATCH_LOCK|lock_holder|lock_age|jsonl" <<< "$b"' _ "$LANE"
+
+# ── A 路真跑(夹具 transcript;证明 agent-name 定位与末尾回读都真的在工作)──────────────
+SA="$(mktemp -d)"; mkdir -p "$SA/proj"
+mkj(){ # <文件> <agentName|-> <tokens>
+  { [ "$2" = "-" ] || printf '{"type":"agent-name","agentName":"%s"}\n' "$2"
+    printf '{"type":"user"}\n'
+    printf '{"message":{"usage":{"input_tokens":%s,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$3"
+  } > "$1"; }
+mkj "$SA/proj/aaa.jsonl" dispatch 500000
+mkj "$SA/proj/bbb.jsonl" relay    900000
+mkj "$SA/proj/ccc.jsonl" -        900000
+t "M-a A路真跑:按 agentName 认出 dispatch 并算出占比(⛔ 认成同目录里 relay/无名的那两份)" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1")"; eval "$b"
+  o="$(LAIXIN_CTX_PROJ="$2/proj" LAIXIN_CTX_WINDOW=1000000 seat_read_a dispatch)"
+  grep -q "ctx=50.0 " <<< "$o" && grep -q "sid=aaa" <<< "$o" && grep -q "n=1 " <<< "$o" && grep -q "why=$" <<< "$o"' _ "$LANE" "$SA"
+t "M-a A路阴性:目录里没有该席位的 transcript ⇒ why 非空(⛔ 返 ctx=0 让闸门看着「还早」)" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1")"; eval "$b"
+  o="$(LAIXIN_CTX_PROJ="$2/proj" seat_read_a no-such-seat)"
+  grep -q "ctx=? " <<< "$o" && grep -q "why=A路读不出" <<< "$o"' _ "$LANE" "$SA"
+t "M-a A路阴性:有 agent-name 但**无 usage 记录** ⇒ 仍算读不出 ⛔ 当 0%" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1")"; eval "$b"
+  d="$(mktemp -d)"; printf "{\"type\":\"agent-name\",\"agentName\":\"dispatch\"}\n{\"type\":\"user\"}\n" > "$d/x.jsonl"
+  o="$(LAIXIN_CTX_PROJ="$d" seat_read_a dispatch)"; rm -rf "$d"
+  grep -q "why=A路读不出:transcript 无 usage 记录" <<< "$o"' _ "$LANE"
+
+# ── A 路的扫描必须**有界**(2026-08-29 自查实撞:全扫 880 份 / 3.1 GB 单次 7 秒,而看门狗每 60s
+#   跑一次 ⇒ 开销随 transcript 历史单调上涨。这一类「今天够快、明天不够」在读数面与「一直够快」同形)。
+t "M-a A路:按 mtime 排序并截断(⛔ 全扫;开销 ⛔ 随历史积累涨)" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1" | grep -v "^[[:space:]]*#")"
+  grep -q "getmtime" <<< "$b" && grep -q "SEAT_SCAN_MAX" <<< "$b"' _ "$LANE"
+t "M-a A路 阳性:夹具 30 份而目标是**最新**的一份 ⇒ 照样找到(截断 ⛔ 误伤正常情形)" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1")"; eval "$b"
+  d="$(mktemp -d)"; i=0
+  while [ $i -lt 30 ]; do i=$((i+1)); printf "{\"type\":\"agent-name\",\"agentName\":\"other$i\"}\n{\"message\":{\"usage\":{\"input_tokens\":1}}}\n" > "$d/f$i.jsonl"; done
+  printf "{\"type\":\"agent-name\",\"agentName\":\"dispatch\"}\n{\"message\":{\"usage\":{\"input_tokens\":400000}}}\n" > "$d/zz.jsonl"
+  o="$(LAIXIN_CTX_PROJ="$d" LAIXIN_CTX_WINDOW=1000000 seat_read_a dispatch)"; rm -rf "$d"
+  grep -q "ctx=40.0 " <<< "$o" && grep -q "sid=zz" <<< "$o"' _ "$LANE"
+t "M-a A路 对照:把窗口压到 2 而目标排在更旧处 ⇒ **读不出**(证明截断真的生效 ⛔ 是个摆设)" bash -c '
+  b="$(sed -n "/^seat_read_a()/,/^}/p" "$1")"; eval "$b"
+  d="$(mktemp -d)"
+  printf "{\"type\":\"agent-name\",\"agentName\":\"dispatch\"}\n{\"message\":{\"usage\":{\"input_tokens\":400000}}}\n" > "$d/old.jsonl"
+  sleep 1
+  for n in n1 n2 n3; do printf "{\"type\":\"agent-name\",\"agentName\":\"x\"}\n" > "$d/$n.jsonl"; done
+  o="$(SEAT_SCAN_MAX=2 LAIXIN_CTX_PROJ="$d" seat_read_a dispatch)"; rm -rf "$d"
+  grep -q "why=A路读不出" <<< "$o"' _ "$LANE"
+rm -rf "$SA"
+
+echo "== 2.4c-seat. M-c 席位态对所有窗可见(statusline;夹具态文件,零真实渲染依赖)=="
+SC="$(mktemp -d)"; SLPY="$(cd "$(dirname "$0")/.." && pwd)/contrib-statusline.py"
+SCIN='{"context_window":{"used_percentage":30}}'
+scline(){ printf '%s' "$SCIN" | LAIXIN_SEAT_STATE="$SC/s" python3 "$SLPY" | sed 's/\x1b\[[0-9;]*m//g'; }
+export -f scline 2>/dev/null || true
+scmk(){ printf 'ts=%s\nstate=%s\nt=%s\nkeepalive=%s\nmismatch=%s\n' "${1}" "$2" "$3" "${4:-on}" "${5:-}" > "$SC/s"; }
+
+t "M-c 态文件不存在 ⇒ 状态栏**零输出**(本机没跑流水线,⛔ 加噪)" bash -c '
+  o="$(printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/nope" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g")"
+  ! grep -q "派工席" <<< "$o"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 在班 ⇒ 仍留通过态标记(#50:「没有报警」与「没有这项检查」不得同形)" bash -c '
+  printf "ts=%s\nstate=在班\nt=0\nkeepalive=on\n" "$(date +%s)" > "$1/s"
+  printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/s" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g" | grep -q "派工席 ✓"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 非在班 ⇒ 红行带态与持续分钟(所有窗都看得见,⛔ 只显本窗自己)" bash -c '
+  printf "ts=%s\nstate=排空无继任\nt=900\nkeepalive=on\n" "$(date +%s)" > "$1/s"
+  o="$(printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/s" python3 "$2")"
+  grep -q "派工席:排空无继任 15m" <<< "$(sed "s/\x1b\[[0-9;]*m//g" <<< "$o")" && grep -q $'"'"'\033\[1;31m'"'"' <<< "$o"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 三路不一致 ⇒ 红行上带出来(⛔ 只在看板里)" bash -c '
+  printf "ts=%s\nstate=排空无继任\nt=900\nkeepalive=on\nmismatch=X\n" "$(date +%s)" > "$1/s"
+  printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/s" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g" | grep -q "三路不一致"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 读数陈旧 ⇒ 显式报陈旧秒数(**看门狗死了**与「态一直是在班」在屏幕上必须不同形)" bash -c '
+  printf "ts=%s\nstate=在班\nt=0\nkeepalive=on\n" "$(( $(date +%s) - 9999 ))" > "$1/s"
+  printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/s" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g" | grep -q "读数陈旧 9999s"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 态文件坏(缺 ts)⇒ 报「不可解析」⛔ 报一个十几亿秒的数(那长得像计算 bug,会把人引到错方向)" bash -c '
+  printf "garbage\n" > "$1/s"
+  o="$(printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/s" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g")"
+  grep -q "态文件不可解析" <<< "$o" && ! grep -qE "读数陈旧 [0-9]{9,}s" <<< "$o"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 保活奉令关闭 ⇒ 暗色标注 ⛔ 红(关闭态下的红不可行动,会训练人忽略红)" bash -c '
+  printf "ts=%s\nstate=缺\nt=300\nkeepalive=off\n" "$(date +%s)" > "$1/s"
+  o="$(printf "%s" "$3" | LAIXIN_SEAT_STATE="$1/s" python3 "$2")"
+  grep -q "保活已关闭" <<< "$(sed "s/\x1b\[[0-9;]*m//g" <<< "$o")" && ! grep -q $'"'"'\033\[1;31m派工席'"'"' <<< "$o"' _ "$SC" "$SLPY" "$SCIN"
+
+t "M-c 席位段异常 ⛔ 带死整条状态栏(拆掉 import os ⇒ ctx 行仍在 且 席位段显形)" bash -c '
+  d="$(mktemp -d)"; sed "/^import os$/d" "$1" > "$d/sl.py"
+  o="$(printf "%s" "{\"context_window\":{\"used_percentage\":30}}" | python3 "$d/sl.py" | sed "s/\x1b\[[0-9;]*m//g")"
+  rm -rf "$d"
+  grep -q "30%" <<< "$o" || { echo "整条状态栏没了:[$o]"; exit 1; }
+  grep -q "席位态:读取异常(NameError)" <<< "$o"' _ "$SLPY"
+t "M-c statusline ⛔ 裸 except(2026-08-29 实撞:裸 except 把「配置没设」与「代码坏了」吞成同一个结果)" bash -c '
+  b="$(sed -n "/^def seat_line/,/^def main/p" "$1")"; [ -n "$b" ] || exit 9
+  ! grep -qE "except\s*:|except Exception\s*:" <<< "$b"' _ "$SLPY"
+
+# ── cmd_seat_state 的人读面(⛔ 只测好路径:本件自查实撞——坏文件时 bash 算术抛
+#   `operand expected` 到 stderr,而命令**照样退 0** ⇒ 「坏了」与「好了」在退出码上同形)────
+t "seat-state 坏态文件 ⇒ **非零退出**且点名 ⛔ 当健康(⛔ 抛算术错却退 0)" bash -c '
+  d="$(mktemp -d)"; printf "garbage\n" > "$d/s"
+  o="$(LAIXIN_SEAT_STATE="$d/s" "$1" seat-state 2>&1)"; rc=$?
+  rm -rf "$d"
+  [ "$rc" -ne 0 ] || { echo "坏文件竟退 0"; exit 1; }
+  grep -q "席位态文件损坏" <<< "$o" && ! grep -q "operand expected" <<< "$o"' _ "$LANE"
+t "seat-state 好态文件 ⇒ 退 0 并报**读数龄**(陈旧与新鲜必须分得开)" bash -c '
+  d="$(mktemp -d)"; printf "ts=%s\nstate=在班\nt=0\nkeepalive=on\n" "$(date +%s)" > "$d/s"
+  o="$(LAIXIN_SEAT_STATE="$d/s" "$1" seat-state 2>&1)"; rc=$?
+  rm -rf "$d"; [ "$rc" -eq 0 ] && grep -q "读数龄" <<< "$o" && grep -q "新鲜" <<< "$o"' _ "$LANE"
+# ── doctor §9b:M-c 的第三个落点。⛔ 只测「有这一节」——要测的是它**分不分得开成败**。
+t "doctor §9b:态文件不存在 ⇒ ⚠️ 警告并明说「读不到 ⛔ 当健康」(⛔ 报绿 ⛔ 整节消失)" bash -c '
+  o="$(LAIXIN_SEAT_STATE=/nope/nope/x "$1" doctor 2>&1)"
+  grep -q "9b. 派工席态" <<< "$o" || { echo "整节不见了"; exit 1; }
+  seg="$(sed -n "/== 9b/,/^== /p" <<< "$o")"
+  grep -q "⚠️" <<< "$seg" && grep -q "读不到 ⛔ 当健康" <<< "$seg" && ! grep -q "✅" <<< "$seg"' _ "$LANE"
+
+t "doctor §9b:排空无继任 + 三路不一致 ⇒ ❌ 红行 且 点名不一致(计入错误数)" bash -c '
+  d="$(mktemp -d)"
+  printf "ts=%s\nstate=排空无继任\nt=900\nkeepalive=on\nctx=83.7\nwhy=ctx 83.7%% ≥ 硬口\nmismatch=C路会话面有 2 个 dispatch\n" "$(date +%s)" > "$d/s"
+  o="$(LAIXIN_SEAT_STATE="$d/s" "$1" doctor 2>&1)"; rm -rf "$d"
+  seg="$(sed -n "/== 9b/,/^== /p" <<< "$o")"
+  grep -q "❌" <<< "$seg" && grep -q "排空无继任" <<< "$seg" && grep -q "C路会话面有 2 个 dispatch" <<< "$seg"' _ "$LANE"
+
+t "doctor §9b:在班 ⇒ ✅ 通过态**可见**(#50:「没有报警」与「没有这项检查」不得同形)" bash -c '
+  d="$(mktemp -d)"
+  printf "ts=%s\nstate=在班\nt=0\nkeepalive=on\nctx=30.0\nwhy=\nmismatch=\n" "$(date +%s)" > "$d/s"
+  o="$(LAIXIN_SEAT_STATE="$d/s" "$1" doctor 2>&1)"; rm -rf "$d"
+  seg="$(sed -n "/== 9b/,/^== /p" <<< "$o")"
+  grep -q "✅ 派工席在班" <<< "$seg" && ! grep -qE "❌|⚠️" <<< "$seg"' _ "$LANE"
+
+t "seat-state 态文件不存在 ⇒ 明说「读不到 ⛔ 等于席位健康」(⛔ 静默零输出)" bash -c '
+  o="$(LAIXIN_SEAT_STATE=/nope/nope/x "$1" seat-state 2>&1)"
+  grep -q "读不到 ⛔ 等于席位健康" <<< "$o"' _ "$LANE"
+rm -rf "$SC"
+
+echo "== 2.4d-seat. 单点源 · wd_loop 挂点 · M-e 文案(结构绊线)=="
+# 🔴 阈值单点源(pingxia-47 明令 ⛔ 各抄一份):权威=顶层 SEAT_HB_STALE;seat_liveness 体内写
+#   `${SEAT_HB_STALE:-2700}` 的回退字面量是给「函数体被抽出来单跑」用的(本套件有 6 处抽它),
+#   顶层变量不随抽取走、裸引用会在 set -u 下静默炸 ⇒ 与 GATE_HARD/GATE_WARN 同一家法:
+#   **两处常量 + 绊线钉同步**,漂移由机器抓 ⛔ 靠自觉。
+t "单点源:seat_liveness 的陈旧线走 SEAT_HB_STALE(⛔ 再写裸 2700)" bash -c '
+  b="$(sed -n "/^seat_liveness()/,/^}/p" "$1")"
+  grep -q "SEAT_HB_STALE:-2700" <<< "$b" && ! grep -qE "lt 2700 " <<< "$b"' _ "$LANE"
+t "单点源:顶层 SEAT_HB_STALE 的默认值 == seat_liveness 里的回退字面量(漂移必红)" python3 -c '
+import re,sys
+s=open(sys.argv[1],encoding="utf-8").read()
+top=re.search(r"^SEAT_HB_STALE=\"\$\{LAIXIN_SEAT_HB_STALE:-(\d+)\}\"",s,re.M)
+fb=re.findall(r"\$\{SEAT_HB_STALE:-(\d+)\}",s)
+assert top, "找不到顶层 SEAT_HB_STALE"
+assert fb, "找不到任何回退字面量"
+assert set(fb)=={top.group(1)}, "陈旧线漂移:顶层=%s 回退=%s" % (top.group(1), set(fb))
+' "$LANE"
+t "单点源:SEAT_GATE_HARD 默认值 == cmd_ctx 的硬闸门 == statusline.py 的 GATE_HARD(三处)" python3 -c '
+import re,sys,os
+s=open(sys.argv[1],encoding="utf-8").read()
+g=re.search(r"^SEAT_GATE_HARD=\"\$\{LAIXIN_SEAT_GATE_HARD:-(\d+)\}\"",s,re.M); assert g,"找不到 SEAT_GATE_HARD"
+hard=set(re.findall(r"pct>=(\d+): print\(\"\N{LARGE RED CIRCLE}", s)); assert len(hard)==1, hard
+assert g.group(1)==hard.pop(), "闸门线漂移:SEAT_GATE_HARD 与 cmd_ctx 不一致"
+sl=os.path.expanduser("~/.claude-official/statusline.py")
+if os.path.exists(sl):
+    m=re.search(r"GATE_HARD\s*=\s*(\d+)",open(sl,encoding="utf-8").read())
+    assert m and m.group(1)==g.group(1), "闸门线漂移:SEAT_GATE_HARD 与线上 statusline.py 不一致"
+' "$LANE"
+
+# ── wd_loop 挂点:位置本身就是判据(挂错=机制在该生效的时候不生效)────────────────────
+t "wd_loop:M-a 判态挂在**保活闸门之前**(关闭态也照写态文件——停更的文件与「一直健康」同形)" bash -c '
+  b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"
+  a="$(grep -n "seat_state_tick" <<< "$b" | head -1 | cut -d: -f1)"
+  g="$(grep -n "if dispatch_keepalive_off; then" <<< "$b" | head -1 | cut -d: -f1)"
+  [ -n "$a" ] && [ -n "$g" ] && [ "$a" -lt "$g" ]' _ "$LANE"
+t "wd_loop:M-a 判态是**子 shell 隔离**调用(#44:保命循环里裸调用会被 die 无声带死宿主)" bash -c '
+  b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"
+  grep -qE "^\s*\( seat_state_tick \)" <<< "$b"' _ "$LANE"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

@@ -2166,6 +2166,16 @@ cmd_kb_commit(){  # 知识库提交守卫(2026-08-18 生产级 P1-2):只收显�
         || echo "⚠️ 表结构断言未过(提交已落库 ⛔ 回滚;修好后再 kb-commit 一次——注册表被劈 10 列坏 20 分钟正是这个形态)"
     done
   fi
+  # M-d 交接包 lint 挂点(2026-08-29 兑现窗B;方案-席位健康与自愈 §三 M-d)。与 table-lint 同位、
+  # **只警**;第一批**只报 ⛔ 拒**。射程判定归 bin/handover-lint 自己(非派工交接包 ⇒ 零输出),
+  # 这里只做接线:软链启动也要找得到兄弟文件(readlink -f 解链,同 copy-audit/opt-status 两处)。
+  # ⛔ 在本函数其他行动刀(件 7 会动 kb-commit 主路径)——本挂点只此一处。
+  if [ "$committed" -eq 1 ]; then
+    local _self _hl
+    _self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+    _hl="$(dirname "$_self")/handover-lint"
+    [ -x "$_hl" ] && "$_hl" --table "$TABLE" "${args[@]}" || true
+  fi
   if [ "$committed" -eq 1 ]; then
     local _f _hit=0
     for _f in "${args[@]}"; do case "$_f" in *执行总表*) _hit=1 ;; esac; done

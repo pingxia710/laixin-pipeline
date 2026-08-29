@@ -6234,6 +6234,108 @@ t "APF 多绊线 阴性②:红条里有**非断言红**(基点 AttributeError)�
 
 rm -rf "$APFX"
 
+# ── 5.2 M-d 派工交接包 lint(2026-08-29 兑现窗B;方案-席位健康与自愈 §三 M-d)────────────
+#   料写在交接包里而没登排队节 ⇒ stats **忠实地**报 ready=0:读数没错,是排队行不存在,
+#   而这两者在读数面**完全同形**(08-29 实撞:三片前置已解、两轨空 52 分钟而 ready=0)。
+echo "== 8e. handover-lint:派工交接包未登排队节(只报 ⛔ 拒) =="
+HVX="$(mktemp -d)"; HVL="$(cd "$(dirname "$0")/.." && pwd)/bin/handover-lint"
+mkdir -p "$HVX/4-开发层"
+cat > "$HVX/table.md" <<'HVTBL'
+## 进行中(路线图子表在这一节,⛔ 当已登队)
+
+| 序 | 片 | 状态 | 依赖 |
+|---|---|---|---|
+| 1 | 测试:只在路线图的片-丁 | 前置已解,可写 | 无 |
+
+## 排队(测试用)
+
+### 子标题(真表排队节里有 5 个,⛔ 被当成换节)
+
+| 片 | 轨 | 内容 | 发车状态 |
+|---|---|---|---|
+| **测试:已登队片-甲** | **B 轨** | x | prompt 已写,待发 |
+| **测试:无轨片-乙** |  | x | ready |
+| **测试:撞前缀片-丙一二三四五六七八** | **A 轨** | x | 待写 |
+| **测试:撞前缀片-丙一二三四五六七九** | **A 轨** | x | 待写 |
+HVTBL
+
+t "M-d 阳性:交接包列 2 片、排队节无行 ⇒ 报 2 且逐条列名与交接包行号" bash -c '
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试.md"
+  printf "# 派工交接包\n\n- **测试:没登队的片-戊** ready 待发\n- **测试:也没登队的片-己** 待写\n" > "$f"
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  grep -qF "有料 2 片**未登排队节**" <<< "$out" || { echo "$out"; exit 1; }
+  grep -qF "测试:没登队的片-戊" <<< "$out" && grep -qF "测试:也没登队的片-己" <<< "$out" || exit 2
+  grep -qE "第 3 行" <<< "$out" || { echo "未给交接包行号"; exit 3; }' _ "$HVL" "$HVX"
+
+t "M-d 阴性①:片**已登排队节且带轨** ⇒ 不报(⛔ 把登过队的也报,噪声会淹掉真提示)" bash -c '
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试2.md"
+  printf "# 派工交接包\n\n- **测试:已登队片-甲** ready 待发\n" > "$f"
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  [ -z "$out" ] || { echo "本该零输出,实得:$out"; exit 1; }' _ "$HVL" "$HVX"
+
+t "M-d 阴性②:交接包只有**空态句**(零待验/无待发片/未ready)⇒ 真·零输出" bash -c '
+  # 真库实测这类写法 10+ 处(「零在飞·零待验」「无待发片」「通道未ready」)。不挡掉它们,
+  # **每一份交接包都稳定产出一段噪声**,而噪声的代价正是把真提示淹掉。
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试3.md"
+  printf "# 派工交接包\n\n本窗在手件 0,现场已清,无待发片;零待验、未ready 的也没有。\n" > "$f"
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  [ -z "$out" ] || { echo "本该零输出,实得:$out"; exit 1; }' _ "$HVL" "$HVX"
+
+t "M-d 阴性②-bis:**未被否定**的状态词且抽不到片名 ⇒ 仍报(⛔ 否定判据抑制过头)" bash -c '
+  # 与上一条成对:否定判据只许挡**紧邻**的空态句,⛔ 把正常的「说了 ready 却没写片名」也吃掉——
+  # 被吃掉的行是静默消失的,那正是本件要根治的形态。
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试3b.md"
+  printf "# 派工交接包\n\n- 这一行说了 ready 但没写任何片名。\n" > "$f"
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  grep -qF "抽不到片名" <<< "$out" || { echo "本该报抽不到片名,实得:$out"; exit 1; }' _ "$HVL" "$HVX"
+
+t "M-d 阴性③:片名**撞前缀** ⇒ **未判并列候选** ⛔ 当已登队、⛔ 当未登队" bash -c '
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试4.md"
+  printf "# 派工交接包\n\n- **测试:撞前缀片-丙一二三四五六** ready 待发\n" > "$f"
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  grep -qF "**未判**" <<< "$out" || { echo "$out"; exit 1; }
+  grep -qF "排队节候选:" <<< "$out" || { echo "未列候选"; exit 2; }
+  grep -qF "未登排队节" <<< "$out" && { echo "撞前缀被当成未登队"; exit 3; }
+  exit 0' _ "$HVL" "$HVX"
+
+t "M-d 阴性④:提交路径**不含派工交接包** ⇒ 零动作零输出(⛔ 对每次提交都说话)" bash -c '
+  set -e; d="$2"
+  printf "x\n" > "$d/4-开发层/交接包-兑现窗B-测试.md"     # 交接包但**不是派工线**
+  printf "y\n" > "$d/4-开发层/随便一个文件.md"
+  out="$("$1" --table "$d/table.md" "$d/4-开发层/交接包-兑现窗B-测试.md" "$d/4-开发层/随便一个文件.md" 2>&1)"
+  [ -z "$out" ] || { echo "本该零输出,实得:$out"; exit 1; }' _ "$HVL" "$HVX"
+
+t "M-d 阴性⑤:排队节**有行但轨列空** ⇒ 仍报(⛔ 只看有没有行:无轨的行量不出轨深度)" bash -c '
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试5.md"
+  printf "# 派工交接包\n\n- **测试:无轨片-乙** ready 待发\n" > "$f"
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  grep -qF "轨列为空" <<< "$out" || { echo "$out"; exit 1; }' _ "$HVL" "$HVX"
+
+t "M-d 绊线:排队节内的 ### 子标题 ⛔ 被当成换节(⛔ 「本节空」与「我没读到」同形)" bash -c '
+  # 首版实撞:按 startswith("##") 判换节 ⇒ 真表 93 行读成 0 行,而 0 行看起来完全正常。
+  set -e; d="$2"; f="$d/4-开发层/交接包-派工-测试6.md"
+  printf "# 派工交接包\n\n- **测试:已登队片-甲** ready 待发\n" > "$f"
+  # 甲在 ### 子标题**之后**;若子标题被当换节,甲就读不到 ⇒ 会被误报未登队
+  out="$("$1" --table "$d/table.md" "$f" 2>&1)"
+  grep -qF "未登排队节" <<< "$out" && { echo "### 子标题把排队节截断了"; exit 1; }
+  exit 0' _ "$HVL" "$HVX"
+
+t "M-d 判据漂移绊线:状态词与 stats 分桶器两处必须一致(⛔ 各自漂移后同形)" bash -c '
+  # 两处各写一份的代价:漂移后「两处口径一致」与「两处口径已经不同」在读数面同形。
+  set -e; lane="$2"; hl="$1"
+  for lit in "'"'"'ready'"'"' in st.lower()" "'"'"'prompt 已写'"'"' in st" "'"'"'待写'"'"' in st"; do
+    grep -qF "$lit" "$lane" || { echo "分桶器里找不到判据:$lit ⇒ 它改了,handover-lint 要跟着改"; exit 1; }
+  done
+  grep -qF "prompt 已写" "$hl" && grep -qF "待写" "$hl" || { echo "handover-lint 少了状态词"; exit 2; }
+  exit 0' _ "$HVL" "$LANE"
+
+t "M-d 挂钩:kb-commit 里真接上了 handover-lint(⛔ 只看脚本自己能跑)" bash -c '
+  set -e
+  sed -n "/^cmd_kb_commit/,/^}/p" "$1" | grep -qF "handover-lint" || { echo "kb-commit 未接线"; exit 1; }
+  sed -n "/^cmd_kb_commit/,/^}/p" "$1" | grep -qF "readlink -f" || { echo "未解软链:发布版下找不到兄弟文件"; exit 2; }' _ "$LANE"
+
+rm -rf "$HVX"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

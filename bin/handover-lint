@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""handover-lint —— M-d 派工交接包 lint(只报 ⛔ 拒;第一批)
+
+权威:方案-席位健康与自愈-20260829 §三 M-d。
+
+**它做什么**:派工交接包里列出的「待发 / ready / 待验 / 可写」片,必须在**执行总表排队节**
+有一条**带轨**的行。没有 ⇒ 报出来。因为机器排片只看排队节:料写在交接包里而没登队,
+`stats` 会**忠实地**报 ready=0 —— 读数没错,是排队行不存在,而**这两者在读数面完全同形**。
+
+**它不做什么(硬边界)**:
+  1. **只报 ⛔ 拒**(第一批;拒的时点候方案模式)。退出码恒 0。
+  2. **只写 stderr ⛔ 写看板** —— 每次提交都往看板灌一段,是把真提示淹掉的最快办法。
+  3. ⛔ 改台账、⛔ 改交接包:它只读。
+  4. 抽不到片名的行**照样报出来** —— 「查不了」与「查过没有」⛔ 同形。
+
+**射程**:只认**派工线**交接包(文件名 `交接包-派工*` / `交接包-dispatch*`,
+落点 `4-开发层/` 或 raw/)。其余路径 ⇒ **零动作零输出**(⛔ 对每个提交都说话)。
+"""
+
+import io
+import os
+import re
+import sys
+
+# ── 状态词判据 ────────────────────────────────────────────────────────────────
+# 🔴 **与 `laixin-lane` 的 stats 分桶器同一份判据**(⛔ 各写一份:两份会各自漂移,
+#   而漂移后「两处口径一致」与「两处口径已经不同」在读数面同形)。
+#   前两条逐字取自分桶器:`'ready' in st.lower()` / `'prompt 已写' in st` / `'待写' in st`;
+#   后两条(待发/待验)由 M-d 开工单追加 —— 分桶器没有「待验」桶,故它只在本 lint 生效。
+#   ⚠️ 改这里必须同时改分桶器;`tests/run.sh` 有一条漂移绊线会在两处不一致时变红。
+STATUS_READY = "ready"          # 大小写不敏感
+STATUS_WORDS = ["prompt 已写", "待写", "待发", "待验"]
+
+# 派工线交接包的文件名形态(⛔ 认全部 `交接包*`:兑现/值守/问题线的交接包不是派工料仓)
+NAME_RE = re.compile(r"^交接包-(派工|dispatch)", re.IGNORECASE)
+# 落点(任一命中即可)
+DIR_HINTS = ("4-开发层", "raw")
+
+MARKUP_RE = re.compile(r"[*~`\[\]]")
+# 显式标记出来的名字:**…** 或 `…`,且内含冒号(真库片名一律带冒号,含无项目前缀的那种)
+MARKED_RE = re.compile(r"\*\*([^*\n]{3,60})\*\*|`([^`\n]{3,60})`")
+COLON_RE = re.compile(r"[:：]")
+
+
+def norm(x):
+    """片名归一:去标记、掐到括号前的主干、收敛空白(与分桶器 _stem 同形)。"""
+    x = MARKUP_RE.sub("", x)
+    x = re.split(r"[（(]", x)[0]
+    return re.sub(r"\s+", " ", x).strip()[:34]
+
+
+def is_dispatch_handover(path):
+    base = os.path.basename(path)
+    if not NAME_RE.match(base):
+        return False
+    parts = path.replace("\\", "/").split("/")
+    return any(h in parts for h in DIR_HINTS)
+
+
+# 否定前缀:`零待验` / `无待发片` / `未ready` 这类**空态句**在真交接包里很常见
+# (真库实测 10+ 处:「零在飞·零待验」「无待发片」「通道未ready」)。不挡掉它们,
+# **每一份交接包都会稳定产出一段噪声**,而噪声的代价正是把真提示淹掉。
+# ⚠️ 只认**紧邻**的窄词族 ⛔ 扩成「整句语义」:宽判据会把正常行也吃掉,
+#   而被吃掉的行是**静默消失**的 —— 那正是本件要根治的形态。
+NEGATORS = ("无", "零", "未", "没有")
+
+
+def _hit_not_negated(line, word, start):
+    for neg in NEGATORS:
+        if line[max(0, start - len(neg)):start] == neg:
+            return False
+    return True
+
+
+def has_status(line):
+    low = line.lower()
+    i = low.find(STATUS_READY)
+    while i >= 0:
+        if _hit_not_negated(line, STATUS_READY, i):
+            return True
+        i = low.find(STATUS_READY, i + 1)
+    for w in STATUS_WORDS:
+        j = line.find(w)
+        while j >= 0:
+            if _hit_not_negated(line, w, j):
+                return True
+            j = line.find(w, j + 1)
+    return False
+
+
+def queue_rows(table_path):
+    """执行总表**排队节**的 (片名, 轨, 行号)。⛔ 读「进行中」节里的路线图子表 —— 那张表
+    没有轨列,拿它当已登队会把「机器看不见的料」报成看得见。"""
+    try:
+        with io.open(table_path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except IOError:
+        return None
+    out = []
+    in_q = False
+    # 🔴 换节只认 `##` + 空白 ⛔ `ln.startswith("##")` —— 排队节内部有 5 个 `###` 子标题(真表实测),
+    #   把它们当换节会让本节一行都读不到,而**「排队节真的空」与「我压根没读到」在读数面同形**
+    #   (首版实撞:可用行 0)。语义与分桶器的 `(?=\n##\s|\Z)` 对齐。
+    for i, ln in enumerate(text.split("\n"), 1):
+        if re.match(r"##\s", ln):
+            in_q = bool(re.match(r"##\s*排队", ln))
+            continue
+        if not in_q or not ln.startswith("|") or "---" in ln:
+            continue
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        name = norm(cells[0])
+        if not name or name == "片":
+            continue
+        out.append((name, MARKUP_RE.sub("", cells[1]).strip(), i))
+    return out
+
+
+def extract_names(path):
+    """从交接包里抽「带状态词那些行」上的片名。
+
+    返回 (hits, blind) —— hits=[(片名, 行号)];blind=[(行号, 行摘要)] 是**有状态词却抽不到
+    片名**的行:它们照样报出来 ⛔ 与「本来就没有料」同形。
+    """
+    try:
+        with io.open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().split("\n")
+    except IOError:
+        return None, None
+    hits, blind, seen = [], [], set()
+    for i, ln in enumerate(lines, 1):
+        if ln.lstrip().startswith("#"):
+            continue                  # 标题行(如 `## 待发片`)带状态词是**节名** ⛔ 片行
+        if not has_status(ln):
+            continue
+        got = []
+        if ln.startswith("|"):
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if cells and COLON_RE.search(MARKUP_RE.sub("", cells[0])):
+                got.append(norm(cells[0]))
+        else:
+            for m in MARKED_RE.finditer(ln):
+                tok = m.group(1) or m.group(2) or ""
+                if COLON_RE.search(tok):
+                    got.append(norm(tok))
+        got = [g for g in got if g]
+        if not got:
+            blind.append((i, re.sub(r"\s+", " ", ln).strip()[:70]))
+            continue
+        for g in got:
+            if g in seen:
+                continue
+            seen.add(g)
+            hits.append((g, i))
+    return hits, blind
+
+
+def match_queue(name, rows):
+    """唯一匹配 ⛔ 前缀撞键(缺口 I 同族)。返回 (状态, 命中列表)。
+
+    状态:hit=恰一条 · none=零匹配零候选 · ambiguous=零匹配但有候选,或多条匹配。
+    ⛔ 把「像」当「是」:B4-图片上传 与 B4-图片异步 前 8 字相同,短前缀会把它们撞成一个键。
+    """
+    exact = [r for r in rows if r[0] == name]
+    if len(exact) == 1:
+        return "hit", exact
+    if len(exact) > 1:
+        return "ambiguous", exact
+    near = [r for r in rows
+            if (len(name) >= 12 and (name.startswith(r[0][:12]) or r[0].startswith(name[:12])))]
+    if not near:
+        return "none", []
+    if len(near) == 1:
+        # 只有一条近似 —— 仍 **⛔ 当已登队**:近似不是相等,是否同一片交人判。
+        return "ambiguous", near
+    return "ambiguous", near
+
+
+def main():
+    argv = sys.argv[1:]
+    table = os.path.expanduser(
+        "~/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md")
+    files = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--table":
+            table = argv[i + 1] if i + 1 < len(argv) else table
+            i += 2
+            continue
+        files.append(argv[i])
+        i += 1
+
+    targets = [f for f in files if is_dispatch_handover(f)]
+    if not targets:
+        return 0                      # 零动作零输出(⛔ 对每次提交都说话)
+
+    rows = queue_rows(table)
+    if rows is None:
+        sys.stderr.write("⚠️ M-d 交接包 lint:执行总表读不到(%s)⇒ **未判** ⛔ 当作零缺口\n" % table)
+        return 0
+
+    missing, unjudged, blindall = [], [], []
+    for f in targets:
+        hits, blind = extract_names(f)
+        if hits is None:
+            sys.stderr.write("⚠️ M-d 交接包 lint:交接包读不到(%s)⇒ **未判**\n" % f)
+            continue
+        blindall.extend((f, i, t) for i, t in blind)
+        for name, lineno in hits:
+            state, cand = match_queue(name, rows)
+            if state == "hit":
+                if not cand[0][1]:
+                    missing.append((f, name, lineno, "排队节有行但**轨列为空**(总表 %d 行)" % cand[0][2]))
+                continue
+            if state == "none":
+                missing.append((f, name, lineno, "排队节**无行**"))
+            else:
+                unjudged.append((f, name, lineno, cand))
+
+    if not missing and not unjudged and not blindall:
+        return 0
+
+    w = sys.stderr.write
+    w("\n== M-d 交接包 lint(只报 ⛔ 拒;第一批)==\n")
+    if missing:
+        w("⚠️ 交接包有料 %d 片**未登排队节**(机器排片只看排队节 ⇒ stats 会忠实地报 ready=0):\n"
+          % len(missing))
+        for f, name, lineno, why in missing:
+            w("   · %s  ← %s 第 %d 行;%s\n" % (name, os.path.basename(f), lineno, why))
+        w("   修法:在执行总表**排队节**给它补一条**带轨**的行(⛔ 只写进「进行中」节的路线图子表:那张表无轨列)。\n")
+    if unjudged:
+        w("❓ **未判** %d 片(片名对不唯一 ⇒ ⛔ 当已登队,也 ⛔ 当未登队):\n" % len(unjudged))
+        for f, name, lineno, cand in unjudged:
+            w("   · %s  ← %s 第 %d 行;排队节候选:%s\n"
+              % (name, os.path.basename(f), lineno,
+                 " / ".join("%s(总表 %d 行)" % (c[0], c[2]) for c in cand[:4]) or "无"))
+    if blindall:
+        w("❓ **抽不到片名** %d 行(行里有状态词,但没有可识别的片名 ⇒ 报出来 ⛔ 与「本来没料」同形):\n"
+          % len(blindall))
+        for f, i, t in blindall[:6]:
+            w("   · %s 第 %d 行:%s\n" % (os.path.basename(f), i, t))
+    w("(本批**只报不拒**;提交已落库,⛔ 回滚。)\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

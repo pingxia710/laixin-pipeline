@@ -5884,6 +5884,84 @@ t "并发闸 真跑:本次自测此刻确实握着真锁(pid=自己)" env TL="$T
 
 rm -rf "$LK"
 
+
+# ── accept-preflight ④ 绊线行实做 + ② 全量行归态(2026-08-29 兑现窗B;替代表 M1 ② 与 ⑤(b))──
+#   在此之前:绊线行只做「签名解析」⇒ 永远输出未判,而卷首 :11 早写着「拆修法复跑」;
+#   全量行在 judge=rc 下把 **rc≠0 一律写成「不成立」** ⇒「代码真红」与「解释器基线不符」同形。
+#   ⚠️ 用**微型合成仓**(两个文件、两个 commit),全量真跑但只有 1–2 个用例,秒级完事。
+#   🔴 夹具**落临时脚本再调** ⛔ `source <(…)`(bash 3.2 下函数不落地且不报错,第六发坑)。
+echo "== 8b. accept-preflight:绊线拆修法复跑 + 全量行归态 =="
+APFX="$(mktemp -d)"
+cat > "$APFX/mkfix.sh" <<'MKFIX'
+#!/bin/bash
+# mkfix.sh <目标目录> <基线前缀,如 "Python 3.14."> [恒真|坏签名]
+set -e
+d="$1"; base="$2"; mode="${3:-}"
+mkdir -p "$d/tests" "$d/11b"
+printf 'def add(a, b):\n    return abs(a) + abs(b)\n' > "$d/lib.py"
+printf 'import unittest\nfrom lib import add\nclass T(unittest.TestCase):\n    def test_add_basic(self):\n        self.assertEqual(add(1, 2), 3)\n' > "$d/tests/test_lib.py"
+printf 'cmd=PY="$(command -v python3)"; V="$("$PY" --version 2>&1)"; echo "ENTRY_VERSION=$V"; case "$V" in "%s"*) echo "ENTRY_GUARD=ok" ;; *) echo "ENTRY_GUARD=interpreter_baseline_mismatch got=$V"; exit 91 ;; esac; "$PY" -m unittest discover -s tests -v\njudge=rc\n' "$base" > "$d/11b/test-entry.conf"
+git -C "$d" init -q -b main .
+git -C "$d" add -A; git -C "$d" -c user.name=f -c user.email=f@x commit -qm base
+git -C "$d" checkout -qb fix
+printf 'def add(a, b):\n    return a + b\n' > "$d/lib.py"
+if [ "$mode" = 恒真 ]; then
+  printf '\n    def test_add_negative_regression(self):\n        self.assertTrue(True)\n' >> "$d/tests/test_lib.py"
+else
+  printf '\n    def test_add_negative_regression(self):\n        self.assertEqual(add(-1, -2), -3)\n' >> "$d/tests/test_lib.py"
+fi
+git -C "$d" add -A; git -C "$d" -c user.name=f -c user.email=f@x commit -qm fix
+git -C "$d" checkout -q main
+if [ "$mode" = 坏签名 ]; then
+  printf '回归断言点名:test_this_id_is_not_in_this_branch\n' > "$d/prompt.md"
+else
+  printf '回归断言点名:test_add_negative_regression\n' > "$d/prompt.md"
+fi
+MKFIX
+chmod +x "$APFX/mkfix.sh"
+APFBASE="Python $(python3 --version 2>&1 | sed -E 's/Python ([0-9]+\.[0-9]+)\..*/\1./')"
+
+t "APF 绊线 阳性:真缺陷片 ⇒ **成立**(基点+tests 恰一条断言失败红 · 候选绿)" bash -c '
+  set -e; d="$2/pos"; "$2/mkfix.sh" "$d" "$3"
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 成立" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "恰这一条以断言失败变红" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 绊线 阴性①:断言改恒真(不拆也绿)⇒ **不成立** ⛔ 任意变红都算成立" bash -c '
+  set -e; d="$2/neg1"; "$2/mkfix.sh" "$d" "$3" 恒真
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 不成立" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "不拆也绿" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 绊线 阴性②:签名点名本分支没动过的 id ⇒ **未判** ⛔ 绿" bash -c '
+  set -e; d="$2/neg2"; "$2/mkfix.sh" "$d" "$3" 坏签名
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 未判" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "一个都不在本分支 tests 改动里" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 全量 阴性③:解释器基线不符(rc=91)⇒ **未判**且行内带 ENTRY_GUARD ⛔ 写不成立" bash -c '
+  set -e; d="$2/neg3"; "$2/mkfix.sh" "$d" "Python 9.99."
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^全量: 未判" <<< "$out" || { grep "^全量" <<< "$out"; exit 1; }
+  grep -E "^全量" <<< "$out" | grep -qF "ENTRY_GUARD=interpreter_baseline_mismatch"' _ "$APF" "$APFX"
+
+t "APF 全量:「不成立」只留给 failed>0 的真红(计数可解析时)" bash -c '
+  set -e; d="$2/neg4"; "$2/mkfix.sh" "$d" "$3"
+  # 把入口换成会输出「结果:N 过 / M 败」且 M>0 的形态 ⇒ 唯一该判「不成立」的那一类
+  printf "cmd=echo \"结果:3 过 / 2 败\"; exit 1\njudge=count\n" > "$d/11b/test-entry.conf"
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev2" 2>&1)"
+  grep -qE "^全量: 不成立" <<< "$out" || { grep "^全量" <<< "$out"; exit 1; }
+  grep -E "^全量" <<< "$out" | grep -qF "真红"' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 全量:passed=0 failed=0(一个测试都没跑)⇒ **未判** ⛔ 当绿" bash -c '
+  set -e; d="$2/neg5"; "$2/mkfix.sh" "$d" "$3"
+  printf "cmd=echo \"结果:0 过 / 0 败\"; exit 0\njudge=count\n" > "$d/11b/test-entry.conf"
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev3" 2>&1)"
+  grep -qE "^全量: 未判" <<< "$out" || { grep "^全量" <<< "$out"; exit 1; }
+  grep -qF "一个测试都没跑" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+
+rm -rf "$APFX"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

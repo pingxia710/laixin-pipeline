@@ -6730,6 +6730,122 @@ t "wd_loop:M-a 判态挂在**保活闸门之前**(关闭态也照写态文件—
 t "wd_loop:M-a 判态是**子 shell 隔离**调用(#44:保命循环里裸调用会被 die 无声带死宿主)" bash -c '
   b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"
   grep -qE "^\s*\( seat_state_tick \)" <<< "$b"' _ "$LANE"
+# ── 5.3 judge-scan:判据扫描器(2026-08-29 兑现窗B;清单权威=11B raw 采集分析档 §十)────
+#   首行依据:「刚写完或刚引用某条判据的人,在下一个动作里违反它」当日 8 次 4 个主体
+#   ⇒ **判据靠人执行不可靠**。定位=**防回归**(新增位置即红)⛔ 清存量。
+#   三条硬前置(例49):每条配阴性对照 · 报告可追到位置 · 判不了显式未判。
+echo "== 8f. judge-scan:判据扫描器(J1/J2/J4/J7/J9;阳性报 · 阴性不报 · 可追到行) =="
+JSX="$(mktemp -d)"; JS="$(cd "$(dirname "$0")/.." && pwd)/bin/judge-scan"
+
+t "judge-scan J1 阳性:grep -c 不带 -a ⇒ 报,且**可追到文件与行**" bash -c '
+  set -e; d="$2/j1p"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\nn=\$(grep -c foo \"\$f\")\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J1 2>&1)" && rc=0 || rc=$?
+  grep -qF "bin/x:2" <<< "$out" || { echo "$out"; exit 1; }
+  [ "$rc" = 1 ] || { echo "有阳性时退出码应为 1,实得 $rc"; exit 2; }' _ "$JS" "$JSX"
+
+t "judge-scan J1 阴性:带 -a 的写法 · **注释行里的写法** ⇒ 不报" bash -c '
+  set -e; d="$2/j1n"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\nn=\$(grep -ac foo \"\$f\")\nm=\$(grep -a -c foo \"\$f\")\n# 反例:grep -c foo \"\$f\"\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J1 2>&1)" && rc=0 || rc=$?
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }
+  [ "$rc" = 0 ] || { echo "无阳性时退出码应为 0,实得 $rc"; exit 2; }' _ "$JS" "$JSX"
+
+t "judge-scan J2 阳性:[ -L ] 之后不核终点 ⇒ 报" bash -c '
+  set -e; d="$2/j2p"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\nif [ -L \"\$p\" ]; then\n  ok \"是软链\"\nfi\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J2 2>&1)" || true
+  grep -qF "bin/x:2" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J2 阴性:**修后 doctor §1 的写法**(核了 -f 与 -ef)⇒ 不报" bash -c '
+  # 阴性样本逐字取自清单指定的「修后」形态:核终点存在性(-f)与身份(-ef)。
+  set -e; d="$2/j2n"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\nif [ -L \"\$e/skills/\$s\" ]; then\n  if [ ! -f \"\$e/skills/\$s/SKILL.md\" ]; then\n    bad \"断链\"\n  elif [ ! \"\$e/skills/\$s/SKILL.md\" -ef \"\$H/.codex/skills/\$s/SKILL.md\" ]; then\n    bad \"非单点源\"\n  fi\nfi\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J2 2>&1)" || true
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J2 阴性-bis:核终点的代码被**注释挤出窗口**时仍不报(例49 实撞)" bash -c '
+  # 清单明训:扫描须**剔除注释行**再看窗口,否则注释会把核终点的代码挤出去 ⇒ 假阳性。
+  set -e; d="$2/j2n2"; mkdir -p "$d/bin"
+  { printf "#!/bin/bash\nif [ -L \"\$p\" ]; then\n"; for i in 1 2 3 4 5 6 7 8; do printf "  # 注释第 %s 行\n" "\$i"; done; printf "  [ -f \"\$p/SKILL.md\" ] || bad 断链\nfi\n"; } > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J2 2>&1)" || true
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J4 阳性:裸 except 之后 pass ⇒ 报" bash -c '
+  set -e; d="$2/j4p"; mkdir -p "$d/bin"
+  printf "import os\ntry:\n    os.stat(\"x\")\nexcept:\n    pass\n" > "$d/bin/y.py"
+  out="$("$1" --repo "$d" --only J4 2>&1)" || true
+  grep -qF "bin/y.py:4" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J4 阴性:①except 之后有输出 ②**带类型的 except + continue**(正常控制流)⇒ 不报" bash -c '
+  # ② 是首跑实撞的假阳性面:第一版扫所有 except,把 `except IOError: continue` 报了 4 处。
+  set -e; d="$2/j4n"; mkdir -p "$d/bin"
+  printf "import os, sys\ntry:\n    os.stat(\"x\")\nexcept Exception as e:\n    sys.stderr.write(\"读不到 %%r\\n\" %% (e,))\nfor f in []:\n    try:\n        open(f)\n    except IOError:\n        continue\n" > "$d/bin/y.py"
+  out="$("$1" --repo "$d" --only J4 2>&1)" || true
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J7 阳性:[ -d <p>/.git ] ⇒ 报(worktree 的 .git 是文件不是目录)" bash -c '
+  set -e; d="$2/j7p"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\n[ -d \"\$repo/.git\" ] || die 不是仓\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J7 2>&1)" || true
+  grep -qF "bin/x:2" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J7 阴性:git rev-parse --git-dir(既认目录也认文件)⇒ 不报" bash -c '
+  set -e; d="$2/j7n"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\ngit -C \"\$repo\" rev-parse --git-dir >/dev/null 2>&1 || die 不是仓\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J7 2>&1)" || true
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J9 阳性:tests/ 下拿 HEAD:<f> 比对作闸 ⇒ 报(**-C 带空格也要认出**)" bash -c '
+  # 首跑漏报面:真阳性那行是 `-C "$(dirname "$2")/.."`,原正则 `-C \S+` 挡住了它。
+  set -e; d="$2/j9p"; mkdir -p "$d/bin" "$d/tests"
+  printf "#!/bin/bash\ngit -C \"\$(dirname \"\$2\")/..\" show HEAD:contrib-statusline.py 2>/dev/null | diff -q - \"\$a\" >/dev/null\n" > "$d/tests/run.sh"
+  out="$("$1" --repo "$d" --only J9 2>&1)" || true
+  grep -qF "tests/run.sh:2" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J9 阴性:release 动作里 git show HEAD:<f> **写进发布目录**(取内容 ⛔ 比对)⇒ 不报" bash -c '
+  # 清单三层收窄第一层的假阳性面:同一语法写进发布目录是**正确写法**。
+  set -e; d="$2/j9n"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\ngit -C \"\$repo\" show \"HEAD:bin/laixin-lane\" > \"\$tmp\" 2>/dev/null\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J9 2>&1)" || true
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan J9 阴性-bis:bin/ 里比 HEAD 但**只作提示**(release_stale)⇒ 不报" bash -c '
+  set -e; d="$2/j9n2"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\ngit -C \"\$repo\" show \"HEAD:bin/\$b\" > \"\$c\" 2>/dev/null && cmp -s \"\$c\" \"\$f\" || _stale=0\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" --only J9 2>&1)" || true
+  grep -qF "零新增阳性" <<< "$out" || { echo "$out"; exit 1; }' _ "$JS" "$JSX"
+
+t "judge-scan 硬前置③:未实现/判不了的条目**显式列出** ⛔ 静默缺席" bash -c '
+  set -e; d="$2/j0"; mkdir -p "$d/bin"; printf "#!/bin/bash\ntrue\n" > "$d/bin/x"
+  out="$("$1" --repo "$d" 2>&1)" || true
+  grep -qF "未判 / 本批未实现" <<< "$out" || { echo "$out"; exit 1; }
+  for j in J3 J5 J6 J8; do grep -qF "  $j " <<< "$out" || { echo "缺 $j 的未判行"; exit 2; }; done
+  grep -qF "judge-scan\` **自己不在射程**" <<< "$out" || { echo "未写出自排除这条射程缺口"; exit 3; }' _ "$JS" "$JSX"
+
+t "judge-scan 射程判不出 ⇒ 显式报错并 exit 2 ⛔ 静默扫空射程出「零阳性」" bash -c '
+  set -e; d="$2/empty"; mkdir -p "$d"
+  out="$("$1" --repo "$d" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" = 2 ] || { echo "应 exit 2,实得 $rc"; exit 1; }
+  grep -qF "与「真的零阳性」完全同形" <<< "$out" || { echo "$out"; exit 2; }' _ "$JS" "$JSX"
+
+t "judge-scan 基线闸:已知存量放行、**新增即红**(防回归的判据本身)" bash -c '
+  set -e; d="$2/base"; mkdir -p "$d/bin"
+  printf "#!/bin/bash\nn=\$(grep -c foo \"\$f\")\n" > "$d/bin/x"
+  "$1" --repo "$d" --only J1 --write-baseline > "$d/base.txt"
+  out="$("$1" --repo "$d" --only J1 --baseline "$d/base.txt" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" = 0 ] || { echo "存量应被基线放行,实得 rc=$rc:$out"; exit 1; }
+  printf "m=\$(grep -c bar \"\$g\")\n" >> "$d/bin/x"
+  out2="$("$1" --repo "$d" --only J1 --baseline "$d/base.txt" 2>&1)" && rc2=0 || rc2=$?
+  [ "$rc2" = 1 ] || { echo "新增应变红,实得 rc=$rc2:$out2"; exit 2; }
+  grep -qF "bin/x:3" <<< "$out2" || { echo "新增未追到行:$out2"; exit 3; }' _ "$JS" "$JSX"
+
+t "judge-scan 真仓闸:射程内**零新增阳性**(基线放行已知存量;新代码再犯即红)" bash -c '
+  set -e; repo="$(cd "$(dirname "$0")/.." && pwd)"
+  out="$("$1" --repo "$repo" --baseline "$repo/tests/judge-scan-baseline.txt" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" = 0 ] || { echo "$out"; exit 1; }' _ "$JS"
+
+rm -rf "$JSX"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

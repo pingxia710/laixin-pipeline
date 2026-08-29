@@ -5180,12 +5180,24 @@ seat_state_judge(){  # <A串> <B串> <C串> → stdout "state=<态>|why=<理由>
   nsess="$(sed -E 's/.*(^| )nsess=([^ ]*).*/\2/' <<< "$c")"
   local gate="${SEAT_GATE_HARD:-75}" stale="${SEAT_HB_STALE:-2700}"
   # ── 三路交叉:A 面近期 dispatch 数 与 C 面会话数 对不上 ⇒ 继任可能住在别处 ⇒ **不动手**
+  # ⛔ **拿 A 的 n 与 C 的 nsess 比相等**(2026-08-29 发布后真机实撞,本片自己的缺陷):
+  #   两者量的**不是同一种东西** —— A 的 n 数「最近 stale 秒内动过的 transcript」,其中**包含已结束
+  #   会话留下的那一份**;C 数「当刻活着的会话」。⇒ 每次正常交接之后,前任 transcript 还新鲜而
+  #   会话已结束,两个数必然不等,于是**恒定假报 45 分钟的「三路不一致」**。
+  #   实撞读数:交接后 33 分钟,A=2(919d492c 龄 0s 活 · 285bf9cc 龄 1995s 已结束)而 C=1,
+  #   同刻 tmux 只有一个 dispatch 窗、也确实只有一个派工角色 —— 不一致是判据造出来的,不是现实。
+  #   ⚠️ 这条错的方向尤其坏:mismatch 会**拦住 M-b 自愈**(片②),等于每次交接后自愈静默失效 45 分钟。
+  # ⇒ 只留**真正可比**的两条,各自都是「读到了假的」的具体形态:
   local mismatch=""
-  if [[ "$an" =~ ^[0-9]+$ ]] && [[ "$nsess" =~ ^[0-9]+$ ]] && [ "$an" -ne "$nsess" ]; then
-    mismatch="A路近期 dispatch transcript ${an} 个 ≠ C路会话面 dispatch ${nsess} 个"
-  fi
   if [[ "$nsess" =~ ^[0-9]+$ ]] && [ "$nsess" -gt 1 ] && [ "$drain" = "—" ]; then
-    mismatch="${mismatch:+$mismatch;}C路会话面有 ${nsess} 个 dispatch 而 B路 tmux 无排空窗(继任可能在别的会话面/别的 tmux)"
+    # ① 会话面有第二个派工角色,而 tmux 面看不到排空窗 ⇒ 继任可能住在别的 tmux/别的会话面
+    #    (:967 正形:B 判「无继任」而 C 看得见)
+    mismatch="C路会话面有 ${nsess} 个 dispatch 而 B路 tmux 无排空窗(继任可能在别的会话面/别的 tmux)"
+  fi
+  if [[ "$nsess" =~ ^[0-9]+$ ]] && [ "$nsess" -eq 0 ] && [[ "$ndisp" =~ ^[0-9]+$ ]] && [ "$ndisp" -ge 1 ]; then
+    # ② tmux 上有 dispatch 窗,而会话面**一个 dispatch 会话都没有** ⇒ 窗还在但里面已经不是它了
+    #    (空壳窗:此前有过「空壳窗把 dispatch_alive 骗过、自愈被堵 1.5 小时」的实撞)
+    mismatch="${mismatch:+$mismatch;}B路 tmux 有 ${ndisp} 个 dispatch 窗而 C路会话面 0 个 dispatch 会话(空壳窗?)"
   fi
   # ── ① A 路读不出 ⇒ 未判(⛔ 归在班 ⛔ 归缺)
   if [ -n "$why" ]; then printf 'state=未判|why=%s|mismatch=%s\n' "$why" "$mismatch"; return 0; fi

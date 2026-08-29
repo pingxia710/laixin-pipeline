@@ -6419,9 +6419,22 @@ t "M-a 不一致:C 路会话面 2 个 dispatch 而 B 路无排空窗 ⇒ mismatc
   source "$1/judge.sh"; o="$(seat_state_judge "ctx=83.7 hb=5 n=2 sid=s1 why=" "$2" "nsess=2")"
   m="${o##*|mismatch=}"; [ -n "$m" ] && grep -q "别的会话面" <<< "$m"' _ "$T24" "$B_OK"
 
-t "M-a 不一致:A 面近期 dispatch 数 ≠ C 面会话数 ⇒ 点名是哪两路对不上" bash -c '
-  source "$1/judge.sh"; o="$(seat_state_judge "ctx=30.0 hb=5 n=1 sid=s1 why=" "$2" "nsess=3")"
-  grep -q "A路近期 dispatch transcript 1 个 ≠ C路会话面 dispatch 3 个" <<< "$o"' _ "$T24" "$B_OK"
+# 🔴 阴性:**交接刚做完**的真形态(2026-08-29 发布后真机实撞,原判据在这里假报了 45 分钟)——
+#   A 的 n 数「最近 stale 秒内动过的 transcript」含**已结束会话**那一份,C 数「当刻活会话」,
+#   两者量的不是同一种东西 ⇒ ⛔ 拿它们比相等。实撞读数:A=2(919d492c 龄 0s 活 · 285bf9cc 龄 1995s 已结束)
+#   而 C=1,同刻 tmux 只有一个 dispatch 窗、确实只有一个派工角色。
+#   ⚠️ 错的方向尤其坏:mismatch 会拦住 M-b 自愈 ⇒ 等于每次交接后自愈静默失效 45 分钟。
+t "M-a 阴性:交接刚做完(A 面 2 份 transcript · C 面 1 个活会话)⇒ **⛔ 报不一致**" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=30.0 hb=5 n=2 sid=s1 why=" "$2" "nsess=1")"
+  m="${o##*|mismatch=}"; [ -z "$m" ]' _ "$T24" "$B_OK"
+
+t "M-a 不一致②:tmux 有 dispatch 窗而会话面 0 个 dispatch 会话 ⇒ 点名空壳窗" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=30.0 hb=5 n=1 sid=s1 why=" "$2" "nsess=0")"
+  grep -q "空壳窗" <<< "$o"' _ "$T24" "$B_OK"
+
+t "M-a 阴性:会话面 0 个且 tmux 也没有 dispatch 窗 ⇒ ⛔ 报空壳窗(那是「缺」⛔ 不一致)" bash -c '
+  source "$1/judge.sh"; o="$(seat_state_judge "ctx=30.0 hb=5 n=1 sid=s1 why=" "holder=dispatch lockage=20 drain=— ndisp=0" "nsess=0")"
+  ! grep -q "空壳窗" <<< "$o"' _ "$T24"
 
 t "M-a 交接期零误报(真机 16:55 样本:n=2 · nsess=2 · drain 在)⇒ 在班且 mismatch 空" bash -c '
   source "$1/judge.sh"

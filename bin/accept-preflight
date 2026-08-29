@@ -162,7 +162,20 @@ say "基点: $r_base — $d_base"
 say "全量: $r_full — $d_full"
 say "硬边界: $r_edge — $d_edge"
 say "绊线: $r_trip — $d_trip"
-say "证据: $EVID/full.log · $EVID/diff.stat · $EVID/diff.files · $EVID/worktree.log"
+# 证据行 ⛔ 无条件列出:diff.files 仅在 risk-tiers.conf 存在时才写(见 ③),
+# full.log 仅在 worktree 建起来时才写(见 ②)。无条件列 ⇒ 事实单指向一个不存在的文件,
+# 而「本次没产出该证据」与「证据被删了」在该行上同形 —— 正是本单其余各行极力避免的那种同形。
+_ev=""; _ev_absent=""
+for _f in full.log diff.stat diff.files worktree.log; do
+  if [ -f "$EVID/$_f" ]; then
+    [ -n "$_ev" ] && _ev="$_ev · "
+    _ev="$_ev$EVID/$_f"
+  else
+    _ev_absent="$_ev_absent $_f"
+  fi
+done
+say "证据: ${_ev:-(本次零证据文件)}"
+[ -n "$_ev_absent" ] && say "本次未生成:$_ev_absent(⛔ 读成被删——缺因见上方对应行的未判理由)"
 say ""
 say "⚠️ 影子运行:本单 ⛔ 算替代 ⛔ 删验收窗动作;任一行「未判」须由验收窗自判并写进回执。"
 say "【验收事实单】$SLICE $CAND $BASE"

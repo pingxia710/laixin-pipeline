@@ -16,8 +16,8 @@ import json
 import sys
 
 # ── 交班闸门(与 laixin-lane ctx 保持一致;改这里要同步改那边)────────────
-GATE_HARD = 75   # 硬闸门:立刻写状态 → 写交接包 → 起新窗口
-GATE_WARN = 65   # 预备区:开始准备交接
+GATE_HARD = 75   # 硬口:继任必须已起；前任继续排空在手
+GATE_WARN = 70   # 起交接:新活归继任，前任不弃在手
 
 R = "\033[0m"
 DIM = "\033[2m"
@@ -65,9 +65,9 @@ def main():
         filled = max(0, min(10, int(pct // 10)))
         bar = "▓" * filled + "░" * (10 - filled)
         if pct >= GATE_HARD:
-            color, tail = RED, "  ⛔ 硬闸门:写交接包→起新窗口"
+            color, tail = RED, "  ⛔ 继任须已起；本窗只排空在手"
         elif pct >= GATE_WARN:
-            color, tail = YELLOW, "  ⚠ 进入交接准备区"
+            color, tail = YELLOW, "  ⚠ 起交接；新活归继任"
         else:
             color, tail = GREEN, ""
         # 2026-08-23 双阈(与 bin/laixin-lane ctx_abs_min 同读单点源:env LAIXIN_CTX_ABS_MIN > ~/.laixin-lane-switch/ctx-abs-min;无值=提示态,这里不加噪)

@@ -3017,12 +3017,12 @@ t "ctx:ctx_watch_tick 函数保留但 ⛔ 被任何地方调用(留作说明,⛔
   bash -c 'grep -qF "ctx_watch_tick()" "'"$LANE"'" && [ "$(grep -v "^[[:space:]]*#" "'"$LANE"'" | grep -c "ctx_watch_tick")" = 1 ]'
 # ⭐ 2026-08-22 16:43 dispatch 换回并锁定 claude 后,wd_loop 0.7 段必须**写明「引擎换回不是恢复巡检的理由」**——
 #   否则下一任读到「撤因=dispatch 是 codex」会顺手把巡检接回去(引擎换了、纪律跟着换错方向,是同一族失效)。
-t "ctx:wd_loop 0.7 段已写明 dispatch 换回 claude 后仍不恢复巡检(statusline 65/75 已在当事人眼前)" \
+t "ctx:wd_loop 0.7 段已写明 dispatch 换回 claude 后仍不恢复巡检(statusline 70/75 已在当事人眼前)" \
   bash -c 'sed -n "/^wd_loop()/,/^}/p" "'"$LANE"'" | grep -qF "引擎换回不是恢复巡检的理由"'
 # ⭐ AGENTS.md「双真相源」条的机器化(立规先问机器化):contrib-statusline.py 的闸门线与 cmd_ctx claude 分支必须同步。
 #   2026-08-22 实撞:bash 侧 07f59d2 上调 65/75,contrib 副本仍 55/70,AGENTS.md 原文也还写着 70/55——三处两真相。
-t "statusline 双真相源:contrib-statusline.py 闸门线与 cmd_ctx 一致(75/65)" bash -c \
-  'c="$(dirname "$1")/../contrib-statusline.py"; grep -q "^GATE_HARD = 75" "$c" && grep -q "^GATE_WARN = 65" "$c" && b="$(sed -n "/^cmd_ctx()/,/^}/p" "$1")" && grep -q "pct>=75" <<< "$b" && grep -q "pct>=65" <<< "$b"' _ "$LANE"
+t "statusline 双真相源:contrib-statusline.py 闸门线与 cmd_ctx 一致(75/70)" bash -c \
+  'c="$(dirname "$1")/../contrib-statusline.py"; grep -q "^GATE_HARD = 75" "$c" && grep -q "^GATE_WARN = 70" "$c" && b="$(sed -n "/^cmd_ctx()/,/^}/p" "$1")" && grep -q "pct>=75" <<< "$b" && grep -q "pct>=70" <<< "$b"' _ "$LANE"
 
 # ── 看门狗反向守护:自愈链的根不许是单点(2026-08-22 生产级)──────────────────────
 # 盘点时发现:wd 管 ev/relay/dispatch,而 wd 自己死了**没有任何东西管它**;两个 launchd 项
@@ -3310,7 +3310,7 @@ tout "通道:双通道各有对象=软切换正常态 ⛔ 判错" "软切换态"
   source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b relay\n4 /b outside\n" | channel_verdict'
 t "通道:软切换态 rc=0(⛔ 把正常切换报成故障)" bash -c '
   source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b relay\n4 /b outside\n" | channel_verdict >/dev/null'
-tout "通道:两通道同时有 dispatch 判危险(派工唯一)" "两个派工窗口同时活着" bash -c '
+tout "通道:两通道同时有 dispatch 判危险(新活派工权唯一)" "新活派工权唯一" bash -c '
   source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b dispatch\n4 /b outside\n" | channel_verdict'
 tout "通道:孤儿席位判危险(跨通道发不到,无可通信对象)" "孤儿" bash -c '
   source "'"$VCHF"'"; printf "1 /a dispatch\n2 /a outside\n3 /b relay\n" | channel_verdict'
@@ -3898,12 +3898,40 @@ t "account-switch --dry:两个目标里恰一个打印四步计划、另一个�
   grep -q "已在目标通道" <<< "$a$b" || exit 2
   grep -qE "① 开关.*② 方案窗口.*③ dispatch|① 开关" <<< "$a$b" && grep -q "\[dry\] 以上为计划" <<< "$a$b" &&
   [ "$(cat "$SW/claude-launcher")" = claude-b ]' _ "$TQ" "$LANE"
-t "account-switch:写开关后同步本进程 CLAUDE_LAUNCHER(否则 cmd_dispatch 用旧入口起新窗);收班令→等收班条→--fresh 顺序;收班令含交接包/⛔ 接新活/跨通道" bash -c '
+t "account-switch:写开关后同步本进程 CLAUDE_LAUNCHER;在班 dispatch 走 --handover，⛔ 等收班条后 --fresh" bash -c '
   b="$(sed -n "/^cmd_account_switch()/,/^}$/p" "$1")"
   grep -qF "echo \"\$to\" > \"\$sw\"; CLAUDE_LAUNCHER=\"\$to\"" <<< "$b" || { echo "未同步变量"; exit 1; }
-  s1=$(grep -n "echo \"\$to\" > \"\$sw\"" <<< "$b" | head -1 | cut -d: -f1); s2=$(grep -n "cmd_dmsg --from" <<< "$b" | head -1 | cut -d: -f1); s3=$(grep -n "收班|交班|换班) dispatch" <<< "$b" | head -1 | cut -d: -f1); s4=$(grep -n "d_out=\"\$(cmd_dispatch --fresh" <<< "$b" | head -1 | cut -d: -f1)
-  [ -n "$s1" ] && [ -n "$s2" ] && [ -n "$s3" ] && [ -n "$s4" ] && [ "$s1" -lt "$s2" ] && [ "$s2" -lt "$s3" ] && [ "$s3" -lt "$s4" ] || { echo "顺序 $s1 $s2 $s3 $s4"; exit 2; }
-  for k in "交接包" "⛔ 接新活" "跨通道 SendMessage" "收班条"; do grep -qF "$k" <<< "$b" || { echo "缺 $k"; exit 3; }; done' _ "$LANE"
+  s1=$(grep -nF "echo \"\$to\" > \"\$sw\"" <<< "$b" | head -1 | cut -d: -f1); s2=$(grep -nF "d_out=\"\$(cmd_dispatch --handover" <<< "$b" | head -1 | cut -d: -f1)
+  [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" -lt "$s2" ] || { echo "顺序 $s1 $s2"; exit 2; }
+  ! grep -q "cmd_dmsg --from" <<< "$b" && ! grep -q "sleep 20" <<< "$b" &&
+  grep -q "继任 dispatch 已起" <<< "$b" && grep -q "前任未被回收" <<< "$b"' _ "$LANE"
+t "dispatch 交接:成功路径先通知前任、改排空名，再起继任；新活/旧活分权明文" bash -c '
+  T="$(mktemp -d)"; sed -n "/^cmd_dispatch_handover()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
+  DISPATCH_WIN=dispatch; SESSION=x; CLAUDE_LAUNCHER=claude; HOME="$T"; TRACE="$T/trace"
+  dispatch_alive(){ return 0; }; dispatch_drain_window(){ return 0; }; ev_deliver(){ echo "event:$*" >> "$TRACE"; }
+  tmux(){ echo "tmux:$*" >> "$TRACE"; return 0; }; cmd_dispatch(){ echo "dispatch:$*" >> "$TRACE"; echo "继任已起"; }
+  board(){ echo "board:$*" >> "$TRACE"; }; caller_src(){ echo test; }; die(){ echo "$*" >&2; exit 1; }
+  out="$(cmd_dispatch_handover /tmp/work)" || exit 1
+  grep -q "event:消息" "$TRACE" && grep -q "rename-window.*dispatch-drain-" "$TRACE" && grep -q "dispatch:--fresh --dir /tmp/work" "$TRACE" &&
+  grep -q "dispatch 接新活" <<< "$out" && grep -q "盯完旧活" <<< "$out"
+  rc=$?; rm -rf "$T"; exit $rc' _ "$LANE"
+t "dispatch 交接:继任起窗失败必须杀半窗、恢复旧 dispatch 与派工权" bash -c '
+  T="$(mktemp -d)"; sed -n "/^cmd_dispatch_handover()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
+  DISPATCH_WIN=dispatch; SESSION=x; CLAUDE_LAUNCHER=claude; HOME="$T"; TRACE="$T/trace"
+  dispatch_alive(){ return 0; }; dispatch_drain_window(){ return 0; }; ev_deliver(){ :; }
+  tmux(){ echo "tmux:$*" >> "$TRACE"; return 0; }; cmd_dispatch(){ return 9; }; win_exists(){ return 0; }
+  lock_renew(){ echo "lock:$*" >> "$TRACE"; }; board(){ echo "board:$*" >> "$TRACE"; }; caller_src(){ echo test; }; die(){ echo "$*" >&2; exit 1; }
+  ( cmd_dispatch_handover /tmp/work ) >/dev/null 2>&1; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "kill-window.*:dispatch" "$TRACE" && grep -q "rename-window.*dispatch-drain-.* dispatch" "$TRACE" && grep -q "lock:dispatch" "$TRACE"
+  ok=$?; rm -rf "$T"; exit $ok' _ "$LANE"
+t "排空窗 send:继任在班且持权时可收尾旧活，但不夺锁；继任不在则拒绝" bash -c '
+  T="$(mktemp -d)"; sed -n "/^lock_touch_send()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
+  DISPATCH_WIN=dispatch; BAD="$T/bad"; whoami_window(){ echo dispatch-drain-1; }; lock_holder(){ echo dispatch; }; lock_write(){ touch "$BAD"; }; die(){ return 7; }
+  dispatch_alive(){ return 0; }; lock_touch_send || exit 1; [ ! -e "$BAD" ] || exit 2
+  dispatch_alive(){ return 1; }; lock_touch_send >/dev/null 2>&1; [ $? -ne 0 ]; rc=$?; rm -rf "$T"; exit $rc' _ "$LANE"
+t "交接期事件:事实旁路排空窗，主动消息只给继任" bash -c '
+  e="$(sed -n "/^ev_deliver()/,/^}$/p" "$1")"
+  grep -q "dispatch_drain_window" <<< "$e" && grep -qF "[ \"\$kind\" != \"消息\" ]" <<< "$e" && grep -q "交接期旁路" <<< "$e"' _ "$LANE"
 t "account-switch ⛔ 被看门狗/events 调用(只许人手跑)+ 帮助与分发齐全" bash -c '
   w="$(sed -n "/^wd_loop()/,/^}$/p" "$1")"; e="$(sed -n "/^ev_loop()/,/^}$/p" "$1")"
   ! grep -q "cmd_account_switch" <<< "$w" && ! grep -q "cmd_account_switch" <<< "$e" &&
@@ -4427,6 +4455,15 @@ t "#158-bis ctx_seat_tokens:未知席位 ⇒ 空且退 1(失效降级 ⛔ 填 0)
 t "#158-bis ctx_seat_tokens:空参数即退 1" bash -c '
   T="$(mktemp -d)"; sed -n "/^ctx_seat_tokens()/,/^}$/p" "'"$LANE"'" > "$T/f.sh"
   source "$T/f.sh"; ! ctx_seat_tokens "" >/dev/null 2>&1; rc=$?; rm -rf "$T"; [ "$rc" -eq 0 ]'
+t "#158-bis ctx_seat_tokens:交接期两个会话同名 dispatch 时按 tmux 席位 PID 取继任" bash -c '
+  T="$(mktemp -d)"; mkdir -p "$T/.claude-official/sessions" "$T/.claude-official/projects/-Users-pingxia"
+  sed -n "/^ctx_seat_tokens()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
+  printf "%s\n" '\''{"name":"dispatch","sessionId":"oldold11-session"}'\'' > "$T/.claude-official/sessions/111.json"
+  printf "%s\n" '\''{"name":"dispatch","sessionId":"newnew22-session"}'\'' > "$T/.claude-official/sessions/222.json"
+  printf "%s\n" '\''{"message":{"usage":{"input_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'\'' > "$T/.claude-official/projects/-Users-pingxia/oldold11.jsonl"
+  printf "%s\n" '\''{"message":{"usage":{"input_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'\'' > "$T/.claude-official/projects/-Users-pingxia/newnew22.jsonl"
+  session_seats(){ echo "222 $T/.claude-official dispatch"; }
+  out="$(HOME="$T" ctx_seat_tokens dispatch)"; rc=$?; rm -rf "$T"; [ "$rc" -eq 0 ] && [ "$out" = 200 ]' _ "$LANE"
 t "#158-bis 采样行第 5 列=席位自身耗量(读不到落 ?,⛔ 落 0)" bash -c '
   seg="$(sed -n "/^ctx_sample_scan()/,/^}$/p" "'"$LANE"'")"
   grep -q "ctx_seat_tokens dispatch" <<< "$seg" && grep -q "\${seat:-?}" <<< "$seg"'

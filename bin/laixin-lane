@@ -80,13 +80,15 @@
 #   laixin-lane channel-of <会话名>  它在哪个 CC 通道(配置目录)与账号;查不到即说查不到 ⛔ 猜
 #   laixin-lane quota                  两账号额度 + 派工席所在账号 + 哨兵线(仪表盘读不到即说读不到 ⛔ 读成充裕)
 #   laixin-lane quota-tick             手动让额度哨兵跑一拍(演练/换阈值后验证;LAIXIN_BOARD 可指向沙盒看板)
-#   laixin-lane account-switch --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force]
-#                                    按剧本切账号(2026-08-23 机器化):①写开关 ②方案窗口半边给人 ③dispatch 收班令→等收班条→--fresh 新账号
+#   laixin-lane account-switch --to <claude|claude-b> [--dry]
+#                                    按剧本切账号:①写开关 ②方案窗口半边给人 ③dispatch --handover 起继任、前任排空
 #                                    ④relay 托管中则跟走。看门狗额度哨兵到 96%/98% 只提醒(WD 日志+看板+桌面通知)⛔ 自动切。
+#   laixin-lane dispatch --handover  起派工继任；旧 dispatch 改为排空窗继续盯完在手，新活只归继任
+#   laixin-lane dispatch-drain-down --complete  排空窗确认在手与优化轮均完成后自收
 #   laixin-lane handover-mode <继任> <前任>  交班形态:同账号正常交班 or 跨账号(判不了会直说)
 #   laixin-lane whoholds             谁当前持有派工权
 #   laixin-lane wip-save [--dir DIR] 丢弃前先固化:git diff 落带时间戳补丁(持久目录)+反向校验保真后回显路径
-#   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比。claude:≥75% 是交班硬闸门
+#   laixin-lane ctx [--engine claude|codex] [会话id前缀]  当前上下文占比。claude:70–75% 起交接，旧窗继续排空
 #                                    (自我感知会低估 15-25 个点);**codex:⛔ 换班判据**——它自带翻页。
 #                                    #67③:codex 引擎必须显式 --engine codex,否则读到的是 claude 会话的数(别人的)
 #   laixin-lane evidence [片名]      看验收留下的证据文件(回执里的数字须能在此 grep 到)
@@ -291,6 +293,7 @@ seat_src_infer(){  # tmux 窗口名 → 角色名;推不出则空。⛔ 依赖�
   local w; w="$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || true)"
   case "$w" in
     dispatch)  echo "派工窗口" ;;
+    dispatch-drain-*) echo "派工窗口(排空)" ;;
     opt-11b)   echo "11B优化窗" ;;
     tool-*)    echo "11B工具窗" ;;
     relay)     echo "中继窗口" ;;
@@ -746,7 +749,7 @@ cmd_send() {
   if native_print_active "$_native_root"; then
     native_print_resume "$(win "$lane")" "$_native_root" "$text" \
       || die "$(win "$lane") print 续轮失败；native 账保留，回退请 fresh $lane --transport tui"
-    lock_write
+    lock_touch_send
     local _native_head; _native_head="$(echo "$text" | head -1 | cut -c1-80)"
     board "lane-$lane" "← 收到:${_native_head}"
     echo "已发送到 $(win "$lane")(${_native_head}…)"
@@ -762,7 +765,7 @@ cmd_send() {
   tmux delete-buffer -b laixin-msg
   sleep 0.4
   tmux send-keys -t "$(target "$lane")" C-m
-  lock_write   # 派工即续期:动 lane 的那个窗口就是派工窗口
+  lock_touch_send   # 继任续权；交接排空窗可收尾旧活但不得夺走新活派工权
   local head1; head1="$(echo "$text" | head -1 | cut -c1-80)"
   board "lane-$lane" "← 收到:${head1}"
   echo "已发送到 $(win "$lane")(${head1}…)"
@@ -973,21 +976,21 @@ pct=cur/win*100
 pct=round(pct,1)
 bar="█"*int(pct//5)+"░"*(20-int(pct//5))
 print(f"会话 {os.path.basename(f)[:8]}… [{chan(f)}]  {bar}  {pct:.1f}%   ({cur:,} / {win:,})")
-# ⚠️ 闸门线双真相源:此处 75/65 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
+# ⚠️ 闸门线双真相源:此处 75/70 与 ~/.claude-official/statusline.py 的 GATE_HARD/GATE_WARN
 # 必须同步(一个 bash 一个 python,跨语言共用常量的代价大于收益)。改一处就改另一处。
-# 🔴 2026-08-26 第三十四任标注:75/65 两个数是**约定 ⛔ 实测** —— 同文件里别的阈值标了出处
+# 🔴 2026-08-26 第三十四任标注:75/70 两个数是**约定 ⛔ 实测** —— 同文件里别的阈值标了出处
 #   (如 EV_ACK 45min「30-60 区间中值,方案 log:29」),这两个数一处出处都没有。
 #   条文层权威位=知识库 4-开发层/来信平台-开发协作流程.md「换班闸门判据」节(2026-08-26 立)。
-#   ⚠️ ≥75 硬闸门不动(上下文压缩会丢信息,机理为真);改的只是 65-75 那一档的处置方式。
-if   pct>=75: print("🔴 ≥75% 硬闸门:立刻写状态 → 写交接包 → 请看门狗起新窗口 → 确认接管后收工")
-elif pct>=65: print("🟡 65-75%:按件判 ⛔ 一刀切——问「这件有无『失败形态与当前状态匹配』的判断项」;有→拆该项交余量足的窗口、其余照做;无→照接")
-else:         print("🟢 <65%:正常工作区间")
+#   2026-08-29 创始人改判:70–75% 是起交接区间,75% 是继任必须已起的硬口;两者都**不是前任弃件线**。
+if   pct>=75: print("🔴 ≥75% 起交接硬口:继任未起就运行 laixin-lane dispatch --handover;前任只收尾在手、⛔ 接新活,ctx 超出属正常")
+elif pct>=70: print("🟡 70-75% 起交接区间:运行 laixin-lane dispatch --handover;前任盯完在手,新活归继任")
+else:         print("🟢 <70%:正常工作区间")
 # 2026-08-23 双阈(方案窗口第二十三任裁):占比仍是主判据;绝对余量下限叠加——有值(env LAIXIN_CTX_ABS_MIN > 开关文件 ctx-abs-min)即硬阈,无值=提示态
 rem=win-cur; absmin=(os.environ.get("CTX_ABS_MIN") or "").strip()
 if absmin.isdigit() and int(absmin)>0:
     a=int(absmin)
-    if rem<a: print(f"🔴 绝对余量 {rem:,} < 下限 {a:,}(实测交接包成本×1.5)——与占比并列的硬闸门:交班")
-    elif rem<2*a: print(f"🟡 绝对余量 {rem:,} 已不足下限的两倍({a:,}×2)——进入交班准备区")
+    if rem<a: print(f"🔴 绝对余量 {rem:,} < 下限 {a:,}(实测交接包成本×1.5)——与占比并列:立即起继任,前任继续排空")
+    elif rem<2*a: print(f"🟡 绝对余量 {rem:,} 已不足下限的两倍({a:,}×2)——进入起交接区")
     else: print(f"ℹ️ 绝对余量 {rem:,} tokens(下限 {a:,})")
 else:
     print(f"ℹ️ 绝对余量 {rem:,} tokens——下限**待实测校准,当前仅提示**(ev-loop 在 dispatch 交班→接班区间自动采样上看板;首次实测×1.5 写 ~/.laixin-lane-switch/ctx-abs-min 即成硬阈)")
@@ -999,7 +1002,7 @@ PY
 cmd_ctx_codex(){  # <会话id前缀,可空> —— codex 引擎的 ctx 读数(#67③)
   # 分母**取自会话文件自带的 model_context_window**(实测 0.147.0 写在 event_msg/token_count 的
   # info 里)⇒ 换模型自动跟随,⛔ 再维护一份 LAIXIN_CTX_WINDOW 那样的手改分母(那正是「双真相源」)。
-  # 闸门线 75/65 与 claude 分支共用同一组数字(改一处就改另一处,同上面那条双真相源注)。
+  # 闸门线 75/70 与 claude 分支共用同一组数字(改一处就改另一处,同上面那条双真相源注)。
   local root="${LAIXIN_CODEX_SESSIONS:-$HOME/.codex/sessions}"
   python3 - "$root" "${1:-}" <<'PY'
 import json,os,sys,glob,time
@@ -1059,7 +1062,7 @@ print(f"会话 {os.path.basename(f)[8:41]}…  {bar}  {pct:.1f}%   ({cur:,} / {w
 #   实证:dispatch 同一会话 #49 到 86.3%、#50 归零自行翻页,继续干活未换人。
 #   ⇒ 这个数只说明「离自动翻页还有多远」,⛔ 构成换班判据。claude 分支不受此影响(它没有翻页机制)。
 if   pct>=75: print("🔴 接近上限:codex 将自行开新 context window(notes/history 跨窗口保留)")
-elif pct>=65: print("🟡 填充中:离自动翻页尚有余量")
+elif pct>=70: print("🟡 填充中:离自动翻页尚有余量")
 else:         print("🟢 当前 context window 宽裕")
 print("🔴 本数**不是换班判据**——codex 满了自己翻页,换班看片数/行为信号/错误信号(卡纪律四轨②③④)。")
 print("注:引擎=codex;已用取 last_token_usage.total_tokens,分母取会话自带的 model_context_window")
@@ -1610,6 +1613,8 @@ cmd_halt() {  # 一键停三件套(lanes 与 verify-* 不动——它们各自�
   win_exists "$WATCHDOG_WIN" && { tmux kill-window -t "=$SESSION:$WATCHDOG_WIN"; stopped="$stopped watchdog"; }
   win_exists "$EV_WIN"       && { tmux kill-window -t "=$SESSION:$EV_WIN"; stopped="$stopped events"; }
   if dispatch_alive; then tmux kill-window -t "=$SESSION:$DISPATCH_WIN"; cdp_sweep "$DISPATCH_CDP_PORT"; stopped="$stopped dispatch"; fi
+  local _drain; _drain="$(dispatch_drain_window)"
+  if [ -n "$_drain" ]; then tmux kill-window -t "=$SESSION:$_drain"; stopped="$stopped $_drain"; fi
   # #32 收尾(中继裁定):relay 随三件套一起停——暂停期不发新片即无裁定缺口,中继席位没有活。
   # ⚠️ **只收窗口,⛔ 清托管标记**:halt 是「暂停」,relay-down 才是「关闭托管」。标记留着,
   #   resurrect --full 才能把中继席位一并恢复;若这里顺手 rm 标记,halt→resurrect 会**静默少起一个窗口**
@@ -2410,7 +2415,7 @@ cmd_doctor() {
     else wrn "派工窗口未托管(看门狗无法重生它;手开的窗口它管不着)"; fi
     local outn; outn="$(outside_sessions)"
     if [ "$outn" -le 1 ]; then ok "tmux 外活跃 claude 会话:$outn(方案窗口)"
-    else wrn "tmux 外有 $outn 个活跃 claude 会话——**绝不允许两个派工窗口同时活着**,起托管窗口前先确认它们已收工"; fi
+    else wrn "tmux 外有 $outn 个活跃 claude 会话——确认没有第二个**新活派工权**窗口；dispatch-drain-* 排空窗应在 tmux 内且不计入此数"; fi
     if wd_alive; then ok "看门狗运行中(进程判活)"
       # #50:代龄比对的通过态要可见——grep 零命中曾被读成「doctor 没有这项检查」(#46 镜像误登记的祸根)
       if loop_stale wd-loop; then wrn "看门狗循环代龄落后(脚本比循环新,修复未生效)——watchdog stop && start 换代(#20⑥)"
@@ -3571,6 +3576,25 @@ ev_deliver(){  # <类型> <文本> —— 投递进派工窗口;不在时:交付
       local _sm _src; _sm="$(inject_settle "=$SESSION:$DISPATCH_WIN" "$text" "$_fe" "$_be" laixin-ev "事件投递[$kind]" 2>&1)"; _src=$?
       [ "$_src" -ne 0 ] && ev_log "落地校验[$kind] $(head -1 <<< "$_sm")"
     fi
+    # 交接期前任仍负责起交接时已在手的活。没有稳定片→窗 ownership 键前，事实事件旁路一份给
+    # 唯一排空窗，并显式提醒只处理自己的在手件；主动 dmsg 仍只给继任，避免把新安排交回前任。
+    local _dw; _dw="$(dispatch_drain_window)"
+    if [ -n "$_dw" ] && [ "$kind" != "消息" ]; then
+      local _dt _dfe _dbe _dsm _drc
+      _dt="【交接期旁路】新活归继任；你只处理起交接时已在手的事件，非你的在手件忽略。
+${text}"
+      _dfe="$(printf '%s' "$_dt" | inject_features)"; _dbe="$(inject_count_max "=$SESSION:$_dw" "$_dfe" || true)"
+      printf '%s' "$_dt" | tmux load-buffer -b laixin-drain-ev -
+      tmux paste-buffer -p -b laixin-drain-ev -t "=$SESSION:$_dw"
+      tmux delete-buffer -b laixin-drain-ev
+      sleep 0.4; tmux send-keys -t "=$SESSION:$_dw" C-m
+      ev_log "旁路[$kind]→$_dw $(echo "$text" | head -1)"
+      if [ -n "${_dfe:-}" ] && [ -n "${_dbe:-}" ]; then
+        sleep 1
+        _dsm="$(inject_settle "=$SESSION:$_dw" "$_dt" "$_dfe" "$_dbe" laixin-drain-ev "交接旁路[$kind]" 2>&1)"; _drc=$?
+        [ "$_drc" -ne 0 ] && ev_log "旁路落地校验[$kind] $(head -1 <<< "$_dsm")"
+      fi
+    fi
     # #60①:回执 ⛔ 进 M1 台账——M1 的销账判据是「该片 verify-* 窗口存在」,而回执落盘时该窗口
     # **恰好还在**(vdown 在合并后才跑)⇒ 一登记即被误销账,台账只会说谎;回执无人接由
     # 卡住告警(verify-* 静默监视)+人工巡检兜,⛔ 复用一个判据方向相反的机制。
@@ -4389,6 +4413,9 @@ pane_hash() {  # GONE 判定不依赖 pipefail(ev-loop 里 pipefail 已关;原�
   echo "$out" | md5 -q 2>/dev/null || echo "GONE"
 }
 win_exists(){ tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
+dispatch_drain_window(){  # 交接期至多一个；有输出=前任仍在排空
+  tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep '^dispatch-drain-' | head -1 || true
+}
 
 # 模态对话框分类(stdin=窗口画面文本 → stdout=处置动作)。
 # 背景(2026-08-15):claude 的「Set up auto mode」对话框一天冻结 4 个窗口(dispatch 两次
@@ -4541,7 +4568,7 @@ DISPATCH_BRIEF='你是 laixin 开发流水线的**派工窗口**(由看门狗托
 3. 事件总线(events 窗口)已随本窗口自动运行——交付落盘、轨道与验收窗口卡住会**直接投递进你的输入框**。**你无需也不要自建 Monitor 监听**;每条【事件】/【告警】到达,同一轮内完成「判断→行动→可见输出」。交付事件的下一步通常是 laixin-lane verify-from "<报告路径>" --prompt <prompt路径> --to dispatch;
 4. 接管当前状态:该派工的立即派(laixin-lane fresh + send + peek 复核),已交付待验的用 laixin-lane verify 起一次性验收窗口——**你的会话名就是 dispatch,所以固定写 --to dispatch**。
 
-派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**:别的窗口想接管会被拦,除非你停止动 lane 超过 30 分钟。
+派工权已由脚本代你认领(laixin-lane whoholds 可查);同一时刻只有你持有**新活派工权**。若 tmux 里有 dispatch-drain-*，它是交接期前任：只盯起交接时已在手的活；**新活、新安排一律归你**，不要接走它的在手件，除非它显式请你接。
 
 接班先跑 laixin-lane doctor(体检)与 laixin-lane stats(看还剩多少燃料、有无总表状态滞后);合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
 **你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/可自写/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
@@ -4571,9 +4598,9 @@ DISPATCH_BRIEF_KIMI='你是 laixin 开发流水线的**派工窗口**(引擎=Kim
 - **事实类**(合并广播、main 前进、交付落盘、验收结论)→ **照旧走落盘 + 事件总线**,⛔ 占用中继那一跳。
 - 📌 别人主动找你的消息走 laixin-lane dmsg,会以「【消息】来自 <来源>」的形态直接落进你的输入框——**那条路不需要你做任何事**。
 
-⚠️ **上下文占比看你自己界面底部的 `context: N% (…/1M)`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。换班纪律与 claude 派工席同一套:65-75% 为换班窗口,≥75% 是交班硬闸门(本引擎是否自带翻页未实测,⛔ 按 codex 那套「满了自己翻」推定)。
+⚠️ **上下文占比看你自己界面底部的 `context: N% (…/1M)`** —— `laixin-lane ctx` 只认 claude/codex 的会话文件,**对本引擎无效**(读到的会是别人的数)。换班纪律与 claude 派工席同一套:70–75% 起交接；≥75% 时继任必须已起，但前任仍盯完在手、ctx 超出属正常。
 
-派工权已由脚本代你认领(laixin-lane whoholds 可查);你每次 laixin-lane send 都会自动续期——**这是"绝不允许两个派工窗口同时活着"的机器执法**。
+派工权已由脚本代你认领(laixin-lane whoholds 可查);同一时刻只有你持有**新活派工权**。若有 dispatch-drain-*，它只盯旧活；新活、新安排一律归你。
 
 接班先跑 laixin-lane doctor 与 laixin-lane stats;合并前用 laixin-lane evidence <片名> 复查验收证据,回执里的数字 grep 不到就退回重验。
 **你被看门狗托管**:窗口死了它会自动起新的;只有存在可立即动作的 ready/可自写/待认领交付且你长期未处理时,它才会先戳、再换窗。状态随做随写进执行总表与看板,不要攒在窗口记忆里。
@@ -4606,6 +4633,16 @@ lock_renew() {  # <持有者名> 原子续期(先写临时文件再 mv,避免读
   printf '%s %s\n' "$1" "$(date +%s)" > "$t" && mv -f "$t" "$DISPATCH_LOCK"
 }
 lock_write() { lock_renew "$(whoami_window)"; }
+lock_touch_send() {  # send 的锁语义：继任续权；排空窗收尾旧活时不夺新活派工权
+  local me; me="$(whoami_window)"
+  case "$me" in
+    dispatch-drain-*)
+      dispatch_alive && [ "$(lock_holder)" = "$DISPATCH_WIN" ] \
+        || die "排空窗只能在继任 dispatch 持有新活派工权时续办旧活；当前继任/锁不成立，先等看门狗恢复并核 whoholds"
+      ;;
+    *) lock_write ;;
+  esac
+}
 lock_renew_if_holder() {  # 复盘页#19-(a):在班行为续期,但只当调用者==当前持有者(中继/验收也跑 log/peek,
   # 不带身份校验会给死锁续命——登记时中继实测的反例);挂在 duty 命令路由前,零副作用零输出
   [ -f "$DISPATCH_LOCK" ] || return 0
@@ -4638,7 +4675,7 @@ cmd_claim() {
   fi
   if [ -n "$h" ] && [ "$h" != "$me" ] && [ "$(lock_age)" -lt "$LOCK_FRESH" ]; then
     echo "⚠️ 派工权当前由 [$h] 持有(心跳 $(lock_age) 秒前)。"
-    echo "   绝不允许两个派工窗口同时活着——先确认它已收工,再 laixin-lane claim --force"
+    echo "   同一时刻只允许一个新活派工权持有者——先确认它已交权,再 laixin-lane claim --force"
     [ "${1:-}" = "--force" ] || return 1
     echo "   (--force:强行接管)"
   fi
@@ -4646,7 +4683,7 @@ cmd_claim() {
   # #57:claim 是「想成为派工」的动作,来源写角色名=用结论当证据;真实身份已在消息里
   # #170:**夺锁必须点名两窗**——原来只记新持有者,被夺方在看板上无痕 ⇒ 事后查不出「谁把谁顶了」
   if [ -n "$h" ] && [ "$h" != "$me" ]; then
-    board "$(caller_src)" "🔴 派工权易主:[$h] → [$me]$([ "${1:-}" = "--force" ] && echo "(--force 强行接管)")——**⛔ 两个派工窗口同时活着**,请确认前者已收工"
+    board "$(caller_src)" "🔴 派工权易主:[$h] → [$me]$([ "${1:-}" = "--force" ] && echo "(--force 强行接管)")——请确认前者已交出**新活派工权**；排空旧活不等于继续持权"
   else
     board "$(caller_src)" "认领派工权:$me"
   fi
@@ -4676,7 +4713,7 @@ CC_SOCKS_DIR="${LAIXIN_CC_SOCKS:-/tmp/cc-socks}"   # 可覆盖:绊线测试用 f
 outside_sessions() {
   local ttys sk pid ptty total=0 inside=0
   ttys="$(tmux list-panes -s -t "=$SESSION" -F '#{window_name} #{pane_tty}' 2>/dev/null \
-    | awk '$1 ~ /^(dispatch|relay|verify-)/ {print $2}')"
+    | awk '$1 ~ /^(dispatch|dispatch-drain-|relay|verify-)/ {print $2}')"
   for sk in "$CC_SOCKS_DIR"/*.sock; do
     [ -S "$sk" ] || continue
     pid="$(basename "$sk" .sock)"
@@ -4695,8 +4732,8 @@ outside_sessions() {
 # ⚠️ **多通道并存不是错误** —— 创始人定的运行形态:两条通道各自独立跑,一条的 token 将尽时
 #   逐步停工、另一条逐步拉起,在流水线上**软切换**(今天是 claude 将尽,下次可能是 claude-b)。
 #   ⇒ 本检查 ⛔ 把"有两个目录"判成错,那会把正常的切换中间态报成故障。
-# 🔴 真正该报的是两种,都无声:①**两个通道同时有 dispatch** —— 违反「绝不允许两个派工窗口
-#   同时活着」,而两条线各自看都正常;②**孤儿席位** —— 某通道里只剩一个 dispatch/relay,
+# 🔴 真正该报的是两种,都无声:①**两个通道同时有 dispatch** —— 违反「新活派工权唯一」
+#   (前任必须改名 dispatch-drain-*),而两条线各自看都正常;②**孤儿席位** —— 某通道里只剩一个 dispatch/relay,
 #   跨通道消息发不到,它没有任何可通信对象,却照样在跑。2026-08-19 19:34~19:58 真实出现过
 #   ②的雏形(方案窗口已切、三件套未切),零告警,是事后复盘拓扑才发现的。
 # ⛔ 用 pgrep 找会话进程:**调用者看不见自己所在会话的 claude 进程**(当日三方对称实证:
@@ -4706,7 +4743,7 @@ session_seats() {  # → stdout 每行 "<pid> <配置目录> <席位名|outside>
   local ttys sk pid ptty dir seat
   # 席位识别与 outside_sessions 同口径:控制终端 ∈ 已知窗口 pane tty 才算 tmux 内席位
   ttys="$(tmux list-panes -s -t "=$SESSION" -F '#{pane_tty} #{window_name}' 2>/dev/null \
-    | awk '$2 ~ /^(dispatch|relay|verify-)/ {print}')"
+    | awk '$2 ~ /^(dispatch|dispatch-drain-|relay|verify-)/ {print}')"
   for sk in "$CC_SOCKS_DIR"/*.sock; do
     [ -S "$sk" ] || continue
     pid="$(basename "$sk" .sock)"
@@ -4738,7 +4775,7 @@ channel_verdict() {  # stdin=每行 "<pid> <目录> <席位>" → stdout 多行�
       bad = 0
       # 危险①:派工唯一性是跨通道的硬纪律(锁在文件层,但拓扑层要先看得见)
       if (ndisp > 1) {
-        print "  🔴 " ndisp " 个通道同时有 dispatch —— 违反「绝不允许两个派工窗口同时活着」;软切换必须旧线先交出派工权"
+        print "  🔴 " ndisp " 个通道同时有 dispatch —— 违反「新活派工权唯一」;旧线只能是 dispatch-drain-* 排空窗"
         bad = 1
       }
       # 危险②:孤儿席位——跨通道 SendMessage 发不到,同通道内没有别的会话即无任何可通信对象
@@ -4784,20 +4821,28 @@ try: print(int((json.load(sys.stdin).get("current") or {}).get("total") or 0) or
 except Exception: print("")' 2>/dev/null
   return 0
 }
-ctx_seat_tokens(){  # <席位名(sessions/*.json 的 name)> → stdout=该席位会话当前上下文 token 绝对值;读不到=空退 1
+ctx_seat_tokens(){  # <席位名> → stdout=该席位会话当前上下文 token 绝对值;读不到=空退 1
   # #158-bis(2026-08-23 11B 归口):abs-min 的语义是「**一个窗口接班后还剩多少余量才够干活**」,基准应当是
   #   **新任自己凭库重建耗掉了多少**;而首版采样落的是 `usage_total_now` 的**机器总增量(含同期其他窗口)**——
   #   实测首条=15 分钟 2925 万,拿它 ×1.5 会得出**超过上下文窗口本身**的荒谬阈值 ⇒ ⛔ 用它写硬阈。
-  #   本函数按 sessions/*.json 的 name 找 sessionId,再读该 transcript 末条 usage(与 cmd_ctx 同口径)。
+  #   本函数优先按 tmux 当刻席位对应的 PID 找 sessionId,再按 sessions/*.json 的 name 兜底；
+  #   交接期前后会话可能都叫 dispatch，若只按 name 会把前任耗量记成继任重建耗量。
   # 失效降级:找不到席位/找不到 transcript/无 usage ⇒ **空 + 退 1**(采样方据此「本次不采」⛔ 填 0)。
-  local nm="${1:-}"; [ -n "$nm" ] || return 1
-  python3 - "$nm" <<'PY2'
+  local nm="${1:-}" seat_pid=""; [ -n "$nm" ] || return 1
+  if type session_seats >/dev/null 2>&1; then
+    seat_pid="$(session_seats | awk -v s="$nm" '$3==s {print $1; exit}')"
+  fi
+  python3 - "$nm" "$seat_pid" <<'PY2'
 import json,os,sys,glob
-nm=sys.argv[1]; sid=""
-for f in glob.glob(os.path.expanduser("~/.claude*/sessions/*.json")):
+nm=sys.argv[1]; preferred=sys.argv[2]; sid=""
+files=glob.glob(os.path.expanduser("~/.claude*/sessions/*.json"))
+if preferred:
+    files.sort(key=lambda f: os.path.basename(f)==preferred+".json", reverse=True)
+for f in files:
     try: d=json.load(open(f))
     except Exception: continue
-    if d.get("name")==nm and d.get("sessionId"):
+    exact=preferred and os.path.basename(f)==preferred+".json"
+    if (exact or d.get("name")==nm) and d.get("sessionId"):
         sid=str(d["sessionId"]); break
 if not sid: sys.exit(1)
 files=[]
@@ -4834,8 +4879,8 @@ ctx_sample_scan(){  # stdin=看板新增行:见 dispatch 交班条 ⇒ 记起点
   return 0
 }
 # ── 额度哨兵 + 账号切换机器化(2026-08-23;创始人「先把这个机制做好,再把这个机制留下来后面复用」)──────────────
-#   剧本(创始人 08-22 10:11 议定 + 08-23 00:3x/00:5x 定线与顺序):切换点=派工席所在账号周额度到 LAIXIN_QUOTA_SWITCH(默认 98%=剩 2%)
-#   ①方案窗口先切(人操作:新账号空白窗接新包,老窗不关只收存量,按包划分裁定权)②再拉新 dispatch(机器:收班令→等收班条→dispatch --fresh)
+#   剧本(创始人 08-22 10:11 议定 + 08-29 修正):切换点=派工席所在账号周额度到 LAIXIN_QUOTA_SWITCH(默认 98%=剩 2%)
+#   ①方案窗口先切(人操作:新账号空白窗接新包,老窗不关只收存量,按包划分裁定权)②dispatch --handover 同步起继任，前任改排空窗盯完旧活。
 #   ③relay 若托管中整个跟新账号走。**哨兵只提醒**(看门狗每 5 拍读一次仪表盘;每条线每个重置窗口提醒一次=WD 日志+看板+桌面通知)
 #   ⛔ 哨兵自动切——切换=对在班席位下令+改拓扑,必须由人或受创始人授权者跑 `laixin-lane account-switch`(tool-must-not-command-live-seats)。
 QUOTA_WARN="${LAIXIN_QUOTA_WARN:-96}"       # 预警线(创始人 08-23:96 提醒一次「还差几点」)
@@ -5011,21 +5056,51 @@ if not hit:
 check_rival_dispatch() {
   rival_holds_dispatch || return 0
   echo "⚠️ 派工权由 [$(lock_holder)] 持有,心跳 $(lock_age) 秒前——它正在动 lane。" >&2
-  echo "   绝不允许两个派工窗口同时活着:先让它收工(或确认它已停 $((LOCK_FRESH/60)) 分钟以上),再重试。" >&2
+  echo "   同一时刻只允许一个新活派工权持有者:先让它交权(排空旧活可留),再重试。" >&2
   echo "   确认无误可加 --force-rival 强行起窗。" >&2
   return 1
 }
 
+cmd_dispatch_handover() {  # [目录]：旧窗改排空名并保留，继任接管 dispatch 与全部新活
+  local dir="${1:-$HOME}" drain existing rc=0 out=""
+  dispatch_alive || die "起交接需要当前 dispatch 在班；当前不在，直接 laixin-lane dispatch 起继任"
+  existing="$(dispatch_drain_window)"
+  [ -z "$existing" ] || die "已有排空窗 ${existing}；交接期只允许前任+继任两窗。先让它盯完并运行 dispatch-drain-down --complete"
+  drain="dispatch-drain-$(date '+%Y%m%d-%H%M%S')"
+  ev_deliver "消息" "【派工交接启动】本窗即将改名 ${drain} 并进入排空态；继任 dispatch 同步起窗。
+只盯完起交接此刻已在手的活，⛔ 接新活/做新安排；先把在手清单写进交接包并逐项标『本窗盯完』。交付/回执会以【交接期旁路】抄送；非本窗在手件忽略。新活派工权归继任，send 收尾旧活不会夺权。在手全部闭环且交班后优化轮完成后运行：laixin-lane dispatch-drain-down --complete。跨通道时以知识库/事件为准，⛔ 等 SendMessage。继任入口=${CLAUDE_LAUNCHER}。"
+  tmux rename-window -t "=$SESSION:$DISPATCH_WIN" "$drain" \
+    || die "旧 dispatch 改名 $drain 失败；零窗口变更，未起继任"
+  out="$(cmd_dispatch --fresh --dir "$dir" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    win_exists "$DISPATCH_WIN" && tmux kill-window -t "=$SESSION:$DISPATCH_WIN" 2>/dev/null || true
+    if win_exists "$drain"; then tmux rename-window -t "=$SESSION:$drain" "$DISPATCH_WIN" 2>/dev/null || true; fi
+    lock_renew "$DISPATCH_WIN"
+    board "$(caller_src)" "⛔ 派工交接起继任失败(rc=$rc)，已回滚旧窗为 dispatch；未进入双窗态"
+    die "派工交接起继任失败，旧窗已恢复为 dispatch：$(tail -1 <<< "$out")"
+  fi
+  board "$(caller_src)" "派工交接双窗已起：继任=$DISPATCH_WIN(新活/新安排)；前任=$drain(只排空起交接时在手，完成后自收)"
+  printf '%s\n' "$out"
+  echo "✅ 交接期已进入双窗态：$DISPATCH_WIN 接新活；$drain 盯完旧活后 dispatch-drain-down --complete"
+  return 0
+}
+
 cmd_dispatch() {
-  local dir="$HOME" force="" nocheck=""
+  local dir="$HOME" force="" nocheck="" handover=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --dir)   dir="${2:?--dir 需要路径}"; shift 2 ;;
       --fresh) force=1; shift ;;
+      --handover) handover=1; shift ;;
       --force-rival) nocheck=1; shift ;;
       *) die "未知参数:$1" ;;
     esac
   done
+  if [ -n "$handover" ]; then
+    [ -z "$force$nocheck" ] || die "dispatch --handover 不与 --fresh/--force-rival 混用"
+    cmd_dispatch_handover "$dir"
+    return
+  fi
   # 🔴 起窗时**实时解析**引擎(2026-08-22 实撞:看门狗循环内存攥着切换前的值,切回后仍按旧引擎重起)——
   #   看门狗/boot 链在本进程内调本函数,只有这里重读,切引擎才不用重起循环。
   read -r DISPATCH_ENGINE DISPATCH_ENGINE_REQ <<< "$(dispatch_engine_resolve)"
@@ -5039,7 +5114,7 @@ cmd_dispatch() {
   fi
   ensure_session
   if [ -z "$nocheck" ] && ! check_rival_dispatch; then
-    die "起窗中止——绝不允许两个派工窗口同时活着。先确认那些窗口已收工,或确认它们不是派工窗口后加 --force-rival 重试"
+    die "起窗中止——已有别的新活派工权持有者。正常换任用 dispatch --handover；确认是残锁才加 --force-rival"
   fi
   if win_exists "$DISPATCH_WIN"; then
     [ -n "$force" ] || { echo "$DISPATCH_WIN 已存在(换全新上下文用 --fresh)"; return 0; }
@@ -5130,6 +5205,16 @@ cmd_dispatch() {
   return 0
 }
 
+cmd_dispatch_drain_down() {  # 只能由排空窗自己在“在手全完+优化轮完成”后调用
+  local me; me="$(whoami_window)"
+  [ "${1:-}" = "--complete" ] && [ $# -eq 1 ] \
+    || die "用法:laixin-lane dispatch-drain-down --complete（仅在在手全盯完 + 交班后优化轮完成后）"
+  case "$me" in dispatch-drain-*) ;; *) die "本命令只允许 dispatch-drain-* 排空窗自收；当前=$me" ;; esac
+  dispatch_alive || die "继任 dispatch 不在班，拒绝关闭最后一个派工上下文；先等看门狗恢复并核 whoholds"
+  board "$(caller_src)" "派工排空窗 $me 收工：已确认在手全盯完 + 交班后优化轮完成；继任 dispatch 继续接新活"
+  tmux kill-window -t "$TMUX_PANE"
+}
+
 # ── 交班形态判据(2026-08-22 实撞后立)──────────────────────────────────────────────
 # 失败样本:方案窗口第二十任交班当轮,把**同账号正常交班**办成了「2 个 CC 账号切换的交班」
 #   (创始人当面纠正「把正常交班搞成了 2 个 CC 账号切换的交班」);连锁:relay 据此报了一条
@@ -5141,8 +5226,16 @@ cmd_dispatch() {
 #   ⚠️ 继任**尚未起窗时判不了** —— 那种情况判据只能是「创始人明示」,本命令会如实说判不了,
 #      ⛔ 猜一个答案(猜错的代价就是上面那次:整套跨账号附则被误用 + 一条假告警)。
 channel_of(){  # <会话名> → stdout="<配置目录> <账号邮箱>";找不到退 1
-  local want="$1" pid dir line
-  while IFS=' ' read -r pid dir _; do
+  local want="$1" pid dir seat f
+  # 交接期前后两个 Claude 会话可能暂时都叫 dispatch；tmux 实际窗口名才是当刻角色，先认它。
+  while IFS=' ' read -r pid dir seat; do
+    [ "$seat" = "$want" ] || continue
+    printf '%s %s\n' "$dir" "$(python3 -c 'import json,sys
+try: print(((json.load(open(sys.argv[1])).get("oauthAccount") or {}).get("emailAddress")) or "账号未知")
+except Exception: print("账号未知")' "$dir/.claude.json" 2>/dev/null)"
+    return 0
+  done <<< "$(session_seats)"
+  while IFS=' ' read -r pid dir seat; do
     [ -n "$pid" ] || continue
     for f in "$dir"/sessions/"$pid".json; do
       [ -f "$f" ] || continue
@@ -5170,9 +5263,7 @@ cmd_handover_mode(){  # <继任会话名> <前任会话名 | 前任通道目录>
   [ -n "$succ" ] && [ -n "$pred" ] || die "用法:laixin-lane handover-mode <继任会话名> <前任会话名 | 前任通道目录>
    ⚠️ 两个都要显式给 —— ⛔ 让本命令去猜「前任是谁」:猜错时它会给出一个**看起来确定**的答案,
       而交班形态判错的代价是整套跨账号附则被误用(2026-08-22 实撞)。
-   📌 **前任常在继任起窗前就已关闭**(交班的常见顺序就是前任先关) ⇒ 那时第二参传**通道目录**:
-      交班方在自己还活着时跑 laixin-lane channel-of <自己> 把通道写进交接包,继任照抄即可
-      —— 两次调用都发生在各自活着的时候,⛔ 依赖两个窗口同时在线。"
+   📌 现行交接是前任与继任同步运行；优先在两窗都活着时实测。若事后补核、前任已关，第二参传交接包记录的**通道目录**。"
   local a b da db
   a="$(channel_of "$succ")" || die "继任 $succ 查不到活会话 ⇒ **判不了**(它可能还没起窗)。
    此时唯一判据=**创始人明示**本次是同账号还是跨账号;⛔ 由交班方自行推定(实撞:推错 ⇒ 跨账号附则被误用 + relay 一条假告警)。"
@@ -7275,18 +7366,15 @@ cmd_quota(){  # 两账号额度 + 派工席所在账号 + 哨兵线(快速看一
   return 0
 }
 
-cmd_account_switch(){  # --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force]
-  # 剧本机器化(2026-08-23):①写开关 ②方案窗口半边给人 ③dispatch 收班令→等收班条→--fresh ④relay 托管中则跟走。
-  # 🔴 本命令对在班席位下令(收班令)⇒ 只许人或受创始人授权者手跑;看门狗/events ⛔ 调用(绊线钉住)。
-  local to="" dry="" wait_min="${LAIXIN_SWITCH_WAIT_MIN:-60}" nowait="" force=""
+cmd_account_switch(){  # --to <claude|claude-b> [--dry]
+  # 账号切换复用 dispatch --handover：继任立即接新活，前任保留到在手与优化轮都完成。
+  # 🔴 本命令会切通道并对在班席位起交接 ⇒ 只许人或受创始人授权者手跑;看门狗/events ⛔ 调用。
+  local to="" dry=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) to="${2:?--to 需要入口名(claude|claude-b)}"; shift 2 ;;
       --dry) dry=1; shift ;;
-      --wait-min) wait_min="${2:?--wait-min 需要分钟数}"; shift 2 ;;
-      --no-wait) nowait=1; shift ;;
-      --force) force=1; shift ;;
-      *) die "未知参数:$1(用法:laixin-lane account-switch --to <claude|claude-b> [--dry] [--wait-min N] [--no-wait] [--force])" ;;
+      *) die "未知参数:$1(用法:laixin-lane account-switch --to <claude|claude-b> [--dry])" ;;
     esac
   done
   [ -n "$to" ] || die "account-switch 必须 --to <入口名>(claude=~/.claude-official / claude-b=~/.claude-b)"
@@ -7304,11 +7392,11 @@ cmd_account_switch(){  # --to <claude|claude-b> [--dry] [--wait-min N] [--no-wai
   echo "步骤:"
   echo "  ① 开关 $sw → ${to}(之后新起的 dispatch/relay/relay-once(claude)/11C fable 全走它;在跑的不动)"
   echo "  ② 方案窗口(人操作,⛔ 机器):创始人以 ${to} --model ${PLAN_WINDOW_MODEL} 开空白窗接新包(读交接快照);老窗不关、只收存量、按包划分裁定权"
-  echo "  ③ dispatch:dmsg 收班令(在飞做到交接点、写交接包、⛔ 接新活)→ 等看板出现收班条(最多 ${wait_min} 分钟;--no-wait 跳过 / --force 超时仍换)→ dispatch --fresh(新窗起在 ${to})"
+  echo "  ③ dispatch --handover:继任立即起在 ${to} 接新活；前任改排空窗，继续盯完起交接时已在手的活后自收"
   if relay_enabled; then echo "  ④ relay(托管中)整个跟新账号:relay --fresh"; else echo "  ④ relay 托管关闭(应召形态)⇒ 无动作;需要时 laixin-lane relay 即在新账号起"; fi
   if [ -n "$dry" ]; then
     echo "[dry] 以上为计划,未动任何东西"
-    echo "[dry] 覆盖范围:目标通道校验(**已在目标通道的 die 在 dry 之前,故 dry 能报它**)· 计划四步;⛔ 覆盖=dispatch 是否肯收班(等收班条是真跑才发生)"
+    echo "[dry] 覆盖范围:目标通道校验(**已在目标通道的 die 在 dry 之前,故 dry 能报它**)· 计划四步;⛔ 覆盖=继任真起与旧窗排空(真跑才发生)"
     return 0
   fi
   # ① 开关(写文件 + 本进程变量同步:cmd_dispatch/cmd_relay 读的是启动时解析好的 CLAUDE_LAUNCHER,不改变量会用旧入口起新窗)
@@ -7321,26 +7409,11 @@ cmd_account_switch(){  # --to <claude|claude-b> [--dry] [--wait-min N] [--no-wai
     local d0_rc=0; ( cmd_dispatch --fresh ) || d0_rc=$?
     [ "$d0_rc" -eq 0 ] || die "dispatch 起窗失败 rc=${d0_rc}(看板有死因);开关已切,看门狗下一拍会再试"
   else
-    local bl0; bl0="$(wc -l < "$BOARD" 2>/dev/null | tr -d ' ')"; bl0="${bl0:-0}"
-    cmd_dmsg --from "$(caller_src)" "【账号切换 · 收班令】执行者=$(caller_src),依据=创始人剧本(切换点已到;创始人授权执行)。请:①把在飞这一轮做到**可交接点**(⛔ 接新活 ⛔ 开新合并);②按换班纪律写交接包(执行总表进行中节 + 交接快照),并在看板留**收班条**(正文开头形如「收班 dispatch 第N任 → 继任起在 ${to} 通道」);③收班条落盘后停手等回收——本窗将被 dispatch --fresh 回收,继任起在 ${to}(${tcfg##*/});🔴 跨通道 SendMessage/ListAgents 不可达:交接一律落盘,⛔ 指望继任能收到你的 SendMessage。" >/dev/null
-    board "$(caller_src)" "账号切换③:已向 dispatch 发收班令(等收班条,最多 ${wait_min} 分钟)"
-    echo "✅ ③ 收班令已投 dispatch;等它的收班条…(看板行数基线 ${bl0})"
-    if [ -n "$nowait" ]; then echo "  --no-wait:不等收班条,直接换窗"; else
-      local waited=0 seen=""
-      while [ "$waited" -lt $(( wait_min * 60 )) ]; do
-        if ! dispatch_alive; then seen="dispatch 已自行退出"; break; fi
-        if tail -n +"$(( bl0 + 1 ))" "$BOARD" 2>/dev/null | grep -qE '^\|[^|]+\| 派工窗口 \| ?[^|]{0,10}(收班|交班|换班) dispatch 第[一二三四五六七八九十]+任'; then seen="收班条已见"; break; fi
-        sleep 20; waited=$((waited+20))
-      done
-      if [ -z "$seen" ]; then
-        if [ -n "$force" ]; then echo "⚠️ 等满 ${wait_min} 分钟未见收班条,--force:照换"; board "$(caller_src)" "账号切换③:等满 ${wait_min} 分钟未见收班条,--force 强制换窗"
-        else board "$(caller_src)" "账号切换③:等满 ${wait_min} 分钟未见 dispatch 收班条——未换窗(老 dispatch 仍在);核 peek-d 后重跑 account-switch --to ${to} --no-wait 或 --force"; die "等满 ${wait_min} 分钟未见 dispatch 收班条 ⇒ 未换窗(老 dispatch 仍在 ${cur_cfg##*/})。laixin-lane peek-d 40 看它在干什么;确认可换后重跑 --no-wait / --force"; fi
-      else echo "✅ ${seen}"; fi
-    fi
-    local d_rc=0 d_out=""; d_out="$(cmd_dispatch --fresh 2>&1)" || d_rc=$?
-    [ "$d_rc" -eq 0 ] || { board "$(caller_src)" "⛔ 账号切换③:dispatch --fresh 失败 rc=${d_rc}:$(tail -1 <<< "$d_out" | cut -c1-120)"; die "dispatch --fresh 失败 rc=${d_rc}:$(tail -1 <<< "$d_out")"; }
-    board "$(caller_src)" "账号切换③:dispatch 已换新窗,起在 ${to}(${tcfg##*/});老账号 ${cur_cfg##*/} 上的方案窗口按剧本只收存量"
-    echo "✅ ③ dispatch 新窗已起(${to})"
+    local d_rc=0 d_out=""; d_out="$(cmd_dispatch --handover 2>&1)" || d_rc=$?
+    [ "$d_rc" -eq 0 ] || { board "$(caller_src)" "⛔ 账号切换③:dispatch --handover 失败 rc=${d_rc}:$(tail -1 <<< "$d_out" | cut -c1-120)"; die "dispatch --handover 失败 rc=${d_rc}:$(tail -1 <<< "$d_out")"; }
+    printf '%s\n' "$d_out"
+    board "$(caller_src)" "账号切换③:继任 dispatch 已起在 ${to}(${tcfg##*/})接新活；前任留在 ${cur_cfg##*/} 排空旧活"
+    echo "✅ ③ dispatch 双窗交接已起(${to});前任未被回收"
   fi
   if relay_enabled; then
     local r_rc=0; ( cmd_relay --fresh --resurrect ) >/dev/null 2>&1 || r_rc=$?
@@ -7699,7 +7772,7 @@ wd_loop() {
     #   天经地义。要恢复必须先回答:codex 自动翻页之后,人工换班还解决什么问题?
     #   ctx-all 命令保留(数字本身客观,可用来看它何时翻页),但⛔ 由机器据此催任何人。
     # 📌 2026-08-22 16:43 起 dispatch 换回 claude(默认;kimi 可顶班,codex 废除)——本段**仍不恢复**:
-    #   ① claude 席位的水位提醒早已在当事人眼前:底栏 statusline.py 的 65/75 闸门每次渲染可见 + `laixin-lane ctx`
+    #   ① claude 席位的水位提醒早已在当事人眼前:底栏 statusline.py 的 70/75 闸门每次渲染可见 + `laixin-lane ctx`
     #     (~/.claude-b/settings.json 的 statusLine 同样指向它,双通道都有);② ctx-all 只认 codex rollout,对 claude 席位
     #     本就无读数;③ 推送被撤的根因是「工具对在班席位下令」(见 ctx_watch_tick 内注),与引擎无关。
     #   ⇒ 引擎换回不是恢复巡检的理由;kimi 顶班同理(其 TUI 底栏自带 context%,1M 窗口);恢复须创始人明令。
@@ -8755,6 +8828,7 @@ case "${1:-}" in
   codex-tier) shift; cmd_codex_tier "$@" ;;
   handover-mode)  shift; cmd_handover_mode "$@" ;;   # 交班形态判据:同账号 or 跨账号(⛔ 靠推定)
   dispatch) shift; cmd_dispatch "$@" ;;
+  dispatch-drain-down) shift; cmd_dispatch_drain_down "$@" ;;
   keepalive) shift; cmd_keepalive "$@" ;;   # 看门狗对**派工席**的保活开关(off 奉令关闭 / on 恢复 / 无参看当刻态);⛔ 与 halt(暂停)和 watchdog stop(停整个看门狗)混同
   peek-d)   shift; cmd_peekd "$@" ;;
   relay)      shift; cmd_relay "$@" ;;        # #32 中继窗口托管:起窗+接管指令+开启托管标记

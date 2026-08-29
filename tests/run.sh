@@ -2413,11 +2413,13 @@ t "#60②:fresh c 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx
 tfail "#60②:up c --with-mcp 被拒(codex 专属参数 ⛔ 静默吞)" "codex 专属参数" \
   env LAIXIN_SESSION=lx60c-nonexist "$LANE" up c --with-mcp aliyun-readonly
 t "#60②:up c --with-mcp 被拒时零 tmux 副作用" bash -c '! tmux has-session -t lx60c-nonexist 2>/dev/null'
-# ⭐ 起动命令按引擎分派:kimi --auto + -m 显式钉死(防配置漂移);codex 路径原样(MCP 关闭参数仍在)
-t "#60②:cmd_up 起动命令分引擎(kimi --auto -m 钉死 / codex MCP 关闭原样)" bash -c '
+# ⭐ 起动命令按引擎分派:kimi 与 Codex 都显式钉模型;Codex 的 MCP 关闭参数仍在。
+t "#60②:cmd_up 起动命令分引擎(kimi/Codex 均显式配型)" bash -c '
   body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
   grep -q -- "\$KIMI_BIN\\\\\" --auto -m \$KIMI_MODEL" <<< "$body" || grep -q -- "--auto -m \$KIMI_MODEL" <<< "$body" || exit 1
-  grep -qF "codex\$(codex_service_tier_flag) \$_mcp_off" <<< "$body"' "$LANE"
+  grep -qF -- "-m \$LANE_CODEX_MODEL" <<< "$body" &&
+  grep -qF -- "model_reasoning_effort=\\\"\$LANE_CODEX_EFFORT\\\"" <<< "$body" &&
+  grep -qF "\$_mcp_off" <<< "$body"' "$LANE"
 KM="$(bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
 tout "#60②:kimi 模型默认钉 kimi-code/k3" "kimi-code/k3" echo "$KM"
 KM2="$(env LAIXIN_KIMI_MODEL=kimi-code/k4 bash -c "eval \"\$(grep '^KIMI_MODEL=' '$LANE')\"; echo \"\$KIMI_MODEL\"")"
@@ -2429,16 +2431,25 @@ t "#配档:codex_launch_cmd 显式带模型与推理档(⛔ 吃 config.toml)" ba
   grep -qF -- "-m \$CODEX_MODEL" <<< "$body" || exit 1
   grep -q -- "model_reasoning_effort" <<< "$body"' "$LANE"
 CXM="$(bash -c "eval \"\$(grep '^CODEX_MODEL=' '$LANE')\"; echo \"\$CODEX_MODEL\"")"
-tout "#配档:codex 模型默认钉 gpt-5.6-luna" "gpt-5.6-luna" echo "$CXM"
+tout "#配档:Codex 验收模型默认钉 gpt-5.6-sol" "gpt-5.6-sol" echo "$CXM"
 CXE="$(bash -c "eval \"\$(grep '^CODEX_EFFORT=' '$LANE')\"; echo \"\$CODEX_EFFORT\"")"
-tout "#配档:codex 推理档默认钉 max(创始人既有直令 ⛔ 降档)" "max" echo "$CXE"
-CXM2="$(env LAIXIN_CODEX_MODEL=gpt-5.6-terra bash -c "eval \"\$(grep '^CODEX_MODEL=' '$LANE')\"; echo \"\$CODEX_MODEL\"")"
-tout "#配档:可回切 terra(luna 跑不动 CDP 时的逃生口,⛔ 改 config.toml)" "gpt-5.6-terra" echo "$CXM2"
-# 🔴 病灶级反向断言:射程只到验收窗——开发轨 lane-a/b 走 cmd_up 的独立 _launch,⛔ 被本改动带走。
-#    (若有人把模型参数误加进 cmd_up,在飞开发轨会静默换模型,而看板上与从前逐字相同。)
-t "#配档:开发轨 cmd_up ⛔ 沾模型参数(射程不越界)" bash -c '
+tout "#配档:Codex 验收推理档默认钉 max" "max" echo "$CXE"
+LXM="$(bash -c "eval \"\$(grep '^LANE_CODEX_MODEL=' '$LANE')\"; echo \"\$LANE_CODEX_MODEL\"")"
+tout "#配档:Codex 开发轨模型默认钉 gpt-5.6-terra" "gpt-5.6-terra" echo "$LXM"
+LXE="$(bash -c "eval \"\$(grep '^LANE_CODEX_EFFORT=' '$LANE')\"; echo \"\$LANE_CODEX_EFFORT\"")"
+tout "#配档:Codex 开发轨推理档默认钉 xhigh" "xhigh" echo "$LXE"
+CXM2="$(env LAIXIN_CODEX_MODEL=gpt-5.6-luna bash -c "eval \"\$(grep '^CODEX_MODEL=' '$LANE')\"; echo \"\$CODEX_MODEL\"")"
+tout "#配档:验收窗保留显式单次逃生口(⛔ 改 config.toml)" "gpt-5.6-luna" echo "$CXM2"
+t "#配档:开发轨 cmd_up 只取 LANE_CODEX 配型(⛔ 误用验收 CODEX_MODEL)" bash -c '
   body="$(sed -n "/^cmd_up()/,/^}/p" "$0")"
-  ! grep -q "CODEX_MODEL" <<< "$body" && ! grep -q "model_reasoning_effort" <<< "$body"' "$LANE"
+  grep -q "LANE_CODEX_MODEL" <<< "$body" && grep -q "LANE_CODEX_EFFORT" <<< "$body" &&
+  ! grep -q "[^_]CODEX_MODEL" <<< "$body"' "$LANE"
+t "#配档:print 路径按窗口角色透传验收/AB 两套配型" bash -c '
+  body="$(sed -n "/^native_run_start()/,/^}/p" "$0")"
+  grep -q "lane-a|lane-b).*LANE_CODEX_MODEL" <<< "$body" &&
+  grep -q "verify-\\*).*CODEX_MODEL" <<< "$body" &&
+  grep -q "LAIXIN_NATIVE_CODEX_MODEL=%q" <<< "$body" &&
+  grep -q "LAIXIN_NATIVE_CODEX_EFFORT=%q" <<< "$body"' "$LANE"
 # ⭐ kimi 画面判据(2026-08-19 临时会话实测):在飞=月相转轮/Running;codex 词表(Explored)⛔ 量 kimi
 C60B="$C60/busy.sh"; { sed -n "/^lane_engine()/,/^}/p" "$LANE"; sed -n "/^kimi_act_pat()/,/^}/p" "$LANE"; sed -n "/^lane_busy()/,/^}/p" "$LANE"; } > "$C60B"
 t "#60②:lane_busy 分引擎——kimi 月相=在飞,codex 词表不误判 kimi" bash -c '
@@ -3749,7 +3760,7 @@ tfail "m-up:缺 --dir 拒(各件独立 worktree 机器执法 ⛔ 靠自觉)" "�
 tfail "m-up:--dir 不存在拒(窗口未动)" "目录不存在" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/没有" --dry
 tfail "m-up:--dir=A 轨主树拒(两轨对写同一工作树同族)" "不得落 A 轨主树" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/main" --dry
 MUP_DRY="$("${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/wt" --dry 2>&1)"
-t "m-up --dry:起动串与开发轨同源——含 codex、零 -m、零推理档、零 luna(⛔ codex_launch_cmd 的 luna/max)" bash -c '
+t "m-up --dry:未定档现状仍吃全局默认——含 codex、零 -m、零推理档" bash -c '
   l="$(grep "起动串:" <<< "$1")"; [ -n "$l" ] || exit 1
   grep -q "BU_NAME=" <<< "$l" && grep -q "BU_CDP_URL=" <<< "$l" && grep -q " codex " <<< "$l" &&
   ! grep -q " -m " <<< "$l" && ! grep -q "luna" <<< "$l" && ! grep -q "model_reasoning_effort" <<< "$l"' _ "$MUP_DRY"
@@ -4521,7 +4532,7 @@ tfail "#165 --dir 必填且必须是工具仓 worktree" "必须 --dir" "$LANE" t
 #   修法=LAIXIN_RELEASE_REPO 钉到被测仓自身 ⇒ 任何检出位置下守卫都拒绝「自己的树」,失败面不再漏窗。
 tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M 件 ⛔ 落 A 轨主树同族)〔worktree 里跑也成立〕" "不得落工具仓主树" env LAIXIN_RELEASE_REPO="$(cd "$(dirname "$LANE")/.." && pwd)" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$(cd "$(dirname "$LANE")/.." && pwd)"
 tfail "#165 ⛔ 拿产品仓 worktree 起工具件(本线只维护 11B/11C)" "不是\*\*工具仓\*\*的 worktree" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$HOME/来信平台"
-t "#165 起动串与开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd(那条钉 luna/sol,是验收窗与中继件的射程)" bash -c '
+t "#165 工具件 Codex 未定档:零 -m 零推理档 ⛔ 误用验收 codex_launch_cmd" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
   grep -qF '"'"'codex$(codex_service_tier_flag)'"'"' <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
 # ⚠️ 判据必须**剥注释**再扫:本函数注释里有意写着反引号包的样例(`claude-fable-5[1m]` 等),

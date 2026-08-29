@@ -42,15 +42,15 @@
 #                                    起 **11B/11C 开发维护窗**(#165,2026-08-23 创始人定形态:「给派工窗口用的,放在
 #                                    tmux 里面,派工窗口遇到问题可以拉起来的窗口」「**用 codex,跟开发窗口一样,
 #                                    也需要派工窗口写 prompt**」「这条线**只维护 11B、11C 开发维护**」):
-#                                    ⇒ **第四条开发轨,唯一差别是仓与射程**——它维护 ~/Developer/laixin-pipeline(工具)
-#                                    与 11C 工具侧,A/B 轨维护 ~/来信平台(产品)。其余照开发轨:codex 与 cmd_up 同源
-#                                    (零 -m 零推理档吃全局默认 ⛔ 钉模型)· prompt 驱动 · **各件独立 worktree ⛔ 工具仓主树**
+#                                    ⇒ **第四条开发轨,仓与射程独立**——它维护 ~/Developer/laixin-pipeline(工具)
+#                                    与 11C 工具侧,A/B 轨维护 ~/来信平台(产品)。工具件 Codex 当前仍吃全局默认,待单独定档;
+#                                    其余照开发轨:prompt 驱动 · **各件独立 worktree ⛔ 工具仓主树**
 #                                    · **开分支 ⛔ 直接提交 main**(合并归派工窗口)· worktree 隔离 ⇒ **可并发 ⛔ 单例**
 #                                    交付契约:记录/11B工具件-<件名>-报告.md 末行【工具件完成】11B-<件名> <commit|no-commit>
 #                                    ⇒ events 投路径指针给派工窗口:按报告判据复核(⛔ verify-from ⛔ 进 M1)→ 合并 → tool-down
 #   laixin-lane m-up <件名> --task <任务单.md> --dir <worktree> [--with-mcp 名]... [--dry]
 #                                    起 **M 轨机动窗**(一次性应召;执行总表 M 子节规格,2026-08-22):引擎 codex,
-#                                    配置=与 A/B 开发轨同源吃 config.toml 全局默认 **⛔ 钉模型 ⛔ luna**;起窗即派任务单路径;
+#                                    配置=吃 config.toml 全局默认 **⛔ 钉模型 ⛔ luna**(待单独定档);起窗即派任务单路径;
 #                                    各件独立 worktree(--dir 必填且 ⛔ A 轨主树);双向自证=窗内自报模型=全局默认 + BU/端口互异
 #                                    交付契约:记录/M轨-<件名>-报告.md 末行【交付完成】M轨-<件名> <commit|no-commit>(events 投派工窗口)
 #   laixin-lane m-down <件名>        回收机动窗(+清其 CDP 通道;件毕即收 ⛔ 常驻)
@@ -176,12 +176,14 @@ VERIFY_ENGINE="${LAIXIN_VERIFY_ENGINE:-$(cat "${LAIXIN_SWITCH_DIR:-$HOME/.laixin
 # ⛔ 在 fresh c 派工语里内联协议要点(内联=第二份事实,会与 AGENTS.md 漂移)。
 KIMI_BIN="${LAIXIN_KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 KIMI_MODEL="${LAIXIN_KIMI_MODEL:-kimi-code/k3}"
-# 🔴 codex 验收窗模型档(2026-08-22 创始人发起、方案窗口第二十二任裁,dispatch 54 落):
-#   起窗**显式带**模型与推理档,⛔ 吃 ~/.codex/config.toml 全局默认(实测为 terra/xhigh)——
-#   同一文件里 kimi 位与 claude 位都显式带,codex 位此前是三者中唯一没带的,配置漂移在看板上与从前同形。
-#   ⚠️ luna 跑 CDP 走查未实证:跑不动按环境阻断回切 terra 并回报,⛔ 计工程打回(裁定原文)。
-#   回切=改本变量或起窗前 export LAIXIN_CODEX_MODEL,⛔ 改 config.toml(那会连带影响在飞开发轨)。
-CODEX_MODEL="${LAIXIN_CODEX_MODEL:-gpt-5.6-luna}"
+# 🔴 Codex 验收窗与产品开发轨分开配型(2026-08-29 创始人定案):
+#   验收=gpt-5.6-sol + max;开发轨 A/B=gpt-5.6-terra + xhigh。两类起窗都**显式带**
+#   模型与推理档,⛔ 吃 ~/.codex/config.toml 全局默认;运行时显式 env 只作单次逃生口。
+#   CODEX_* 只射程验收窗;LANE_CODEX_* 只射程 lane-a/b。C 轨仍是 Kimi,本裁定不动。
+CODEX_MODEL="${LAIXIN_CODEX_MODEL:-gpt-5.6-sol}"
+CODEX_EFFORT="${LAIXIN_CODEX_EFFORT:-max}"
+LANE_CODEX_MODEL="${LAIXIN_LANE_CODEX_MODEL:-gpt-5.6-terra}"
+LANE_CODEX_EFFORT="${LAIXIN_LANE_CODEX_EFFORT:-xhigh}"
 # 一次性应召中继窗(relay-once)的 codex 模型:**独立口径 ⛔ 复用 CODEX_MODEL**——后者同时是**验收窗**的模型
 # (codex_launch_cmd 两个调用点),动它会误伤验收(协作流程 :38「模型按活的性质分 ⛔ 一刀切」)。
 # 🔴 2026-08-23 创始人当面令:「**书记员的模型差点意思了,后面 11C 的书记员用 5.6-sol**」⇒ 本口径默认 sol。
@@ -195,7 +197,6 @@ RELAY_ONCE_CODEX_EFFORT="${LAIXIN_RELAY_ONCE_CODEX_EFFORT:-xhigh}"
 # effort 显式带 ⛔ 依赖默认档(luna 默认 medium 那课);与 relay-once 的配型平行取值 ⛔ 共用开关。
 PROMPT_LANE_MODEL="${LAIXIN_PROMPT_LANE_MODEL:-$(cat "$HOME/.laixin-lane-switch/prompt-lane-model" 2>/dev/null || echo gpt-5.6-sol)}"
 PROMPT_LANE_EFFORT="${LAIXIN_PROMPT_LANE_EFFORT:-xhigh}"
-CODEX_EFFORT="${LAIXIN_CODEX_EFFORT:-max}"
 # 起 claude 类窗口(dispatch/relay/verify)用的入口名。默认 `claude`=01A 包装器 → 配置目录 ~/.claude-official。
 # 换账号走「换配置目录」⛔ 走 /login(创始人 2026-08-19 实试:/login 换不了账号,只会重登当前目录已有的那个);
 # 路径=复制一份包装器、只改其中 CLAUDE_OFFICIAL_CONFIG_DIR 一行(如 ~/.local/bin/claude-b → ~/.claude-b),
@@ -484,11 +485,16 @@ cmd_up() {
     # 只留 codegraph(开发可用)。
     # --with-mcp <名> 可按片放行(创始人:aliyun-readonly 是自家运维通道,部署片会用——默认关、选择性开)。
     local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
-    _launch="codex$(codex_service_tier_flag) $_mcp_off"
+    _launch="codex -m $LANE_CODEX_MODEL -c model_reasoning_effort=\"$LANE_CODEX_EFFORT\"$(codex_service_tier_flag) $_mcp_off"
   fi
   tmux send-keys -t "$(target "$lane")" "BU_NAME=\"lane-$lane\" BU_CDP_URL=\"http://127.0.0.1:$_cdp_port\" $_launch" C-m
-  board "lane-$lane" "启动 $_eng @ $dir"
-  echo "$(win "$lane") 已在 $dir 启动 ${_eng}。观看:laixin-lane attach $lane"
+  if [ "$_eng" = codex ]; then
+    board "lane-$lane" "启动 codex(${LANE_CODEX_MODEL} ${LANE_CODEX_EFFORT}) @ $dir"
+    echo "$(win "$lane") 已在 $dir 启动 codex(${LANE_CODEX_MODEL} ${LANE_CODEX_EFFORT})。观看:laixin-lane attach $lane"
+  else
+    board "lane-$lane" "启动 $_eng @ $dir"
+    echo "$(win "$lane") 已在 $dir 启动 ${_eng}。观看:laixin-lane attach $lane"
+  fi
   echo "(10s 启动验尸已挂后台:届时零告警=验过且 ${_eng} 确在跑,#50)"
   # 启动自检「引擎实际在跑」(2026-08-18 复盘页#11-③):二批 MCP 引号 key 曾致 codex 拒载 config
   # 秒退——脚本报"已启动"而现场只剩 shell 提示符,告警形态与「Codex 崩了」同形,浅读必误判。
@@ -2494,6 +2500,8 @@ cmd_doctor() {
   else
     ok "一次性中继 codex 配型:${RELAY_ONCE_CODEX_MODEL} ${RELAY_ONCE_CODEX_EFFORT}(当前引擎=claude,本行为 codex 路线备查)"
   fi
+  ok "Codex 验收窗配型:${CODEX_MODEL} ${CODEX_EFFORT}(起窗参数显式钉入,⛔ 继承全局默认)"
+  ok "Codex 开发轨 A/B 配型:${LANE_CODEX_MODEL} ${LANE_CODEX_EFFORT}(起窗参数显式钉入;C 轨仍为 ${KIMI_MODEL})"
   if [ "$DISPATCH_ENGINE" = "claude" ]; then
     if [ "$VERIFY_ENGINE" = "claude" ]; then
       ok "验收窗口钉:$VERIFY_MODEL  派工窗口钉:$DISPATCH_MODEL(改用 LAIXIN_VERIFY_MODEL/LAIXIN_DISPATCH_MODEL)"
@@ -5433,8 +5441,8 @@ cmd_peekr() { tmux capture-pane -p -t "=$SESSION:$RELAY_WIN" -S "-${1:-30}"; }
 #   两条起窗链路都做实并各在隔离会话实起验证;常驻 relay(cmd_relay)**原样保留为 claude**——它的代发职能结构上只能
 #   claude(kimi 顶班派工席的 relay-msg 注入的是窗口名 relay);一次性窗 ⛔ 替代常驻的代发,两者分工见 SKILL 卡。
 # 形态照 cmd_verify(同为一次性席位):窗口名 relay-<件名 slug>(vwin 同款转义)· BU_NAME/BU_CDP_URL 同派生 ·
-#   claude=RELAY_MODEL + RELAY_ONCE_DENY;codex=codex_launch_cmd(33d679b 起显式 luna/max,与方案窗口对一次性中继窗的
-#   配档拍一致)· 起窗即派点名指令 · 回复契约=落盘 记录/<件名>-中转回复.md 末行【中转回复】(events 既有扫描与投递,零改动)。
+#   claude=RELAY_MODEL + RELAY_ONCE_DENY;codex=独立 RELAY_ONCE_CODEX_MODEL/EFFORT(当前 sol/xhigh,与验收配型分开)·
+#   起窗即派点名指令 · 回复契约=落盘 记录/<件名>-中转回复.md 末行【中转回复】(events 既有扫描与投递,零改动)。
 RELAY_ONCE_ENGINE_REQ=""; RELAY_ONCE_ENGINE=""
 relay_once_engine_resolve(){  # → stdout "<生效引擎> <请求值>";env > 开关文件 > 默认 claude;非法值按 claude(体检/起窗点名)
   local req eff
@@ -5471,15 +5479,15 @@ rowin() {  # 一次性中继窗名(件名 → relay-<slug>;转义规则与 vwin 
 #   是**派工窗口遇到问题可以拉起来的窗口**,跟 relay、开发窗口、执行窗口一样的」;②「这个窗口**用 codex**,
 #   **跟开发窗口一样**,并且**也需要派工窗口写 prompt**」;③「这条线**只维护 11B、11C 开发维护**」。
 # ⇒ **它就是第四条开发轨,唯一差别是仓与射程**:开发轨维护 `~/来信平台`(产品),本线维护
-#   `~/Developer/laixin-pipeline`(工具)与 11C 工具侧。**其余一切照开发轨**:codex 引擎(与 cmd_up 同源,
-#   零 -m 零推理档吃全局默认)· prompt 驱动 · worktree 隔离 · **开分支 ⛔ 直接提交 main** · 交付落盘 · 件毕即收。
+#   `~/Developer/laixin-pipeline`(工具)与 11C 工具侧。其流程照开发轨:prompt 驱动 · worktree 隔离 ·
+#   **开分支 ⛔ 直接提交 main** · 交付落盘 · 件毕即收;模型仍吃全局默认,未暗跟 08-29 的 A/B 轨新配型。
 # 📌 **⛔ 单例锁**(本命令首版有,当日去掉):worktree 隔离已经解决对写,与 B 轨同理;并发安全靠隔离
 #   ⛔ 靠串行——串行是没有隔离时的退而求其次。合并仍由派工窗口串行做。
 TOOL_REPO="${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}"   # 与 release 同一单点源 ⛔ 再写一份字面路径
 # 引擎:**codex 默认 / claude 第二**(创始人 2026-08-23:「这个位置默认 codex,也写个 claude 的版本」)——
 #   与 relay-once 的「claude 默认 / codex 第二」**主次相反但形态同款**:两条路线都落到位,按件可选。
 TOOL_ENGINE_SW="${LAIXIN_TOOL_ENGINE:-$(cat "$HOME/.laixin-lane-switch/tool-engine" 2>/dev/null || echo codex)}"
-# claude 路线的模型(codex 路线 ⛔ 钉模型,吃全局默认=与开发轨同源)
+# claude 路线的模型(codex 路线当前 ⛔ 钉模型,吃全局默认,待单独定档)
 # 🔴 创始人 2026-08-23 定:**钉 opus-5 ⛔ Fable 5**(与派工窗口同档;本线是工程活,取 agentic 主力档)。
 # ⚠️ 起动串里的引号**仍然保留** ⛔ 因为 opus-5 没有方括号就删——那道引号防的是「模型串含 glob 字符」这一类
 #   (首火实撞 `claude-fable-5[1m]` 的 `[1m]` 被 zsh 当字符类 ⇒ 整条命令没执行,外部只看到启动超时);
@@ -6147,7 +6155,7 @@ native_tmux_cleanup_root() {  # <native根目录>；回收后让 running 账降�
 
 native_run_start() {  # <window> <native根目录> <brief文件> <cwd> <BU> <port> [resume-thread] [mcp-keep|__all__]
   local window="$1" root="$2" brief="$3" cwd="$4" bu="$5" port="$6" resume_thread="${7:-}" mcp_keep="${8:-__all__}"
-  local run run_id lane_self launch
+  local run run_id lane_self launch native_model="" native_effort=""
   [ -f "$brief" ] || return 1
   mkdir -p "$root" || return 1
   run_id="$(date '+%Y%m%d-%H%M%S')-$$-$RANDOM"
@@ -6155,10 +6163,14 @@ native_run_start() {  # <window> <native根目录> <brief文件> <cwd> <BU> <por
   mkdir "$run" || return 1
   cp "$brief" "$run/brief.txt" || return 1
   lane_self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
-  printf -v launch 'env HOME=%q CODEX_HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q BU_NAME=%q BU_CDP_URL=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_WRITABLE_ROOTS=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q %q %q' \
+  case "$window" in
+    lane-a|lane-b) native_model="$LANE_CODEX_MODEL"; native_effort="$LANE_CODEX_EFFORT" ;;
+    verify-*) native_model="$CODEX_MODEL"; native_effort="$CODEX_EFFORT" ;;
+  esac
+  printf -v launch 'env HOME=%q CODEX_HOME=%q LAIXIN_SESSION=%q LAIXIN_BOARD=%q LAIXIN_KB=%q LAIXIN_REPO=%q LAIXIN_RELEASE_REPO=%q LAIXIN_SWITCH_DIR=%q BU_NAME=%q BU_CDP_URL=%q LAIXIN_TOOL_NATIVE_ENGINE=codex LAIXIN_TOOL_NATIVE_INIT_TIMEOUT=%q LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION=%q LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q LAIXIN_NATIVE_WRITABLE_ROOTS=%q LAIXIN_BOARD_SRC=tool-native %q tool-native-run %q %q %q %q %q %q %q %q' \
     "$HOME" "${CODEX_HOME:-$HOME/.codex}" "$SESSION" "$BOARD" "$KB" "$DEFAULT_DIR" "$TOOL_REPO" "$LANE_SWITCH_DIR" \
     "$bu" "http://127.0.0.1:$port" \
-    "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" "$KB" \
+    "${LAIXIN_TOOL_NATIVE_INIT_TIMEOUT:-90}" "${LAIXIN_TOOL_NATIVE_CODEX_FIXTURE_VERSION:-codex}" "$native_model" "$native_effort" "$KB" \
     "$lane_self" "$window" "$run" "$run/brief.txt" "$cwd" "$bu" "$port" "$resume_thread" "$mcp_keep"
   native_tmux_start "$run" "$cwd" "$launch" || return 1
   printf '%s\n' "$run"
@@ -6269,8 +6281,8 @@ lane_native_fresh() {  # <lane> [cmd_up 参数]；print 的就绪与判活只认
   tmux new-window -t "=$SESSION" -n "$w" -c "$dir"
   native_print_bootstrap "$w" "$root" "$dir" "$bu" "$port" "${mcp_keep:-__all__}" \
     || die "$w print 未就绪；native 账保留，回退请 fresh $lane --transport tui"
-  board "lane-$lane" "启动 codex @ $dir"
-  echo "$w 已在 $dir 启动 codex。观看:laixin-lane attach $lane"
+  board "lane-$lane" "启动 codex(${LANE_CODEX_MODEL} ${LANE_CODEX_EFFORT}) @ $dir"
+  echo "$w 已在 $dir 启动 codex(${LANE_CODEX_MODEL} ${LANE_CODEX_EFFORT})。观看:laixin-lane attach $lane"
   echo "(print native 账已完成就绪轮；后续 send 走同一 thread 的 exec resume)"
 }
 
@@ -6328,7 +6340,7 @@ cmd_tool_up() {  # <件名> --prompt <开发prompt.md> --dir <worktree> [--engin
     launch="codex exec --json --sandbox workspace-write -C \"$dir_r\" <同一件 brief 原文>"
     gdef="native JSON"
   elif [ "$TOOL_ENGINE" = "codex" ]; then
-    launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
+    launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # 工具件 Codex 仍吃全局默认;未纳入 08-29 产品开发轨配型,候创始人单独定档。
     gdef="$(codex_global_default 2>/dev/null || echo '?')"
   elif [ "$TOOL_TRANSPORT" = "print" ]; then
     launch="$CLAUDE_LAUNCHER -n \"$w\" --model \"$TOOL_CLAUDE_MODEL\" --permission-mode auto --settings \"$HEADLESS_SETTINGS\" --disallowedTools <既有禁令> -p <同一件点名prompt-argv> --output-format stream-json --verbose </dev/null"
@@ -6422,7 +6434,7 @@ EOF
     if [ "$TOOL_ENGINE" = "codex" ] && [ "$TOOL_TRANSPORT" = "print" ]; then
       echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=codex transport=print 原生JSON(官方 exec；零自动 resume)"
     elif [ "$TOOL_ENGINE" = "codex" ]; then
-      echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=codex(默认) 全局默认=${gdef}(与开发轨同源 ⛔ 钉模型)"
+      echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=codex(默认) 全局默认=${gdef}(⛔ 钉模型,待单独定档)"
     else
       echo "[dry] 窗口=$w cwd=$dir_r BU_NAME=$bu 端口=$port 引擎=claude(第二路线) transport=${TOOL_TRANSPORT} 模型=${TOOL_CLAUDE_MODEL}(开关 ~/.laixin-lane-switch/tool-claude-model)  工具层禁令 ${#TOOL_DENY[@]} 条"
     fi
@@ -6679,9 +6691,8 @@ cmd_peekro() {
 # 规格(排队节该行逐字):吃全局默认 ⛔ 钉模型 · 件毕即收 · 并发多开且各件独立 worktree · 起窗即派任务单路径 ·
 #   双向自证=起窗后窗内自报模型等于全局默认(非 luna)+ 并发两件互不串台。
 # 形态照 relay-once(起窗/点名/回收三件套 + 窗名转义同 vwin/rowin);**唯一本质差别=引擎配置**:
-#   M 件(开发/修理/实施类)= 与 A/B 开发轨**同一条** codex 起动串(cmd_up 的 _launch:`codex <mcp关闭串>`,零 -m 零推理档)
-#   ⛔ codex_launch_cmd(那条显式钉 luna/max,是验收窗与中继件的射程;协作流程 :38「模型按活的性质分 ⛔ 一刀切」——
-#   创始人:「M 轨不要用 luna,用 AB 轨一样的配置」)。自证①先于派单:模型不对就 ⛔ 把任务交给它。
+#   M 件(开发/修理/实施类)仍吃 config.toml 全局默认;创始人 08-29 本轮只钉了产品 A/B 轨,
+#   M 轨是待单独定档的另一窗口,⛔ 暗跟 A/B 新配型。自证①先于派单:模型不对就 ⛔ 把任务交给它。
 mwin() {  # 件名 → m-<slug>(转义规则与 vwin/rowin 逐字同款——tmux 目标字符 . : % $ @ 与空格斜杠)
   local slug; slug="$(echo "$1" | tr ' /.:%$@' '-------' | cut -c1-24)"
   [ -n "$slug" ] || die "件名不能为空"
@@ -6761,10 +6772,10 @@ cmd_mup() {
   local bu port; bu="m$(printf '%s' "$w" | cksum | awk '{print $1}')"; port="$(cdp_port_verify "$w")"
   local gdef; gdef="$(codex_global_default)"
   local _mcp_off; _mcp_off="$(lane_mcp_off_flags "$mcp_keep")"
-  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # 与 cmd_up 开发轨同源:零 -m 零推理档 ⛔ codex_launch_cmd
+  local launch; launch="$(agent_launch_cmd "$bu" "$port" "codex$(codex_service_tier_flag) $_mcp_off")"   # M 轨仍吃全局默认;未纳入 08-29 产品 A/B 轨配型,候单独定档。
   local report="$KB/4-开发层/记录/M轨-${item}-报告.md"
   local msg; msg="$(cat <<EOF
-你是 laixin 开发流水线的**机动窗**(M 轨一次性应召窗;引擎=codex,配置=与 A/B 开发轨同源吃 config.toml 全局默认——本窗起窗自证:${gdef};由派工窗口按件起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
+你是 laixin 开发流水线的**机动窗**(M 轨一次性应召窗;引擎=codex,配置=吃 config.toml 全局默认——本窗起窗自证:${gdef};由派工窗口按件起,**件毕即收 ⛔ 常驻 ⛔ 再接新件**)。
 
 件名:${item}
 任务单(先通读,它是本件唯一依据;四要件——目标/射程/自证判据/交付物——不齐就停,在报告里写明缺什么 ⛔ 自行补脑):${task}

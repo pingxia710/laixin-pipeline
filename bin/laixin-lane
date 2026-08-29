@@ -2393,7 +2393,15 @@ cmd_doctor() {
   local eff="${CLAUDE_CONFIG_DIR:-$HOME/.claude-official}"
   for sk in laixin-pipeline laixin-acceptance laixin-kickoff laixin-dual-audience laixin-version-flow laixin-plan-window; do   # version-flow 2026-08-23 收敛入仓(此前两处真目录各自漂移:codex 侧落后 claude 侧 12 行);plan-window 2026-08-24 新增(方案窗口/11C 主持卡)。清单是**手挑的流水线核心卡** ⛔ 读成「仓里 skills/ 全集」——deploy 与 opc-business 不在起窗注入路径上,故不入本检
     if [ ! -f "$HOME/.codex/skills/$sk/SKILL.md" ]; then bad "$sk 单点源缺失"; continue; fi
-    if [ -L "$eff/skills/$sk" ]; then ok "$sk 生效目录已软链"
+    if [ -L "$eff/skills/$sk" ]; then
+      # 例22(2026-08-29 pingxia-fe 实证):`-L` 只测「是不是软链」,终点的存在性 / 身份 / 内容一概不核。
+      #   实测三种失效**全报绿**:断链 · 终点是空目录 · 指向错目标——而它们的后果与下面 else 分支
+      #   自陈的「窗口调不到它(静默失效)」完全相同 ⇒ 同一后果的不同失效形态被分派到相反判定色。
+      if [ ! -f "$eff/skills/$sk/SKILL.md" ]; then
+        bad "$sk 生效目录是软链但**终点读不到 SKILL.md**(断链/指错/空目录——窗口同样调不到它)→ $(readlink "$eff/skills/$sk")"
+      elif [ ! "$eff/skills/$sk/SKILL.md" -ef "$HOME/.codex/skills/$sk/SKILL.md" ]; then
+        bad "$sk 软链终点**不是单点源**(第二份事实,会漂移)→ $(readlink "$eff/skills/$sk")"
+      else ok "$sk 生效目录已软链且终点即单点源"; fi
     elif [ -d "$eff/skills/$sk" ]; then bad "$sk 在生效目录是**实体副本**(会与单点源漂移)"
     else bad "$sk 未落在生效目录 $eff/skills —— 窗口调不到它(静默失效)"; fi
     if [ -d "$HOME/.claude/skills/$sk" ] && [ ! -L "$HOME/.claude/skills/$sk" ]; then
@@ -2411,12 +2419,12 @@ cmd_doctor() {
   command -v claude >/dev/null && ok "claude 可执行" || bad "claude 不可执行(验收/派工窗口起不来)"
   # #25 发布代龄(提示不强制,对齐 loop_stale):软链指发布版时比对发布内容与仓库已提交版
   if release_stale; then
-    wrn "发布版落后仓库已提交版——laixin-lane release 换代(#25;运行中的旧进程握旧 inode 不受影响)"
+    wrn "发布版落后仓库已提交版(落后的链:${REL_STALE_LIST:-未记})——laixin-lane release 换代(#25;运行中的旧进程握旧 inode 不受影响)"
   else
     local _rbin _rtgt; _rbin="${LAIXIN_RELEASE_BIN:-$HOME/.local/bin/laixin-lane}"
     _rtgt="$(readlink "$_rbin" 2>/dev/null || echo 非软链)"
     case "$_rtgt" in
-      "${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"/*) ok "发布版与仓库已提交版一致($(basename "$_rtgt"))" ;;
+      "${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"/*) ok "发布版与仓库已提交版一致(${REL_CHECKED_N:-0} 条发布链逐条核过)" ;;
       *) echo "  ℹ️ laixin-lane 软链未指向发布版(当前→${_rtgt};开发直连态,#25 切换动作留复工试火)" ;;
     esac
   fi
@@ -4309,10 +4317,27 @@ release_stale(){  # → 0=软链指向发布版且其内容落后仓库已提交
   local ltgt committed
   ltgt="$(readlink "$lbin" 2>/dev/null)" || return 1
   case "$ltgt" in "$rel_dir"/*) ;; *) return 1 ;; esac   # 软链不指发布目录=开发直连态,不适用
-  committed="$(mktemp)" || return 1
-  if ! git -C "$repo" show "HEAD:bin/laixin-lane" > "$committed" 2>/dev/null; then rm -f "$committed"; return 1; fi
-  if cmp -s "$committed" "$lbin" 2>/dev/null; then rm -f "$committed"; return 1; fi   # 内容级比对:HEAD 前进但脚本没变不算落后
-  rm -f "$committed"; return 0
+  # 例21(2026-08-29 pingxia-fe 实证):此前只 cmp `bin/laixin-lane` **一个文件**,而发布目录下每个
+  #   可执行**各有一条独立发布软链**(实测 8 条)⇒ 其余 7 条指哪一代、有没有跟上 HEAD,全不核。
+  #   隔离实验:发布单元内 replay-six 置旧版、laixin-lane 与 HEAD 逐字节同时,doctor 照报「一致」。
+  #   ⇒ 按形状二判据「装闸时须枚举同类对象并逐一确认」改为逐条核;失效仍一律判「不适用」(三约束②)。
+  #   ⛔ 用通配直接读目录内容(形状八):此处只 readlink + cmp 已过滤的软链,不打开陌生文件类型。
+  local _bindir _f _b _tgt _stale=1
+  REL_CHECKED_N=0; REL_STALE_LIST=""
+  _bindir="$(dirname "$lbin")"
+  for _f in "$_bindir"/*; do
+    _tgt="$(readlink "$_f" 2>/dev/null)" || continue
+    case "$_tgt" in "$rel_dir"/*) ;; *) continue ;; esac   # 只核指向发布目录的链
+    _b="$(basename "$_f")"
+    git -C "$repo" cat-file -e "HEAD:bin/$_b" 2>/dev/null || continue   # 仓里没有同名脚本=不适用
+    committed="$(mktemp)" || continue
+    if git -C "$repo" show "HEAD:bin/$_b" > "$committed" 2>/dev/null; then
+      REL_CHECKED_N=$((REL_CHECKED_N+1))
+      cmp -s "$committed" "$_f" 2>/dev/null || { _stale=0; REL_STALE_LIST="${REL_STALE_LIST}${REL_STALE_LIST:+ }$_b"; }
+    fi
+    rm -f "$committed"
+  done
+  return $_stale
 }
 
 cmd_events(){

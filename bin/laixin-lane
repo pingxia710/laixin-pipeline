@@ -3130,10 +3130,64 @@ ev_material_targets(){  # <材料清单文件> → 真正在飞且 prompt 引用
 
 ev_same_contract_mode(){ case "$1" in 【交付完成】*) printf quiet ;; *) printf notify ;; esac; }
 
-ev_prompt_report_path(){  # <prompt> → stdout=唯一交付报告绝对路径；1=缺失，2=多义
+# ── 交付报告路径推导(#事件总线假阴性双根因,2026-08-29 08:40 融合五 / 10:00 4c 两次实撞)──
+# 病灶:此前只认「从 `/` 起锚的完整 .md 路径」,两种真实 prompt 写法各踩一条,
+#   而**两条的症状与「开发轨真的没写报告」完全同形**——事件都报「已 settled、无合法报告」。
+#   (a) prompt 只给目录 + 命名规则(融合五 第 33 条 `…/4-开发层/记录/`(一片一文件))⇒ 推不出 ⇒ 判无报告;
+#   (b) prompt 写 `~/Obsidian/…/记录/….md`(4c 系列第 4 条)⇒ 从 `/` 起锚推出 `/Obsidian/…`,
+#       **缺 $HOME 前缀但格式完全正确** ⇒ 文件不存在 ⇒ 判 missing。报告其实早已落盘。
+# ⇒ 修法两条:`~/` 展开;无完整路径时按**片名**在同库 `记录/` 通配回退。
+# ⇒ 分界通则(替代表卷首):程序只答**推得出/推不出**,推不出一律「未判」并说明是**无路径**还是**多义**
+#   (多义列候选),⛔ 沿用「无合法报告」——那是关于报告的断言,而这里失败的是关于路径的推导。
+
+ev_prompt_report_dir(){  # <prompt绝对路径> → stdout=同一知识库的 4-开发层/记录 目录；1=推不出
+  # 从 prompt 自身路径推,⛔ 硬编码某一个库:同一工具要服务来信/钓不钓多个库,fixture 也才能自足。
+  local prompt="$1" base
+  case "$prompt" in
+    */4-开发层/*) base="${prompt%/4-开发层/*}/4-开发层/记录" ;;
+    *) return 1 ;;
+  esac
+  [ -d "$base" ] || return 1
+  printf '%s\n' "$base"
+}
+
+ev_prompt_piece_name(){  # <prompt> → stdout=片名；1=推不出
+  local prompt="$1" name
+  # ① frontmatter `piece:` —— 派工窗口的**结构化声明**,是唯一无歧义来源,优先。
+  name="$(sed -n '1,40p' "$prompt" 2>/dev/null | sed -n 's/^piece:[[:space:]]*//p' | head -1)"
+  name="${name%\"}"; name="${name#\"}"; name="${name%\'}"; name="${name#\'}"
+  # ② 回退到 H1 `# <项目>:<片名> · 开发 prompt`:先砍 ` · ` 起的尾,再砍 `<项目>:` 头。
+  #    砍不干净不要紧——片名过宽只会命中 0 条或多条,两种都落「未判」,⛔ 会静默认错报告。
+  if [ -z "$name" ]; then
+    name="$(grep -m1 '^# ' "$prompt" 2>/dev/null | sed -e 's/^#[[:space:]]*//' -e 's/[[:space:]]·[[:space:]].*$//')"
+    name="${name#*:}"; name="${name#*：}"
+  fi
+  name="${name%"${name##*[![:space:]]}"}"; name="${name#"${name%%[![:space:]]*}"}"
+  [ -n "$name" ] || return 1
+  printf '%s\n' "$name"
+}
+
+ev_report_candidates(){  # <prompt> → stdout=候选交付报告绝对路径(0~N 行,已排序去重)
+  local prompt="$1" paths dir piece
+  [ -r "$prompt" ] || return 0
+  # ① prompt 里显式写的完整路径;`~` 也起锚,再展开成 $HOME(根因 b)。
+  paths="$(grep -oE '(~|/)[^[:space:]`]*4-开发层/记录/[^[:space:]`]*\.md' "$prompt" 2>/dev/null \
+           | sed "s|^~|${HOME}|" | sort -u)"
+  # ② 只给目录时按片名通配(根因 a)。`*<片名>*报告.md` 覆盖 交付报告/停车报告/报告 三种实际命名,
+  #    且不吃 `-验收回执.md`;命中 0 或 ≥2 由上层判「未判」。
+  if [ -z "$paths" ]; then
+    dir="$(ev_prompt_report_dir "$prompt")" || return 0
+    piece="$(ev_prompt_piece_name "$prompt")" || return 0
+    paths="$(find "$dir" -maxdepth 1 -type f -name "*${piece}*报告.md" 2>/dev/null | sort -u)"
+  fi
+  [ -n "$paths" ] || return 0
+  printf '%s\n' "$paths"
+}
+
+ev_prompt_report_path(){  # <prompt> → stdout=唯一交付报告绝对路径；1=无路径，2=多义
   local prompt="$1" paths count
   [ -r "$prompt" ] || return 1
-  paths="$(grep -oE '/[^[:space:]`]*4-开发层/记录/[^[:space:]`]*\.md' "$prompt" 2>/dev/null | sort -u)"
+  paths="$(ev_report_candidates "$prompt")"
   [ -n "$paths" ] || return 1
   count="$(wc -l <<< "$paths" | tr -d ' ')"
   [ "$count" = 1 ] || return 2
@@ -3171,12 +3225,18 @@ ev_terminal_deliver(){  # <run> <lane> <status> <文本>；同一 native run 只
 }
 
 ev_native_terminal_scan(){  # print lane 的终态只认 native 账；报告事件仍由既有扫描/分流投递
-  local lane root prompt run state status report kind last path_rc note
+  local lane root prompt run state status report kind last path_rc note head nxt ptr
   for lane in a b c; do
     root="$(lane_native_root "$lane")"
     native_print_active "$root" || continue
-    prompt="$EV_PROMPT_DIR/lane-$lane"
-    [ -r "$prompt" ] || continue  # fresh/bootstrap 无业务 prompt，⛔ 误报「无报告」
+    ptr="$EV_PROMPT_DIR/lane-$lane"
+    [ -r "$ptr" ] || continue  # fresh/bootstrap 无业务 prompt，⛔ 误报「无报告」
+    # 🔴 少一跳解引用(M3 三件之三;08-29 08:40 融合五 / 10:00 4c 两次实撞的**首因**):
+    #   指针文件里存的是 prompt 的**路径**(见 ev_prompt_set),报告路径要从 prompt **正文**推。
+    #   此前直接把指针文件当正文喂给推导 ⇒ grep 到的只有 `…/4-开发层/prompt/x.md` 这一行,
+    #   永远匹配不到 `记录/` ⇒ **每一片真实业务片都恒报「无合法报告」**,与「开发轨真没写报告」同形。
+    #   ev_material_targets 同一契约是 `cat "$state"` 解引用的,此处是唯一漏掉的消费点。
+    prompt="$(cat "$ptr" 2>/dev/null)"
     run="$(cat "$root/current" 2>/dev/null || true)"
     [ -d "$run" ] || continue
     state="$(tool_native_status read "$run" 2>/dev/null || true)"
@@ -3194,18 +3254,28 @@ ev_native_terminal_scan(){  # print lane 的终态只认 native 账；报告事�
           esac
           last="$(last_contract_line "$report" 2>/dev/null || true)"
           note="预期报告路径=${report};报告判定=${kind};末行=${last:-无}"
+          head="开发轨已 settled、无合法报告"
+          nxt="事件已含预期路径/报告判定/末行,派工窗口据此归口(⛔ 再自行核一遍交付路径)"
         else
           path_rc=$?
+          # 未判 ⛔ 说成「无合法报告」:失败的是路径推导,不是报告本身——这两件在旧文案里同形,
+          # 派工据此发过错读数(08-40 融合五 / 10:00 4c)。此处按未判种类明写,并列出多义候选。
           case "$path_rc" in
-            1) note="预期报告路径不可判(prompt 未给唯一交付报告路径:${prompt})" ;;
-            *) note="预期报告路径不可判(prompt 内多义:${prompt})" ;;
+            1) if [ -r "$prompt" ]; then
+                 note="报告路径未判:无路径(prompt 既无完整 .md 路径,也推不出唯一片名通配;prompt=${prompt})"
+               else
+                 note="报告路径未判:无路径(指针 ${ptr} 指向的 prompt 不可读:${prompt:-空})"
+               fi ;;
+            *) note="报告路径未判:多义(候选=$(ev_report_candidates "$prompt" | tr '\n' ' ');prompt=${prompt})" ;;
           esac
+          head="开发轨已 settled、报告路径未判"
+          nxt="路径未判,交回派工窗口核 prompt 的交付路径声明(④ 读不懂显式交 AI)"
         fi
-        ev_terminal_deliver "$run" "$lane" "$status" "【事件】开发轨已 settled、无合法报告：lane-${lane}
+        ev_terminal_deliver "$run" "$lane" "$status" "【事件】${head}：lane-${lane}
 native账:${run}
 status:${status}
 ${note}
-下一步:读 prompt 与 native 账核交付路径；⛔ 自动重派、⛔ 自动重启、⛔ 自动回落 TUI。"
+下一步:${nxt}；⛔ 自动重派、⛔ 自动重启、⛔ 自动回落 TUI。"
         ;;
       failed\ *)
         if report="$(ev_prompt_report_path "$prompt")"; then
@@ -3215,8 +3285,12 @@ ${note}
         else
           path_rc=$?
           case "$path_rc" in
-            1) note="预期报告路径不可判(prompt 未给唯一交付报告路径:${prompt})" ;;
-            *) note="预期报告路径不可判(prompt 内多义:${prompt})" ;;
+            1) if [ -r "$prompt" ]; then
+                 note="报告路径未判:无路径(prompt 既无完整 .md 路径,也推不出唯一片名通配;prompt=${prompt})"
+               else
+                 note="报告路径未判:无路径(指针 ${ptr} 指向的 prompt 不可读:${prompt:-空})"
+               fi ;;
+            *) note="报告路径未判:多义(候选=$(ev_report_candidates "$prompt" | tr '\n' ' ');prompt=${prompt})" ;;
           esac
         fi
         ev_terminal_deliver "$run" "$lane" "$status" "【事件】开发轨崩溃：lane-${lane}

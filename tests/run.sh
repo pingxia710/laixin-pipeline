@@ -5440,7 +5440,7 @@ rm -f "$PK"
 # ── #172 开发轨终端态事件:真实函数 + 隔离 native 账夹具(停车/崩溃不能再静默)──
 echo "== 开发轨终端态事件 =="
 N172="$(mktemp -d)"; F172="$N172/events.sh"
-for fn in last_contract_line ev_scan_deliveries ev_unsettled ev_last_get ev_last_set ev_same_contract_mode ev_prompt_report_path ev_terminal_report_kind ev_terminal_report_ready ev_terminal_deliver ev_native_terminal_scan ev_loop; do
+for fn in last_contract_line ev_scan_deliveries ev_unsettled ev_last_get ev_last_set ev_same_contract_mode ev_prompt_report_dir ev_prompt_piece_name ev_report_candidates ev_prompt_report_path ev_terminal_report_kind ev_terminal_report_ready ev_terminal_deliver ev_native_terminal_scan ev_loop; do
   sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$F172"
 done
 
@@ -5454,7 +5454,7 @@ t "停车报告只认新标记或精确历史末行(正文/错拼不误报)" env
   grep -qF "$KB/4-开发层/记录/new.md|" <<< "$out" && grep -qF "$KB/4-开发层/记录/legacy.md|" <<< "$out" && [ "$(ev_terminal_report_kind "$KB/4-开发层/记录/legacy.md")" = parking ] && ! grep -qE "body-only|misspelled" <<< "$out"'
 
 t "native settled/failed/running/bootstrap:一次事件且不重复刷看板" env N172="$N172" F172="$F172" bash -c '
-  source "$F172"; T="$N172/native"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"; mkdir -p "$EV_PROMPT_DIR" "$T/run-a" "$T/run-b" "$T/run-c" "$T/kb/4-开发层/记录"
+  source "$F172"; T="$N172/native"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"; mkdir -p "$EV_PROMPT_DIR" "$T/run-a" "$T/run-b" "$T/run-c" "$T/kb/4-开发层/记录" "$T/kb/4-开发层/prompt"
   lane_native_root(){ printf "%s/native/lane-%s\\n" "$EV_DIR" "$1"; }
   native_print_active(){ return 0; }
   board(){ printf "%s\\n" "$2" >> "$T/board"; }
@@ -5464,13 +5464,18 @@ t "native settled/failed/running/bootstrap:一次事件且不重复刷看板" en
   printf "%s\\n" "$T/run-a" > "$(lane_native_root a)/current"; printf "settled fixture\\n" > "$T/run-a/status"
   printf "%s\\n" "$T/missing-prompt.md" > "$EV_PROMPT_DIR/lane-a"
   ev_native_terminal_scan; ev_native_terminal_scan
-  [ "$(grep -c "已 settled、无合法报告" "$T/delivered")" -eq 1 ] && [ "$(wc -l < "$T/board" | tr -d " ")" -eq 1 ]
+  # 指针在、指向的 prompt 不在 ⇒ 未判「无路径」⛔ 断言「无合法报告」(那是关于报告的话,这里连路径都没推出)
+  [ "$(grep -c "已 settled、报告路径未判" "$T/delivered")" -eq 1 ] && grep -q "指向的 prompt 不可读" "$T/delivered" && [ "$(wc -l < "$T/board" | tr -d " ")" -eq 1 ]
   printf "%s\\n" "$T/run-b" > "$(lane_native_root b)/current"; printf "failed fixture\\n" > "$T/run-b/status"; touch "$T/run-b/alerted"
-  printf "正文\\n【交付完成】b abcdef0\\n" > "$T/kb/4-开发层/记录/b.md"; printf "%s\\n" "$T/kb/4-开发层/记录/b.md" > "$EV_PROMPT_DIR/lane-b"
+  printf "正文\\n【交付完成】b abcdef0\\n" > "$T/kb/4-开发层/记录/b.md"
+  printf "4. 交付报告落盘 %s\\n" "$T/kb/4-开发层/记录/b.md" > "$T/kb/4-开发层/prompt/b-prompt.md"
+  printf "%s\\n" "$T/kb/4-开发层/prompt/b-prompt.md" > "$EV_PROMPT_DIR/lane-b"
   ev_native_terminal_scan; ev_native_terminal_scan
   [ "$(grep -c "开发轨崩溃" "$T/delivered")" -eq 1 ] && [ "$(wc -l < "$T/board" | tr -d " ")" -eq 1 ]
   printf "%s\\n" "$T/run-c" > "$(lane_native_root c)/current"; printf "running fixture\\n" > "$T/run-c/status"
-  printf "正文\\n【交付完成】c abcdef0\\n" > "$T/kb/4-开发层/记录/c.md"; printf "%s\\n" "$T/kb/4-开发层/记录/c.md" > "$EV_PROMPT_DIR/lane-c"
+  printf "正文\\n【交付完成】c abcdef0\\n" > "$T/kb/4-开发层/记录/c.md"
+  printf "4. 交付报告落盘 %s\\n" "$T/kb/4-开发层/记录/c.md" > "$T/kb/4-开发层/prompt/c-prompt.md"
+  printf "%s\\n" "$T/kb/4-开发层/prompt/c-prompt.md" > "$EV_PROMPT_DIR/lane-c"
   ev_native_terminal_scan; rm -f "$EV_PROMPT_DIR/lane-c"; printf "settled fixture\\n" > "$T/run-c/status"; ev_native_terminal_scan
   [ ! -e "$T/run-c/terminal-event" ] && [ ! -e "$T/run-c/terminal-report" ]'
 
@@ -5481,10 +5486,11 @@ run_terminal_tick(){ # <events source> <dead=0|1> <complete|parking> → 真实 
   sed 's/^  while true; do$/  for _terminal_one_tick in 1; do/' "$source_file" > "$one_tick"
   env ROOT172="$root" F172="$one_tick" MARKER172="$marker" bash -c '
     source "$F172"; T="$ROOT172"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"; EV_SEEN="$EV_DIR/seen"; EV_SETTLING="$EV_DIR/settling"; EV_LAST="$EV_DIR/last"; EV_HB="$EV_DIR/hb"; EV_BOARD_POS="$EV_DIR/board.pos"; EV_VAULT="$T/vault"; KB="$T/kb"; BOARD="$T/board"; EV_TICK=60; EV_STALL=360; EV_PENDING="$T/pending"; EV_SPOOL="$T/spool"; RELAY_OUTBOX="$T/outbox"; RELAY_OUTBOX_D="$T/outbox.d"
-    mkdir -p "$EV_PROMPT_DIR" "$EV_DIR/native/lane-a" "$T/run" "$KB/4-开发层/记录" "$EV_VAULT"; : > "$BOARD"; printf "keep|hash\\n" > "$EV_SEEN"
+    mkdir -p "$EV_PROMPT_DIR" "$EV_DIR/native/lane-a" "$T/run" "$KB/4-开发层/记录" "$KB/4-开发层/prompt" "$EV_VAULT"; : > "$BOARD"; printf "keep|hash\\n" > "$EV_SEEN"
     report="$KB/4-开发层/记录/tick.md"; printf "正文\\n" > "$report"
     if [ "$MARKER172" = parking ]; then printf "【交付停车】tick 缺裁定\\n" >> "$report"; else printf "【交付完成】tick abcdef0\\n" >> "$report"; fi
-    printf "%s\\n" "$report" > "$EV_PROMPT_DIR/lane-a"; printf "%s\\n" "$T/run" > "$EV_DIR/native/lane-a/current"; printf "settled fixture\\n" > "$T/run/status"
+    printf "4. 交付报告落盘 %s\\n" "$report" > "$KB/4-开发层/prompt/tick-prompt.md"
+    printf "%s\\n" "$KB/4-开发层/prompt/tick-prompt.md" > "$EV_PROMPT_DIR/lane-a"; printf "%s\\n" "$T/run" > "$EV_DIR/native/lane-a/current"; printf "settled fixture\\n" > "$T/run/status"
     lane_native_root(){ printf "%s/native/lane-%s\\n" "$EV_DIR" "$1"; }; native_print_active(){ return 0; }; tool_native_status(){ cat "$2/status"; }; ev_log(){ :; }; board(){ :; }; loop_self_gen(){ :; }; loop_gen_record(){ :; }; loop_reload_due(){ return 1; }; wd_alive(){ return 0; }; ev_hb_cutoff(){ date +%s; }; dispatch_alive(){ return 1; }; tmux(){ return 0; }
     sleep(){ :; }
     ev_deliver(){ printf "%s|%s\\n" "$1" "$2" > "$T/delivered"; }
@@ -5503,6 +5509,115 @@ t "settled 完成报告在同一 tick 投既有交付事件(绕过去抖)" run_t
 t "settled 停车报告在同一 tick 投停车事件" run_terminal_tick "$F172" 0 parking
 sed '/^[[:space:]]*ev_native_terminal_scan$/d' "$F172" > "$N172/events-without-terminal-scan.sh"
 t "反事实:删去终态接线后新报告留在去抖,本拍无投递" run_terminal_tick "$N172/events-without-terminal-scan.sh" 1 complete
+
+# ── 交付报告路径推导:少一跳解引用 + 双根因(2026-08-29 08:40 融合五 / 10:00 4c 各发一次错读数)──
+# 三条病灶叠在一起,症状与「开发轨真的没写报告」**完全同形**,所以带着绿测试在生产上恒错:
+#   首因 少一跳解引用 —— 指针文件存的是 prompt **路径**,却被当正文喂给推导 ⇒ 每片恒推不出;
+#   (a) prompt 只给目录 + 命名规则(融合五)⇒ 无完整路径可抓;
+#   (b) prompt 写 `~/…`(4c 系列)⇒ 从 `/` 起锚推出缺 $HOME 的路径,格式对、文件不存在。
+# ⚠️ 旧夹具把「指针内容 = 报告路径」写死,等于把 bug 的契约写进了测试——上面三条既有用例已同步改成真实契约。
+R172="$N172/report-path"; mkdir -p "$R172/kb/4-开发层/记录" "$R172/kb/4-开发层/prompt"
+cat > "$R172/kb/4-开发层/prompt/p-dir.md" <<'EOPD'
+---
+type: development-prompt
+piece: 测试片-甲
+---
+# 测试项目:测试片-甲 · 开发 prompt
+4. **交付报告落盘** `~/kb/4-开发层/记录/`(一片一文件),**末行行首** `【交付完成】<分支> <commit>`;
+EOPD
+printf '正文\n【交付完成】jia abcdef0\n' > "$R172/kb/4-开发层/记录/proj-测试片-甲-交付报告.md"
+cat > "$R172/kb/4-开发层/prompt/p-tilde.md" <<'EOPT'
+---
+type: development-prompt
+piece: 测试片-乙
+---
+4. **交付报告落盘** `~/kb/4-开发层/记录/proj-测试片-乙-交付报告.md`(**唯一路径**);
+EOPT
+printf '正文\n【交付完成】yi abcdef0\n' > "$R172/kb/4-开发层/记录/proj-测试片-乙-交付报告.md"
+cat > "$R172/kb/4-开发层/prompt/p-ambig.md" <<'EOPA'
+---
+type: development-prompt
+piece: 测试片-丙
+---
+4. **交付报告落盘** `~/kb/4-开发层/记录/`(一片一文件);
+EOPA
+printf '正文\n【交付完成】bing abcdef0\n' > "$R172/kb/4-开发层/记录/proj-测试片-丙-交付报告.md"
+printf '正文\n写单产物\n' > "$R172/kb/4-开发层/记录/写单-测试片-丙-报告.md"
+cat > "$R172/kb/4-开发层/prompt/p-invalid.md" <<'EOPI'
+---
+type: development-prompt
+piece: 测试片-丁
+---
+4. **交付报告落盘** `~/kb/4-开发层/记录/`(一片一文件);
+EOPI
+printf '正文\n【交付完成】ding abcdef0\n### 验收观察\n契约行后面还有正文\n' > "$R172/kb/4-开发层/记录/proj-测试片-丁-交付报告.md"
+# 修前实现原样留档,作为「绊线能分成败」的常驻对照(⛔ 用 git show main:,合入后 main 就是修后版)
+cat > "$R172/pre.sh" <<'EOPRE'
+pre_report_path(){
+  local prompt="$1" paths count
+  [ -r "$prompt" ] || return 1
+  paths="$(grep -oE '/[^[:space:]`]*4-开发层/记录/[^[:space:]`]*\.md' "$prompt" 2>/dev/null | sort -u)"
+  [ -n "$paths" ] || return 1
+  count="$(wc -l <<< "$paths" | tr -d ' ')"
+  [ "$count" = 1 ] || return 2
+  printf '%s\n' "$paths"
+}
+EOPRE
+
+t "① 只给目录+命名规则 ⇒ 按片名通配命中唯一实存报告(融合五 形态)" env R172="$R172" F172="$F172" bash -c '
+  source "$F172"
+  out="$(ev_prompt_report_path "$R172/kb/4-开发层/prompt/p-dir.md")" || exit 1
+  [ "$out" = "$R172/kb/4-开发层/记录/proj-测试片-甲-交付报告.md" ] && [ -f "$out" ]'
+
+t "② ~/ 前缀展开成 \$HOME 且推出的文件真存在(4c 形态)" env R172="$R172" F172="$F172" HOME="$R172" bash -c '
+  source "$F172"
+  out="$(ev_prompt_report_path "$R172/kb/4-开发层/prompt/p-tilde.md")" || exit 1
+  case "$out" in "$HOME"/*) ;; *) exit 1 ;; esac
+  [ -f "$out" ] && [ "$(ev_terminal_report_kind "$out")" = complete ]'
+
+t "③ 两份候选 ⇒ 事件写「未判:多义」并列出两条,⛔ 写成「无合法报告」" env R172="$R172" F172="$F172" bash -c '
+  source "$F172"; T="$R172/ev3"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"
+  mkdir -p "$EV_PROMPT_DIR" "$EV_DIR/native/lane-a" "$T/run"
+  lane_native_root(){ printf "%s/native/lane-%s\n" "$EV_DIR" "$1"; }
+  native_print_active(){ return 0; }; board(){ :; }
+  ev_deliver(){ printf "%s\n" "$2" >> "$T/delivered"; }
+  tool_native_status(){ cat "$2/status"; }
+  printf "%s\n" "$T/run" > "$(lane_native_root a)/current"; printf "settled fixture\n" > "$T/run/status"
+  printf "%s\n" "$R172/kb/4-开发层/prompt/p-ambig.md" > "$EV_PROMPT_DIR/lane-a"
+  ev_native_terminal_scan
+  grep -q "报告路径未判:多义" "$T/delivered" \
+    && grep -q "写单-测试片-丙-报告.md" "$T/delivered" \
+    && grep -q "proj-测试片-丙-交付报告.md" "$T/delivered" \
+    && ! grep -q "无合法报告" "$T/delivered"'
+
+t "④ 报告实存但契约行不在末尾 ⇒ 事件出 判定=invalid + 末行,⛔ 报路径未判(08:40 融合五 真形态)" env R172="$R172" F172="$F172" bash -c '
+  source "$F172"; T="$R172/ev4"; EV_DIR="$T/events"; EV_PROMPT_DIR="$EV_DIR/prompts"
+  mkdir -p "$EV_PROMPT_DIR" "$EV_DIR/native/lane-a" "$T/run"
+  lane_native_root(){ printf "%s/native/lane-%s\n" "$EV_DIR" "$1"; }
+  native_print_active(){ return 0; }; board(){ :; }
+  ev_deliver(){ printf "%s\n" "$2" >> "$T/delivered"; }
+  tool_native_status(){ cat "$2/status"; }
+  printf "%s\n" "$T/run" > "$(lane_native_root a)/current"; printf "settled fixture\n" > "$T/run/status"
+  printf "%s\n" "$R172/kb/4-开发层/prompt/p-invalid.md" > "$EV_PROMPT_DIR/lane-a"
+  ev_native_terminal_scan
+  grep -q "预期报告路径=$R172/kb/4-开发层/记录/proj-测试片-丁-交付报告.md" "$T/delivered" \
+    && grep -q "报告判定=invalid" "$T/delivered" && grep -q "末行=契约行后面还有正文" "$T/delivered" \
+    && ! grep -q "路径未判" "$T/delivered"'
+
+t "⑤ 对照:少一跳解引用(拿指针当正文)⇒ 推不出——首因绊线" env R172="$R172" F172="$F172" bash -c '
+  source "$F172"; P="$R172/kb/4-开发层/prompt/p-dir.md"; ptr="$R172/ptr-lane-a"
+  printf "%s\n" "$P" > "$ptr"
+  ev_prompt_report_path "$P" >/dev/null || exit 1
+  ! ev_prompt_report_path "$ptr" >/dev/null 2>&1'
+
+t "⑥ 对照:修前推导对 ①② 必红(①推不出 ②推出但文件不存在)" env R172="$R172" HOME="$R172" bash -c '
+  source "$R172/pre.sh"
+  ! pre_report_path "$R172/kb/4-开发层/prompt/p-dir.md" >/dev/null 2>&1 || exit 1
+  out="$(pre_report_path "$R172/kb/4-开发层/prompt/p-tilde.md")" || exit 1
+  case "$out" in "$HOME"/*) exit 1 ;; esac
+  [ ! -f "$out" ]'
+
+
 rm -rf "$N172"
 
 

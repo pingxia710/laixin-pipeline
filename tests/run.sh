@@ -6072,23 +6072,49 @@ d="$1"; base="$2"; mode="${3:-}"
 mkdir -p "$d/tests" "$d/11b"
 printf 'def add(a, b):\n    return abs(a) + abs(b)\n' > "$d/lib.py"
 printf 'import unittest\nfrom lib import add\nclass T(unittest.TestCase):\n    def test_add_basic(self):\n        self.assertEqual(add(1, 2), 3)\n' > "$d/tests/test_lib.py"
+if [ "$mode" = 无关红 ]; then
+  # 它在**基线 commit 里就存在**(⛔ 本片新增),且在基点上真红、候选上转绿
+  # ⇒ 红条集合里混进一个不属于本片新增 def 集合的名字。
+  printf '\n    def test_pre_existing_red_not_added_by_this_slice(self):\n        self.assertEqual(add(-7, -8), -15)\n' >> "$d/tests/test_lib.py"
+fi
 printf 'cmd=PY="$(command -v python3)"; V="$("$PY" --version 2>&1)"; echo "ENTRY_VERSION=$V"; case "$V" in "%s"*) echo "ENTRY_GUARD=ok" ;; *) echo "ENTRY_GUARD=interpreter_baseline_mismatch got=$V"; exit 91 ;; esac; "$PY" -m unittest discover -s tests -v\njudge=rc\n' "$base" > "$d/11b/test-entry.conf"
 git -C "$d" init -q -b main .
 git -C "$d" add -A; git -C "$d" -c user.name=f -c user.email=f@x commit -qm base
 git -C "$d" checkout -qb fix
 printf 'def add(a, b):\n    return a + b\n' > "$d/lib.py"
-if [ "$mode" = 恒真 ]; then
+[ "$mode" = ERROR红 ] && printf 'def added_helper():\n    return 7\n' >> "$d/lib.py"
+if [ "$mode" = 多绊线 ]; then
+  # 本片**新增两条**绊线,两条在基点都以断言失败红、在候选都绿 ⇒ 旧规则 nfail>1 会误判未判
+  printf '\n    def test_add_negative_regression(self):\n        self.assertEqual(add(-1, -2), -3)\n\n    def test_add_mixed_regression(self):\n        self.assertEqual(add(-5, 3), -2)\n' >> "$d/tests/test_lib.py"
+elif [ "$mode" = ERROR红 ]; then
+  # 新增两条:一条断言红,一条在基点**AttributeError**(候选才有 added_helper)⇒ 非断言红
+  printf '\n    def test_add_negative_regression(self):\n        self.assertEqual(add(-1, -2), -3)\n\n    def test_needs_added_helper(self):\n        import lib\n        self.assertEqual(lib.added_helper(), 7)\n' >> "$d/tests/test_lib.py"
+elif [ "$mode" = 恒真模块名 ]; then
+  # 点名的那条**恒真**(没守住缺陷),而**同模块另一条**在基点上真红。
+  # ⇒ 拿模块名当签名会 grep 到后者的 FAIL 而误判「成立」;拿真函数名则正确判「不成立」。
+  printf '\n    def test_add_negative_regression(self):\n        self.assertTrue(True)\n\n    def test_other_in_same_module_fails_on_base(self):\n        self.assertEqual(add(-5, -6), -11)\n' >> "$d/tests/test_lib.py"
+elif [ "$mode" = 恒真 ]; then
   printf '\n    def test_add_negative_regression(self):\n        self.assertTrue(True)\n' >> "$d/tests/test_lib.py"
 else
   printf '\n    def test_add_negative_regression(self):\n        self.assertEqual(add(-1, -2), -3)\n' >> "$d/tests/test_lib.py"
 fi
 git -C "$d" add -A; git -C "$d" -c user.name=f -c user.email=f@x commit -qm fix
 git -C "$d" checkout -q main
-if [ "$mode" = 坏签名 ]; then
-  printf '回归断言点名:test_this_id_is_not_in_this_branch\n' > "$d/prompt.md"
-else
-  printf '回归断言点名:test_add_negative_regression\n' > "$d/prompt.md"
-fi
+case "$mode" in
+  坏签名)
+    printf '回归断言点名:test_this_id_is_not_in_this_branch\n' > "$d/prompt.md" ;;
+  恒真模块名)
+    printf '回归断言点名:`tests.test_lib.T.test_add_negative_regression`\n' > "$d/prompt.md" ;;
+  模块名)
+    # 真报告的形态:`模块.类.方法` 点分 unittest id —— **模块段排在方法段前面**。
+    # 老代码在同一 token 内先扫到 test_lib,又因 diff 头有 `+++ b/tests/test_lib.py`
+    # 被 grep -qF 放行 ⇒ 模块名夺魁。这一档就是那个缺陷的密封复现。
+    printf '回归断言点名:`tests.test_lib.T.test_add_negative_regression`(见 tests/test_lib.py)\n' > "$d/prompt.md" ;;
+  只模块名)
+    printf '改动落在 tests/test_lib.py;回归覆盖见该模块 tests.test_lib\n' > "$d/prompt.md" ;;
+  *)
+    printf '回归断言点名:test_add_negative_regression\n' > "$d/prompt.md" ;;
+esac
 MKFIX
 chmod +x "$APFX/mkfix.sh"
 APFBASE="Python $(python3 --version 2>&1 | sed -E 's/Python ([0-9]+\.[0-9]+)\..*/\1./')"
@@ -6109,7 +6135,8 @@ t "APF 绊线 阴性②:签名点名本分支没动过的 id ⇒ **未判** ⛔ 
   set -e; d="$2/neg2"; "$2/mkfix.sh" "$d" "$3" 坏签名
   out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
   grep -qE "^绊线: 未判" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
-  grep -qF "一个都不在本分支 tests 改动里" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+  grep -qF "无真实函数签名" <<< "$out"
+  grep -qF "patch 内无 def" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
 
 t "APF 全量 阴性③:解释器基线不符(rc=91)⇒ **未判**且行内带 ENTRY_GUARD ⛔ 写不成立" bash -c '
   set -e; d="$2/neg3"; "$2/mkfix.sh" "$d" "Python 9.99."
@@ -6131,6 +6158,79 @@ t "APF 全量:passed=0 failed=0(一个测试都没跑)⇒ **未判** ⛔ 当绿"
   out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev3" 2>&1)"
   grep -qE "^全量: 未判" <<< "$out" || { grep "^全量" <<< "$out"; exit 1; }
   grep -qF "一个测试都没跑" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+
+# ── 5.1b:绊线签名选取(2026-08-29 兑现窗B;值守 M1 第四组实撞 19e2abfe)────────────
+#   病灶:报告里的签名是 `模块.类.方法` 点分 id,老代码在同一 token 内**先扫到模块段**,
+#   又被 `grep -qF` 在 diff 头 `+++ b/tests/<模块>.py` 上放行 ⇒ **模块名夺魁压过真函数**,
+#   拆修法复跑被无关红搅浑 ⇒ 未判。下面 6 条把「选对了」与「选错了」分开。
+echo "== 8c. accept-preflight:绊线签名选取(①真 def ②排模块名 ③给理由 ④空则未判 ⑤报告来源)=="
+
+t "APF 签名 阳性:同时提模块名与真函数名 ⇒ **选中函数名**并给理由(⛔ 模块名夺魁)" bash -c '
+  set -e; d="$2/sig1"; "$2/mkfix.sh" "$d" "$3" 模块名
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qF "签名=test_add_negative_regression" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "新增**的 def" <<< "$out" || { echo "未写选它的理由"; exit 2; }
+  grep -qF "test_lib(**模块/包段**" <<< "$out" || { echo "未写模块名为何落选"; exit 3; }' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 签名 假阳对照:模块名当签名会 grep 到**同模块另一条**的 FAIL ⇒ 误判「成立」;真函数名 ⇒ 正确判「不成立」" bash -c '
+  # 这条钉的是本缺陷**最坏的那一面**:它不止把判据搅成未判,还能**放行**一个没守住缺陷的片。
+  # 点名的 test_add_negative_regression 是恒真的(不拆也绿 ⇒ 应判不成立);
+  # 同模块的 test_other_in_same_module_fails_on_base 在基点真红 ⇒ 模块名签名会捡到它的 FAIL。
+  set -e; d="$2/sig2"; "$2/mkfix.sh" "$d" "$3" 恒真模块名
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qF "签名=test_add_negative_regression" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qE "^绊线: 不成立" <<< "$out" || { grep "^绊线" <<< "$out"; exit 2; }
+  grep -qF "不拆也绿" <<< "$out"' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 签名 阴性:只提模块名 ⇒ **未判**并写明「无真实函数签名」⛔ 拿模块名当签名" bash -c '
+  set -e; d="$2/sig4"; "$2/mkfix.sh" "$d" "$3" 只模块名
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 未判" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "无真实函数签名" <<< "$out"
+  grep -qF "test_lib(**模块/包段**" <<< "$out" || { echo "未逐条写落选理由"; exit 2; }' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF ⑤(a) 省 --report ⇒ 按片名**推导**报告路径并写明来源 ⛔ 静默少读一半" bash -c '
+  set -e; d="$2/sig5"; "$2/mkfix.sh" "$d" "$3" 只模块名; mkdir -p "$d/rec"
+  # 推导目标存在,且只有它带真函数名 ⇒ 读到了才可能选中
+  # ⛔ 反引号:本行在 bash -c 单引号里,双引号中的反引号会被当命令替换真跑一次
+  printf "回归断言点名:tests.test_lib.T.test_add_negative_regression\n" > "$d/rec/片-交付报告.md"
+  out="$(LAIXIN_RECORDS_DIR="$d/rec" "$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qF "按片名推导" <<< "$out" || { echo "未写明来源是推导"; exit 2; }
+  grep -qF "签名=test_add_negative_regression" <<< "$out" || { grep "^绊线" <<< "$out"; exit 3; }' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF ⑤(b) 省 --report 且推导路径不存在 ⇒ 写明**不存在**、只来自 prompt ⛔ 装作读过" bash -c '
+  set -e; d="$2/sig6"; "$2/mkfix.sh" "$d" "$3" 只模块名
+  out="$(LAIXIN_RECORDS_DIR="$d/nowhere" "$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qF "**不存在**" <<< "$out" || { echo "未写明推导路径不存在"; exit 2; }
+  grep -qF "只来自 prompt" <<< "$out" || { echo "未写明本单签名只来自 prompt"; exit 3; }' _ "$APF" "$APFX" "$APFBASE"
+
+# ── 5.1b 收窄:多绊线(2026-08-29 调度批准并入;替代表 ②「**别的**测试红」的射程更正)────
+#   本片自己新增的 def ⛔「别的测试」。旧规则下「一片立两条绊线」必然撞 nfail>1 判未判(实撞 19e2abfe)。
+echo "== 8d. accept-preflight:多绊线收窄(红条集合 ⊆ 本片新增 def ⇒ 成立) =="
+
+t "APF 多绊线 阳性:两条红**全是本片新增的 def**、全断言红、候选全绿 ⇒ **成立**并逐条列名" bash -c '
+  set -e; d="$2/mt1"; "$2/mkfix.sh" "$d" "$3" 多绊线
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 成立" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "**多绊线**" <<< "$out" || { echo "未走多绊线分支"; exit 2; }
+  grep -qF "test_add_negative_regression" <<< "$out" && grep -qF "test_add_mixed_regression" <<< "$out" || { echo "未逐条列名"; exit 3; }' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 多绊线 阴性①:红条里混进**本片没新增**的测试 ⇒ **未判「归因不唯一(无关红:名)」**⛔ 算成立" bash -c '
+  # test_pre_existing_red_not_added_by_this_slice 在**基线 commit 里就有**,基点红候选绿;
+  # 它不在本片新增 def 集合里 ⇒ 归因不唯一。⛔ 因为「反正都是红、反正候选都绿」就放行。
+  set -e; d="$2/mt2"; "$2/mkfix.sh" "$d" "$3" 无关红
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 未判" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -qF "无关红:test_pre_existing_red_not_added_by_this_slice" <<< "$out" || { echo "未点名无关红"; exit 2; }' _ "$APF" "$APFX" "$APFBASE"
+
+t "APF 多绊线 阴性②:红条里有**非断言红**(基点 AttributeError)⇒ **未判**并写明是 ERROR ⛔ 算绊线守住" bash -c '
+  # 本档由更早那条 `nerr>0` 分支接住(⑥ 其余照旧,⛔ 改它);新分支里的同名判据是兜底。
+  # 判据钉的是**可观察行为**:非断言红一律未判,且事实单上写明它是 ERROR ⛔ 说成断言失败。
+  set -e; d="$2/mt3"; "$2/mkfix.sh" "$d" "$3" ERROR红
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short fix)" "$d/prompt.md" --repo "$d" --evidence-dir "$d/ev" 2>&1)"
+  grep -qE "^绊线: 未判" <<< "$out" || { grep "^绊线" <<< "$out"; exit 1; }
+  grep -E "^绊线" <<< "$out" | grep -qF "ERROR" || { echo "未写明红的是 ERROR"; exit 2; }
+  grep -E "^绊线" <<< "$out" | grep -qF "⛔ 断言失败" || { echo "未写明它 ⛔ 断言失败"; exit 3; }' _ "$APF" "$APFX" "$APFBASE"
 
 rm -rf "$APFX"
 

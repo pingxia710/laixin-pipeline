@@ -171,9 +171,31 @@ fi
 #   且**出现在本分支的 tests 改动里**。只满足前一条(片名里恰好有个 test_ 词、或点名了一个
 #   本分支根本没动的老测试)⇒ 未判,⛔ 拿一个没被这一片碰过的测试去当绊线。
 r_trip="未判"; d_trip="无预期失败签名(prompt/交付报告未点名回归测试 id)⇒ 未判 ⛔ 当绿"
+# 🔴 **⑤ `--report` 可省,但 ⛔ 可省且静默**:旧版省了就只读 prompt,事实单上**看不出少读了一半**
+#   ——「报告没提签名」与「压根没读报告」在单子上完全同形(值守第 12 次自认实撞)。
+#   ⇒ 省略时**按片名推导**记录目录里的交付报告,并把**来源逐字写进事实单**(推导 / 显式 / 读不到 / 不存在)。
+#   ⛔ 改成必填:既有调用方(tests/run.sh 的 6 条)本来就不带 --report,必填会把「本来就没有报告」
+#   这一类正当用法一起打死。
 SRCTXT="$EVID/sigsrc.txt"; : > "$SRCTXT"
-[ -n "${PROMPT:-}" ] && [ -f "${PROMPT:-/nonexistent}" ] && cat "$PROMPT" >> "$SRCTXT" 2>/dev/null
-[ -n "${REPORT:-}" ] && [ -f "${REPORT:-/nonexistent}" ] && cat "$REPORT" >> "$SRCTXT" 2>/dev/null
+sig_src=""
+if [ -n "${PROMPT:-}" ]; then
+  if [ -f "$PROMPT" ]; then cat "$PROMPT" >> "$SRCTXT" 2>/dev/null; sig_src="prompt=${PROMPT}"
+  else sig_src="prompt=${PROMPT}(**读不到**)"; fi
+fi
+RECDIR="${LAIXIN_RECORDS_DIR:-$HOME/Obsidian/项目入口/来信平台/知识库/4-开发层/记录}"
+if [ -n "${REPORT:-}" ]; then
+  if [ -f "$REPORT" ]; then cat "$REPORT" >> "$SRCTXT" 2>/dev/null
+    sig_src="${sig_src:+${sig_src};}报告=显式给定 ${REPORT}"
+  else sig_src="${sig_src:+${sig_src};}报告=显式给定但**读不到** ${REPORT}"; fi
+else
+  REPGUESS="${RECDIR}/$(printf '%s' "$SLICE" | tr ':' '-')-交付报告.md"
+  if [ -f "$REPGUESS" ]; then cat "$REPGUESS" >> "$SRCTXT" 2>/dev/null; REPORT="$REPGUESS"
+    sig_src="${sig_src:+${sig_src};}报告=**按片名推导**(⛔ 显式给定)${REPGUESS}"
+  else
+    sig_src="${sig_src:+${sig_src};}报告=未给 --report,按片名推导的 ${REPGUESS} **不存在** ⇒ 本单签名只来自 prompt"
+  fi
+fi
+[ -n "$sig_src" ] || sig_src="prompt 与交付报告**都没有** ⇒ 签名零来源"
 trip_run(){ # trip_run <树> <日志>  —— 用仓声明的同一个入口,⛔ 另造跑法
   ( cd "$1" && HOME="$STATE" eval "$TESTCMD" ) > "$2" 2>&1; echo $?
 }
@@ -189,20 +211,68 @@ elif [ -s "$SRCTXT" ]; then
   if [ ! -s "$EVID/tests.patch" ]; then
     d_trip="本分支 tests/ 零改动 ⇒ 没有可叠的绊线 ⇒ 未判 ⛔ 当绿"
   else
-    sigs=""
-    while IFS= read -r cand_sig; do
-      [ -n "$cand_sig" ] || continue
-      grep -qF "$cand_sig" "$EVID/tests.patch" && sigs="${sigs:+$sigs }$cand_sig"
-    done <<< "$(grep -oE 'test_[A-Za-z0-9_]{3,}' "$SRCTXT" | awk '!seen[$0]++')"
-    if [ -z "$sigs" ]; then
-      d_trip="prompt/报告里的 test_ 词**一个都不在本分支 tests 改动里** ⇒ 未判 ⛔ 拿没被本片碰过的测试当绊线"
+    # 🔴 **①② 候选 = 被逐字点名 ∩ 本分支 tests 三点 diff 里真有 `def <名>(`**。
+    #   ⛔ `grep -qF "<名>" tests.patch` —— diff 头的 `+++ b/tests/<名>.py` 会让**模块名**整包命中,
+    #   而模块名在报告里恰恰**排在真函数名前面**(先写路径再写函数)⇒ 它夺魁并压过全部真函数。
+    #   实撞(2026-08-29 值守 M1 第四组,候选 19e2abfe):`test_production_wsgi` 在 patch 里
+    #   `def` 数为 **0** 却被选中,压过 2 个新增 def 与 1 个既有 def,拆修法复跑被无关红搅浑 ⇒ 未判。
+    # 分档:**新增的 def**(本片真正立起来的绊线)> **既有 def**(本片碰了文件但没新立这条)。
+    #   ⛔ 让既有 def 与新增 def 同档竞争:那等于允许「拿一条本片没立的断言去当绊线」。
+    _def_in(){ grep -qE "^[+ ][[:space:]]*(async[[:space:]]+)?def[[:space:]]+${1}[[:space:]]*\\(" "$EVID/tests.patch"; }
+    _def_added(){ grep -qE "^\\+[[:space:]]*(async[[:space:]]+)?def[[:space:]]+${1}[[:space:]]*\\(" "$EVID/tests.patch"; }
+    # 抽词:报告里的签名是 **`模块.类.方法` 点分 unittest id**(真报告实测形态),
+    #   老代码 `grep -oE 'test_[A-Za-z0-9_]{3,}'` 在**同一个 token 内**先扫到**模块段**
+    #   ⇒ 模块名天然排在真方法名前面,再被 `grep -qF` 在 diff 头的文件名上放行 ⇒ 夺魁。
+    #   ⇒ 连**前后各一个邻字符**一起抓,用它判这个词是不是点分 id 的**叶子**:
+    #     后邻是 `.` 或 `/` ⇒ 后面还有段,它是模块/包/目录 ⛔ 方法(`.py` 亦归此类);
+    #     前邻是 `/` ⇒ 它是路径里的文件名。
+    #   判权仍归 ①(patch 里有没有 `def <名>(`):② 只负责**给落选理由**。
+    #   ⛔ 让 ② 先斩:万一某文件里真有同名 `def`,那它就是条真测试,该用。
+    sig_add=""; sig_ctx=""; sig_rej=""; seen_names=" "
+    while IFS= read -r raw; do
+      [ -n "$raw" ] || continue
+      pre="${raw%%test_*}"; pre="${pre: -1}"
+      rest="test_${raw#*test_}"
+      case "$rest" in
+        *[!A-Za-z0-9_]) post="${rest: -1}"; nm="${rest%?}" ;;
+        *) post=""; nm="$rest" ;;
+      esac
+      [ -n "$nm" ] || continue
+      case "$seen_names" in *" ${nm} "*) continue ;; esac
+      seen_names="${seen_names}${nm} "
+      if _def_added "$nm"; then sig_add="${sig_add:+${sig_add} }${nm}"
+      elif _def_in "$nm"; then sig_ctx="${sig_ctx:+${sig_ctx} }${nm}"
+      elif [ "$post" = "." ] || [ "$post" = "/" ]; then
+        sig_rej="${sig_rej:+${sig_rej} · }${nm}(**模块/包段**:后面还接着 \`${post}\`,是 id 的非叶子段,且 patch 内无 def)"
+      elif [ "$pre" = "/" ]; then
+        sig_rej="${sig_rej:+${sig_rej} · }${nm}(**路径里的文件名**,patch 内无 def)"
+      else
+        sig_rej="${sig_rej:+${sig_rej} · }${nm}(patch 内无 def:本片没动它,或是别片的测试)"
+      fi
+    done <<< "$(grep -oE '.?test_[A-Za-z0-9_]{3,}.?' "$SRCTXT" | awk '!seen[$0]++')"
+    if [ -z "$sig_add" ] && [ -z "$sig_ctx" ]; then
+      # ④ 候选为空 ⇒ 未判并写明是哪一种空
+      d_trip="**无真实函数签名**(报告/prompt 只提及模块名,或点的是别片测试)⇒ 未判 ⛔ 拿没被本片碰过的测试当绊线。签名来源:${sig_src}。落选逐条:${sig_rej:-无任何 test_ 词}"
     else
-      sig="${sigs%% *}"; sig_rest="${sigs#"$sig"}"; sig_rest="${sig_rest# }"
+      if [ -n "$sig_add" ]; then sig="${sig_add%% *}"; sig_why="本分支 tests 改动里**新增**的 def"
+      else sig="${sig_ctx%% *}"; sig_why="patch 内**既有** def(本片碰了该文件但未新增此条;⛔ 新增档为空才退到这里)"; fi
+      # ③ 多候选 ⇒ 写明为何选它、其余为何未选(⛔ 只列候选)
+      _rest_add="${sig_add#"$sig"}"; _rest_add="${_rest_add# }"
+      sig_rest=""
+      [ -n "$_rest_add" ] && sig_rest="新增档另有 ${_rest_add}(同档,按点名先后取第一个)"
+      if [ -n "$sig_add" ] && [ -n "$sig_ctx" ]; then
+        sig_rest="${sig_rest:+${sig_rest};}既有档 ${sig_ctx}(**低一档**,新增档非空故未选)"
+      elif [ -z "$sig_add" ]; then
+        _rest_ctx="${sig_ctx#"$sig"}"; _rest_ctx="${_rest_ctx# }"
+        [ -n "$_rest_ctx" ] && sig_rest="${sig_rest:+${sig_rest};}既有档另有 ${_rest_ctx}"
+      fi
+      [ -n "$sig_rej" ] && sig_rest="${sig_rest:+${sig_rest};}落选 ${sig_rej}"
+      sig_rest="${sig_rest:+${sig_rest};}签名来源 ${sig_src}"
       WT2="$(mktemp -d)/base"
       if ! git -C "$REPO" worktree add -f --detach "$WT2" "$BASE" >"$EVID/base-worktree.log" 2>&1; then
-        d_trip="签名=$sig;基点隔离 worktree 建不起来 ⇒ 未判(**环境错误**)"
+        d_trip="签名=${sig}(**选它**:${sig_why})${sig_rest:+;${sig_rest}};基点隔离 worktree 建不起来 ⇒ 未判(**环境错误**)"
       elif ! git -C "$WT2" apply "$EVID/tests.patch" >"$EVID/tests-apply.log" 2>&1; then
-        d_trip="签名=$sig;tests 改动**叠不到基点上**(git apply 失败)⇒ 未判(**环境错误**);见 tests-apply.log"
+        d_trip="签名=${sig}(**选它**:${sig_why})${sig_rest:+;${sig_rest}};tests 改动**叠不到基点上**(git apply 失败)⇒ 未判(**环境错误**);见 tests-apply.log"
       else
         rc_base="$(trip_run "$WT2" "$EVID/base+tests.log")"
         v_base="$(trip_verdict "$EVID/base+tests.log" "$sig")"
@@ -214,7 +284,7 @@ elif [ -s "$SRCTXT" ]; then
         nfail="$(grep -cE '\.\.\. FAIL$|\.\.\. FAIL ' "$EVID/base+tests.log" 2>/dev/null || true)"
         nerr="$(grep -cE '\.\.\. ERROR$|\.\.\. ERROR ' "$EVID/base+tests.log" 2>/dev/null || true)"
         nfail="${nfail:-0}"; nerr="${nerr:-0}"
-        d_common="签名=$sig${sig_rest:+(另有候选:$sig_rest)};基点+tests rc=$rc_base 该测试=$v_base(全树 FAIL=$nfail ERROR=$nerr);候选上该测试=$v_cand"
+        d_common="签名=${sig}(**选它**:${sig_why})${sig_rest:+;${sig_rest}};基点+tests rc=$rc_base 该测试=$v_base(全树 FAIL=$nfail ERROR=$nerr);候选上该测试=$v_cand"
         if [ "$v_base" = absent ]; then
           r_trip="未判"; d_trip="$d_common ⇒ 点名的测试在基点+tests 树上**跑不到** ⇒ 未判(**收集错误**)"
         elif [ "$v_base" = ERROR ] || [ "$nerr" -gt 0 ]; then
@@ -222,7 +292,36 @@ elif [ -s "$SRCTXT" ]; then
         elif [ "$v_base" = ok ]; then
           r_trip="不成立"; d_trip="$d_common ⇒ **不拆也绿**:把修法拿掉后该断言仍然通过 ⇒ 它没守住那个缺陷"
         elif [ "$nfail" -gt 1 ]; then
-          r_trip="未判"; d_trip="$d_common ⇒ 基点+tests 上**别的测试也红**(FAIL=$nfail)⇒ 归因不唯一 ⇒ 未判"
+          # 🔴 **收窄(2026-08-29 调度 pingxia-47 批准并入 5.1b;⛔ 议题 8)**:替代表 ② 原文是
+          #   「…**别的**测试红 ⇒ 未判」。**本片自己新增的 def 不是「别的测试」** —— 一片立两条绊线
+          #   在旧规则下必然撞 nfail>1 而被判未判(实撞 19e2abfe:两条红恰是本片新增的两条)。
+          #   新判据:红条集合 ⊆ 本片 tests 三点 diff **新增**的 def 集合 ∧ 每条在基点以**断言失败**红
+          #   ∧ 每条在候选上绿 ⇒ **成立(多绊线,逐条列名)**;任一红条 ∉ 新增集合 ⇒ 未判「归因不唯一
+          #   (无关红:名)」;任一红条是收集/语法/环境错误 ⇒ 未判「非断言红:名」。
+          #   ⛔ 放宽成「红得多也算成立」:名字必须逐条对得上**本片新增**的那几条,⛔ 只数个数。
+          grep -oE '^\+[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_[A-Za-z0-9_]+' "$EVID/tests.patch" \
+            | sed -E 's/.*def[[:space:]]+//' | awk '!seen[$0]++' > "$EVID/added-defs.txt" || true
+          grep -E '^[A-Za-z0-9_]+ .*\.\.\. (FAIL|ERROR)([^A-Za-z]|$)' "$EVID/base+tests.log" 2>/dev/null \
+            | sed -E 's/^([A-Za-z0-9_]+) .*\.\.\. (FAIL|ERROR).*$/\1 \2/' | awk '!seen[$0]++' > "$EVID/reds.txt" || true
+          red_alien=""; red_nonassert=""; red_names=""; red_notgreen=""
+          while read -r rname rkind; do
+            [ -n "$rname" ] || continue
+            red_names="${red_names:+${red_names} }${rname}"
+            [ "$rkind" = FAIL ] || red_nonassert="${red_nonassert:+${red_nonassert} }${rname}(${rkind})"
+            grep -qxF "$rname" "$EVID/added-defs.txt" || red_alien="${red_alien:+${red_alien} }${rname}"
+            [ "$(trip_verdict "$EVID/full.log" "$rname")" = ok ] || red_notgreen="${red_notgreen:+${red_notgreen} }${rname}"
+          done < "$EVID/reds.txt"
+          if [ -z "$red_names" ]; then
+            r_trip="未判"; d_trip="$d_common ⇒ 计数说 FAIL=$nfail 却**一条红的名字都抽不出来**(日志形态不认识)⇒ 未判 ⛔ 当成立"
+          elif [ -n "$red_nonassert" ]; then
+            r_trip="未判"; d_trip="$d_common ⇒ **非断言红**:${red_nonassert} ⇒ 未判(收集/语法/环境错误 ⛔ 算绊线守住)"
+          elif [ -n "$red_alien" ]; then
+            r_trip="未判"; d_trip="$d_common ⇒ **归因不唯一(无关红:${red_alien})** —— 它们不在本片 tests 改动新增的 def 集合里 ⇒ 未判"
+          elif [ -n "$red_notgreen" ]; then
+            r_trip="未判"; d_trip="$d_common ⇒ 红条 ${red_notgreen} 在**候选上并非 ok** ⇒ 未判 ⛔ 只凭基点侧变红就判成立"
+          else
+            r_trip="成立"; d_trip="$d_common ⇒ **多绊线**:基点+tests 上恰好红的 ${nfail} 条(${red_names})**全部**是本片新增的 def、且**全部**以断言失败红、在候选上**全部**绿 ⇒ 拆修法复跑通过"
+          fi
         elif [ "$v_cand" != ok ]; then
           r_trip="未判"; d_trip="$d_common ⇒ 该测试在**候选上并非 ok** ⇒ 未判 ⛔ 只凭基点侧变红就判成立"
         else

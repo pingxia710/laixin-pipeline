@@ -335,6 +335,42 @@ fi
 
 # ── 事实单 ──
 {
+# 🔴 **回显 --repo 解析到的是什么**(2026-08-29 兑现窗B;例77 与通则 A 的工具化)。
+#    立据=本窗自己的实撞:5.1b 回放时把 --repo 指向**克隆仓**、并把它的 main 退回合入前,
+#    事实单看起来**四条件齐全**,而它描述的**根本不是 main**;当时靠回报人用文字补了一句
+#    ——⇒ **判据能不能区分成败,⛔ 靠回报人恰好诚实**。
+#    通则 A:**结论不带基点时,对的基点和错的基点长得一模一样**。
+#    例77:**以工具回显判「已生效」时,回显必须实测「对象侧的状态」⛔「发送侧的痕迹」**
+#          —— 事实单原本报的是「我检查了四项」(发送侧),现在补报「我检查的那个仓当刻是什么」。
+# ⚠️ 只判分支名**抓不到**本窗那次:克隆仓的分支就叫 main、HEAD 也在它自己的 main 历史里。
+#    真正暴露它的是**绝对路径**与**它的 main 落后于自己的来源(origin/main)**,故两者都回显。
+_repo_abs="$(cd "$REPO" 2>/dev/null && pwd -P || printf '%s' "$REPO")"
+_repo_br="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+_repo_head="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || true)"
+_repo_flag=""
+if [ -z "$_repo_br" ] || [ -z "$_repo_head" ]; then
+  _repo_flag="⚠️ **未判**:分支名或 HEAD 读不到 ⛔ 当成 main"
+elif ! git -C "$REPO" rev-parse --verify --quiet main >/dev/null 2>&1; then
+  _repo_flag="🔴 **非 main 副本**:该仓**没有 main 分支** ⛔ 把它的读数当 main 的读数"
+elif [ "$_repo_br" != "main" ]; then
+  _repo_flag="🔴 **非 main 副本**:当刻在分支 **$_repo_br** 上 ⛔ 当 main 的读数"
+elif ! git -C "$REPO" merge-base --is-ancestor HEAD main >/dev/null 2>&1; then
+  _repo_flag="🔴 **非 main 副本**:HEAD 不在 main 历史里 ⛔ 当 main 的读数"
+fi
+# main 落后于自己的来源 ⇒ 这个仓的 main **被退回过或已陈旧**(本窗 5.1b 那次正是此形)
+_repo_om="$(git -C "$REPO" rev-parse --short origin/main 2>/dev/null || true)"
+if [ -n "$_repo_om" ] && ! git -C "$REPO" merge-base --is-ancestor origin/main main >/dev/null 2>&1; then
+  _repo_behind="$(git -C "$REPO" rev-list --count main..origin/main 2>/dev/null || echo '?')"
+  _repo_flag="${_repo_flag:+${_repo_flag};}🔴 **该仓的 main 落后其 origin/main ${_repo_behind} 个提交**(main 被退回或已陈旧)⛔ 把它的读数当当刻 main 的读数"
+fi
+say "仓路径(--repo 解析后): $_repo_abs"
+say "该仓当刻: 分支=${_repo_br:-读不到} · HEAD=${_repo_head:-读不到} · origin/main=${_repo_om:-无}"
+if [ -n "$_repo_flag" ]; then
+  say "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  say "┃ $_repo_flag"
+  say "┃ ⇒ 下面四行描述的是**这个仓**,⛔ 读成 main 的验收结论。"
+  say "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+fi
 say "候选 commit: $CAND"
 say "最终 main 基点: $BASE"
 say "运行命令: $CMDLINE"

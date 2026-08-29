@@ -6936,6 +6936,78 @@ t "judge-scan 真仓闸:射程内**零新增阳性**(基线放行已知存量;�
 
 rm -rf "$JSX"
 
+# ── 5.4 accept-preflight:事实单回显 --repo 解析到的是什么(2026-08-29 兑现窗B)────────
+#   立据=本窗自己的实撞:5.1b 回放把 --repo 指向克隆仓、并把它的 main 退回合入前,
+#   事实单看起来**四条件齐全**,而它描述的**根本不是 main**;当时靠回报人用文字补了一句
+#   ⇒ **判据能不能区分成败,⛔ 靠回报人恰好诚实**(通则 A:结论不带基点时,对的基点与错的基点同形;
+#   例77:以回显判「已生效」时,回显须实测**对象侧**状态 ⛔ 发送侧痕迹)。
+echo "== 8g. accept-preflight:--repo 回显与「非 main 副本」标注 =="
+APR="$(mktemp -d)"; APRB="$(cd "$(dirname "$0")/.." && pwd)/bin/accept-preflight"
+# 🔴 夹具**落临时脚本再调** ⛔ 写成 shell 函数 —— 测试体跑在 `bash -c` 子进程里,
+#   函数不随之继承(与第六发坑同族:bash 3.2 下 `source <(…)` 函数不落地且不报错)。
+cat > "$APR/mkapr.sh" <<'MKAPR'
+#!/bin/bash
+# mkapr.sh <目录> —— 密封小仓:main 上两个提交
+set -e
+d="$1"; mkdir -p "$d"; git -C "$d" init -q -b main .
+printf 'x\n' > "$d/a.txt"; git -C "$d" add -A
+git -C "$d" -c user.name=t -c user.email=t@t commit -qm c1
+printf 'y\n' >> "$d/a.txt"; git -C "$d" add -A
+git -C "$d" -c user.name=t -c user.email=t@t commit -qm c2
+MKAPR
+chmod +x "$APR/mkapr.sh"
+
+t "APF 回显 阳性:--repo 在**非 main 分支**上 ⇒ 事实单显著标注「非 main 副本」" bash -c '
+  # 若它红了:说明事实单在描述一个不是 main 的仓时**没说出来** ⇒ 读者会把分支上的读数当 main 的结论
+  #(本窗 5.1b 实撞的正是这一族,只是那次是克隆仓而非分支)。
+  set -e; d="$2/pos-branch"; "$2/mkapr.sh" "$d"; git -C "$d" checkout -qb feat/x
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short HEAD)" --repo "$d" --test-cmd true --evidence-dir "$d/ev" 2>&1)" || true
+  grep -qF "非 main 副本" <<< "$out" || { echo "$out" | head -6; exit 1; }
+  grep -qF "feat/x" <<< "$out" || { echo "未回显分支名"; exit 2; }
+  grep -qF "⛔ 读成 main 的验收结论" <<< "$out" || { echo "未写明该怎么读"; exit 3; }' _ "$APRB" "$APR"
+
+t "APF 回显 阳性:--repo 的 **main 落后其 origin/main** ⇒ 标注(重放 5.1b 那次的真实形态)" bash -c '
+  # 若它红了:说明「克隆仓 + main 被退回」这一形态仍然静默 —— 而那正是本件的立据:
+  # 分支名叫 main、HEAD 也在它自己的 main 历史里,**只判分支名抓不到它**。
+  set -e; src="$2/src"; "$2/mkapr.sh" "$src"
+  clone="$2/pos-behind"; git clone -q "$src" "$clone"
+  git -C "$clone" checkout -q -B main HEAD~1        # 把克隆仓的 main 退回一个提交
+  out="$("$1" 片 "$(git -C "$clone" rev-parse --short HEAD)" --repo "$clone" --test-cmd true --evidence-dir "$clone/ev" 2>&1)" || true
+  grep -qF "落后其 origin/main" <<< "$out" || { echo "$out" | head -6; exit 1; }
+  grep -qF "main 被退回或已陈旧" <<< "$out" || exit 2' _ "$APRB" "$APR"
+
+t "APF 回显 同刻绿对照:--repo 就在 main 且不落后 ⇒ **无标注**(证明当刻站在会标注的形态上)" bash -c '
+  # 若它红了:说明标注是**恒亮**的 —— 那样上面两条阳性就什么也没证明(全亮=没有分辨力)。
+  # ⚠️ 合法例外集:仓在 main 但**落后其 origin/main** 时**应当**标注,故本夹具用无 origin 的裸仓。
+  set -e; d="$2/neg-main"; "$2/mkapr.sh" "$d"
+  out="$("$1" 片 "$(git -C "$d" rev-parse --short HEAD)" --repo "$d" --test-cmd true --evidence-dir "$d/ev" 2>&1)" || true
+  grep -qF "非 main 副本" <<< "$out" && { echo "在 main 上却报了非 main:"; echo "$out" | head -6; exit 1; }
+  grep -qF "分支=main" <<< "$out" || { echo "未回显分支名"; exit 2; }
+  exit 0' _ "$APRB" "$APR"
+
+t "APF 回显 阴性:--repo 解析不出 ⇒ 归**未判** ⛔ 归 main ⛔ 静默" bash -c '
+  # 若它红了:说明「这不是个仓」被读成了「这是 main」或干脆不出声 —— 三态硬规则里
+  # 「未判」的存在理由正是判不出就说判不出。
+  set -e; d="$2/neg-norepo"; mkdir -p "$d"
+  out="$("$1" 片 deadbeef --repo "$d" --test-cmd true --evidence-dir "$d/ev" 2>&1)" || true
+  grep -qF "分支=读不到" <<< "$out" || { echo "$out" | head -6; exit 1; }
+  grep -qF "**未判**" <<< "$out" || { echo "未归未判"; exit 2; }
+  grep -qF "⛔ 当成 main" <<< "$out" || { echo "未写明 ⛔ 当成 main"; exit 3; }' _ "$APRB" "$APR"
+
+t "APF 回显:仓路径**按解析后的绝对路径**回显(⛔ 回显调用者传进来的相对写法)" bash -c '
+  # 若它红了:说明事实单回显的是**发送侧的字面**而非**对象侧的实际路径**(例77 那一族),
+  # 读者据它判「我扫的是哪个仓」会判错。
+  set -e; d="$2/abs"; "$2/mkapr.sh" "$d"
+  # ⚠️ 期望值要用**解析后**的路径:macOS 的 mktemp -d 给的是 /var/...(软链),
+  #   而回显的是 pwd -P 解析后的 /private/var/... —— 拿未解析的去比会红,而红的是**测试**不是实现。
+  dabs="$(cd "$d" && pwd -P)"
+  out="$(cd "$2" && "$1" 片 "$(git -C "$d" rev-parse --short HEAD)" --repo ./abs --test-cmd true --evidence-dir "$d/ev" 2>&1)" || true
+  grep -qF "仓路径(--repo 解析后): $dabs" <<< "$out" || { echo "$out" | head -3; exit 1; }
+  grep -qF "./abs" <<< "$out" && { echo "回显了相对写法"; exit 2; }
+  exit 0' _ "$APRB" "$APR"
+
+rm -rf "$APR"
+
 echo
 echo "结果:$PASS 过 / $FAIL 败"
 [ "$FAIL" -eq 0 ]

@@ -145,6 +145,14 @@ tout "起窗命令引用 DISPATCH_MODEL" 'model \$DISPATCH_MODEL' grep -- '--mod
 # eval 单行赋值(别用 source <():bash 3.2 静默失败,见 AGENTS.md)
 MV="$(env LAIXIN_VERIFY_MODEL=claude-sonnet-5 bash -c "eval \"\$(grep '^VERIFY_MODEL=' '$LANE')\"; echo \"\$VERIFY_MODEL\"")"
 tout "模型可覆盖" "claude-sonnet-5" echo "$MV"
+t "手开角色配型:方案窗口/opt-11b 钉 Opus 5,创始人窗口仍手选" bash -c '
+  grep -qF "PLAN_WINDOW_MODEL=\"\${LAIXIN_PLAN_WINDOW_MODEL:-claude-opus-5}\"" "$1" &&
+  grep -qF "OPT_11B_MODEL=\"\${LAIXIN_OPT_11B_MODEL:-claude-opus-5}\"" "$1" &&
+  grep -qF "创始人窗口=手选" "$1" &&
+  grep -qF -- "--model claude-opus-5" "$2" && grep -qF -- "--model claude-opus-5" "$3"' \
+  _ "$LANE" "$(cd "$(dirname "$0")/.." && pwd)/skills/laixin-plan-window/SKILL.md" "$(cd "$(dirname "$0")/.." && pwd)/AGENTS.md"
+t "账号切换的方案窗口新窗命令显式带 PLAN_WINDOW_MODEL" bash -c '
+  seg="$(sed -n "/^cmd_account_switch()/,/^}/p" "$1")"; grep -qF -- "--model \${PLAN_WINDOW_MODEL}" <<< "$seg"' _ "$LANE"
 
 echo "== 5. 排队解析(fixture,不依赖真总表) =="
 TMPT="$(mktemp -d)"
@@ -3697,6 +3705,24 @@ t "accept-preflight:四行只出三态之一,且未给 prompt 时硬边界/绊�
 #   原实现把入口 `bash tests/run.sh` 与结果解析 `^结果:N 过 / M 败` **双双硬编码成工具仓形态**,
 #   历史回放跨不到别的仓(钓不钓基座仓无 tests/run.sh、输出是 unittest 风格,两处都对不上)。
 #   ⚠️ 用真 commit + 假测试命令 ⇒ worktree 真建、全量不真跑,几秒完事。
+# ── merge-guard 自认仓(2026-08-29 方案窗口第三十七任;派工窗口合钓不钓片时实撞)──────────────
+#   实撞:钓不钓片 commit 在 ~/钓不钓-基座,而本命令只在 $DEFAULT_DIR(产品仓)解析 ⇒ 必 fail-closed。
+#   fail-closed 本身对,缺的是它不会去已登记仓里找。⛔ 靠卡里写一句 LAIXIN_REPO=…(忘了的表现与「真判不了」同形)。
+t "merge-guard 自认仓:目标只在某个已登记仓解析得出 ⇒ 改用该仓并**显式告知** ⛔ 静默换" bash -c '
+  out="$("$1" merge-guard 264792e7 2>&1)" || true
+  grep -q "自认仓" <<< "$out" || { echo "未自认仓:$(head -1 <<< "$out")"; exit 1; }
+  grep -q "基座仓" <<< "$out" || exit 2
+  grep -q "代码库=.*钓不钓-基座" <<< "$out" || exit 3' _ "$LANE"
+# 🔴 反向锚:加了自认仓 ⛔ 放宽 fail-closed —— 一个都不命中时仍须拒判。
+t "merge-guard 反向:全部已登记仓都解析不出 ⇒ 仍 fail-closed ⛔ 当作安全" bash -c '
+  out="$("$1" merge-guard deadbeef00c0ffee 2>&1)"; rc=$?
+  [ $rc -ne 0 ] || { echo "应拒判却退 0"; exit 1; }
+  grep -q "判不了" <<< "$out" && grep -q "⛔ 当作安全" <<< "$out"' _ "$LANE"
+# 多仓命中不自动挑(「挑了一个」与「挑对了那个」在输出里同形);难造真夹具,锚代码分支。
+t "merge-guard:多仓命中 ⇒ 报错要求显式 LAIXIN_REPO ⛔ 自动挑一个" bash -c '
+  d="$(sed -n "/^cmd_merge_guard()/,/^}$/p" "$1")"
+  grep -q "个已登记仓都解析得出" <<< "$d" && grep -qF "⛔ 自动挑一个" <<< "$d" &&
+  grep -q "KNOWN_REPO_ENTRIES" <<< "$d"' _ "$LANE"
 APFC="$(mktemp -d)"; APFREPO="$(cd "$(dirname "$0")/.." && pwd)"; APFCAND="$(git -C "$APFREPO" rev-parse --short HEAD)"
 t "accept-preflight:--test-cmd 覆盖入口,且结果行仍按既有格式解析" bash -c '
   out="$("$1" 片X "$4" --repo "$3" --evidence-dir "$2/e1" --test-cmd "echo \"结果:7 过 / 0 败\"" 2>&1)"
@@ -3748,7 +3774,7 @@ t "#138:M1 登记同片去重(已在台账不重复登记)+ E 态超期出清(EV
   grep -q "EV_PENDING_TTL" <<< "$e" && grep -q "M1 台账出清" <<< "$e"' _ "$LANE"
 
 # ── M 轨机动窗 m-up/m-down/peek-m/mlist(2026-08-22 方案窗口规格 → 11B 首发批;执行总表 M 子节「11B:M 件常规起窗命令」)──
-echo "== M 轨机动窗 m-up(codex 全局默认 ⛔ 钉模型;件毕即收;各件独立 worktree;双向自证)=="
+echo "== M 轨机动窗 m-up(codex terra/xhigh 显式钉定;件毕即收;各件独立 worktree;双向自证)=="
 TM="$(mktemp -d)"; printf '# 任务单\n' > "$TM/task.md"; mkdir -p "$TM/wt" "$TM/main"
 printf 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "xhigh"\n' > "$TM/config.toml"
 MUP_ENV=(env LAIXIN_CODEX_CONFIG="$TM/config.toml" LAIXIN_REPO="$TM/main" LAIXIN_KB="$TM/kb")
@@ -3760,11 +3786,11 @@ tfail "m-up:缺 --dir 拒(各件独立 worktree 机器执法 ⛔ 靠自觉)" "�
 tfail "m-up:--dir 不存在拒(窗口未动)" "目录不存在" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/没有" --dry
 tfail "m-up:--dir=A 轨主树拒(两轨对写同一工作树同族)" "不得落 A 轨主树" "${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/main" --dry
 MUP_DRY="$("${MUP_ENV[@]}" "$LANE" m-up 测试件 --task "$TM/task.md" --dir "$TM/wt" --dry 2>&1)"
-t "m-up --dry:未定档现状仍吃全局默认——含 codex、零 -m、零推理档" bash -c '
+t "m-up --dry:起动串显式钉 terra/xhigh(⛔ 吃全局默认)" bash -c '
   l="$(grep "起动串:" <<< "$1")"; [ -n "$l" ] || exit 1
   grep -q "BU_NAME=" <<< "$l" && grep -q "BU_CDP_URL=" <<< "$l" && grep -q " codex " <<< "$l" &&
-  ! grep -q " -m " <<< "$l" && ! grep -q "luna" <<< "$l" && ! grep -q "model_reasoning_effort" <<< "$l"' _ "$MUP_DRY"
-tout "m-up --dry:全局默认读自 config.toml(LAIXIN_CODEX_CONFIG 可覆盖)" "全局默认=gpt-5.6-terra xhigh" echo "$MUP_DRY"
+  grep -q -- "-m gpt-5.6-terra" <<< "$l" && grep -q "model_reasoning_effort=\"xhigh\"" <<< "$l"' _ "$MUP_DRY"
+tout "m-up --dry:配型读数显式" "配型=gpt-5.6-terra xhigh(显式钉入)" echo "$MUP_DRY"
 tout "m-up --dry:交付契约=记录/M轨-<件名>-报告.md 末行【交付完成】M轨-<件名>" "M轨-测试件-报告.md 末行【交付完成】M轨-测试件" echo "$MUP_DRY"
 tout "m-up --dry:窗名 m-<slug>,BU 以 m 开头,端口落验收段 93xx-99xx" "窗口=m-测试件" echo "$MUP_DRY"
 t "m-up 点名指令:含任务单路径/worktree/四要件/红线(⛔ push/merge/reset/dmsg/起新窗)/⛔ 自收/按件轻量复核/⛔ 借 M 轨绕片级闸门" bash -c '
@@ -3772,10 +3798,11 @@ t "m-up 点名指令:含任务单路径/worktree/四要件/红线(⛔ push/merge
   for k in "任务单(先通读" "工作目录=本 worktree" "四要件" "⛔ git push" "⛔ laixin-lane dmsg" "⛔ 起任何新窗口" "你 ⛔ 自收" "轻量复核" "⛔ 借 M 轨绕" "机动窗"; do
     grep -qF "$k" <<< "$b" || { echo "缺:$k"; exit 1; }
   done' _ "$LANE"
-t "m-up:自证①先于派单(模型≠全局默认 ⇒ die 且不 paste 任务单);luna 二字在 die 文案里点名" bash -c '
+t "m-up:自证①先于派单(模型≠钉定配型 ⇒ die 且不 paste 任务单)" bash -c '
   b="$(sed -n "/^cmd_mup()/,/^}$/p" "$1")"
   a=$(grep -n "m_self_attest_model" <<< "$b" | head -1 | cut -d: -f1); p=$(grep -n "laixin-mmsg" <<< "$b" | head -1 | cut -d: -f1)
-  [ -n "$a" ] && [ -n "$p" ] && [ "$a" -lt "$p" ] && grep -q "自证①失败" <<< "$b" && grep -q "⛔ luna" <<< "$b"' _ "$LANE"
+  [ -n "$a" ] && [ -n "$p" ] && [ "$a" -lt "$p" ] && grep -q "自证①失败" <<< "$b" &&
+  grep -qF "\$M_CODEX_MODEL \$M_CODEX_EFFORT" <<< "$b"' _ "$LANE"
 sed -n "/^codex_global_default()/,/^}/p" "$LANE" > "$TM/gd.sh"
 t "codex_global_default:读 model+effort;缺项显 ?(读不到 ⛔ 显默认);文件不存在显「? ?」" bash -c '
   source "$1/gd.sh"
@@ -4151,6 +4178,7 @@ elif not (i3 < i4 < i5 < i6 < doctor < ctx < log < ready < commit < report):
 if 'laixin-lane ctx' in c[:i6]:
     errs.append('接班就绪读数过早:ctx 只能在全部读取与 doctor 后运行')
 WANT = ((u'起手式六步', 'C2 步数'),
+        (u'--model claude-opus-5', '方案窗口模型钉死'),
         (u'N = M+1', 'C1 任次取法'),
         (u'sessionId', 'C11 前8位取处'),
         (u'自证是「证」', 'C3 名字不符分支'),
@@ -4512,6 +4540,9 @@ t "#164 doctor 显示该配型(⛔ 只能靠起窗横幅事后看)" bash -c '"'"
 t "#164 11c-seat 认 sol 引擎且显式带档(⛔ 依赖默认——luna 那次默认 medium 咬人)" bash -c '
   seg="$(sed -n "/^  *sol)/,/;;/p" "$(dirname "'"$LANE"'")/laixin-11c-seat")"
   grep -q "gpt-5.6-sol" <<< "$seg" && grep -q "xhigh" <<< "$seg"'
+t "#164 11c-seat terra 席显式钉 terra/xhigh(⛔ 被名字误导、实际吃全局默认)" bash -c '
+  seg="$(sed -n "/^  *terra)/,/;;/p" "$(dirname "'"$LANE"'")/laixin-11c-seat")"
+  grep -q -- "-m gpt-5.6-terra" <<< "$seg" && grep -q "xhigh" <<< "$seg"'
 t "#164 11c-seat 引擎枚举含 sol(⛔ 只改帮助文本不改校验)" bash -c '
   grep -q "fable|k3|terra|luna|sol) : ;;" "$(dirname "'"$LANE"'")/laixin-11c-seat"'
 
@@ -4532,9 +4563,10 @@ tfail "#165 --dir 必填且必须是工具仓 worktree" "必须 --dir" "$LANE" t
 #   修法=LAIXIN_RELEASE_REPO 钉到被测仓自身 ⇒ 任何检出位置下守卫都拒绝「自己的树」,失败面不再漏窗。
 tfail "#165 ⛔ 工具仓主树(它是 release 发布源且多窗口共用;与 M 件 ⛔ 落 A 轨主树同族)〔worktree 里跑也成立〕" "不得落工具仓主树" env LAIXIN_RELEASE_REPO="$(cd "$(dirname "$LANE")/.." && pwd)" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$(cd "$(dirname "$LANE")/.." && pwd)"
 tfail "#165 ⛔ 拿产品仓 worktree 起工具件(本线只维护 11B/11C)" "不是\*\*工具仓\*\*的 worktree" "$LANE" tool-up t165 --prompt "$W165/p.md" --dir "$HOME/来信平台"
-t "#165 工具件 Codex 未定档:零 -m 零推理档 ⛔ 误用验收 codex_launch_cmd" bash -c '
+t "#165 工具件 Codex 独立钉 terra/xhigh ⛔ 误用验收 codex_launch_cmd" bash -c '
   seg="$(sed -n "/^cmd_tool_up()/,/^}/p" "'"$LANE"'" | sed "s/#.*//")"
-  grep -qF '"'"'codex$(codex_service_tier_flag)'"'"' <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
+  grep -qF -- "-m \$TOOL_CODEX_MODEL" <<< "$seg" && grep -qF "model_reasoning_effort=\\\"\$TOOL_CODEX_EFFORT\\\"" <<< "$seg" &&
+  grep -qF "LAIXIN_NATIVE_CODEX_MODEL=%q LAIXIN_NATIVE_CODEX_EFFORT=%q" <<< "$seg" && ! grep -q "codex_launch_cmd" <<< "$seg"'
 # ⚠️ 判据必须**剥注释**再扫:本函数注释里有意写着反引号包的样例(`claude-fable-5[1m]` 等),
 #   而互指注释是本仓惯例 ⇒ 该适配的是判据(今日第二次撞同族,前一次是 dry_win_clash 的 ensure_session)。
 t "#165 点名指令(**代码部分**)零反引号〔病灶:反引号在 $(cat <<EOF) 里被求值,首火实撞 run.sh: command not found + grep usage〕" bash -c '
@@ -4710,7 +4742,8 @@ t "#165-3 codex+print 缺 prompt 仍到既有必填校验且零 tmux 副作用" 
   [ "$rc" -ne 0 ] && grep -q "必须 --prompt" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
 t "#165-3 codex+print 走官方 exec JSON 且 --dry 零 tmux 副作用" bash -c '
   out="$(env HOME="$1/home" PATH="$1/fakebin:$PATH" TMUX_MARK="$1/tmux-called" LAIXIN_RELEASE_REPO="$1/repo" LAIXIN_SWITCH_DIR="$1/sw" LAIXIN_BOARD="$1/board.md" LAIXIN_KB="$1/kb" LAIXIN_REPO="$1/repo" "'$LANE'" tool-up x --engine codex --transport print --prompt "$1/p.md" --dir "$1/wt" --dry 2>&1)"; rc=$?
-  [ "$rc" -eq 0 ] && grep -q "codex exec --json --sandbox workspace-write -C" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
+  [ "$rc" -eq 0 ] && grep -q "codex exec --json --sandbox workspace-write -C" <<< "$out" &&
+  grep -q -- "-m gpt-5.6-terra" <<< "$out" && grep -q "model_reasoning_effort=\"xhigh\"" <<< "$out" && [ ! -e "$1/tmux-called" ]' _ "$N165"
 t "#165-3 --dry 报 engine/transport/账/回退且零持久写" bash -c '
   grep -q "引擎=claude" <<< "$1" && grep -q "transport=print" <<< "$1" && grep -q "native 账:" <<< "$1" && grep -q "回退:" <<< "$1" &&
   [ ! -e "$2/headless.json" ] && [ ! -e "$2/home/.laixin-events.d" ]' _ "$out165_cli" "$N165"

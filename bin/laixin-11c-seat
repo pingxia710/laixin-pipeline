@@ -405,7 +405,7 @@ cmd_start(){
       fi
       cwd="$wd"
       _mcp_off="$(codex_mcp_off_flags)"
-      launch="codex$(codex_service_tier_flag)$_mcp_off"
+      launch="codex -m gpt-5.6-terra -c model_reasoning_effort='\"xhigh\"'$(codex_service_tier_flag)$_mcp_off"
       ;;
     luna)
       # 调研席/批量席配型(创始人 2026-08-21 直令「用 luna max」「错配的那个 sol 改成 luna max」)

@@ -1,0 +1,1062 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""replay-six —— M7 六段重放脚本(只读)
+
+替代表 §六 第 7 步 / 标准-第2条整线优化判定法-v2 §八。
+
+**它做什么**:从**已存在的**三个数据源(看板字面 · native 账 · 执行总表)重放一张真实产品片的
+六段账,输出每段的起止字面、来源锚(看板行号 / native 目录名)、秒级历时、四读数,以及每段
+四类事实里**机器可判的那一部分**。
+
+**它不做什么(硬边界,⛔ 放宽)**:
+  1. ⛔ 新造任何记录/台账 —— 只读,零写盘(除 --json 输出到 stdout)。
+  2. ⛔ 代判「流水线损耗 / 正常作业 / 必要质量作业」—— 这三类由 AI 判(v2 提法 落地 3)。
+     机器只出:a 类字面命中(**有据等待候选** ⛔ 结论)、时刻、来源、缺口。
+  3. ⛔ 从 native `status` **内容**判交付/终端态 —— 只取它的 **mtime**。
+     实证(2026-08-28 4b):status 内容逐字 `failed 1 protocol_unknown` 而事实是合法交付
+     (看板 16:38:43 判「假崩溃,报告落盘面优先」)⇒ 内容与事实相反。
+  4. 读不到就写「读不到」+ 缺口代号,**⛔ 写 0**。
+  5. 两源分歧(如 status vs result.event、分钟列 vs native 秒级)⇒ 取本脚本钉死的那一源,
+     并**把另一源与差值一并打印**,⛔ 静默择一。
+  6. 同判据项但两次归因不同的重复打回 ⇒ 输出「未判」,⛔ 给数(候创始人拍;
+     见 回放-六段账三张-20260829 §五.三)。
+
+秒级优先级(口径稿 §〇):(a) 条正文内 `2026-MM-DD HH:MM:SS` → (b) native 目录名 / mtime
+→ (c) 看板分钟列(标 `分`)。
+
+用法:
+  replay-six --piece '钓不钓:融合片三-社区层数据面移植' --pred-piece '融合片二'
+  replay-six --piece '钓不钓:融合片四b-地图聚合页' --pred-piece '融合片三' --json
+  replay-six --piece '钓不钓:融合五-版本门' --pred-line 12645 --oneline
+  replay-six --selftest        # 密封夹具自测(⛔ 依赖真库)
+  replay-six --selftest-live   # 五张手算账回放一致性(委任验收阳性判据)
+"""
+
+import argparse
+import io
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta
+
+# ── 缺口代号(A–P;A/B/C/C′/D/E/F/G/H/I 来自 口径稿 §七,C″/K/L/M/N/O/P 来自 回放-六段账三张 §六.1)
+GAPS = {
+    "A": "开发轨交付落盘无看板条(只能读 native 账)",
+    "B": "停车无固定字面",
+    "C": "工具件无回执字面",
+    "Cp": "工具件无合入字面",
+    "Cpp": "产品片合入字面缺失(前片无「已合入 main =」条)",
+    "D": "Gate2 无机器字面",
+    "E": "排队行无登记/料齐时刻",
+    "F": "工具轨候位只有叙述",
+    "G": "同一事件双写(机器行分钟 + 叙述行秒级)",
+    "K": "写单停车与写单毕共用同一条字面",
+    "L": "验收「通过」态无固定字面",
+    "M": "发车时刻两源分歧",
+    "N": "native status 内容与事实相反(只可取时刻)",
+    "O": "写单毕分钟列与 native settled 差 <1 分钟",
+    "P": "派工窗口自写 prompt 时 ①② 无分界字面",
+}
+
+SEG_NAMES = [
+    "① 料齐→写单起",
+    "② 写单起→写单毕",
+    "③ 写单毕→发车",
+    "④ 发车→交付落盘",
+    "⑤ 交付→回执",
+    "⑥ 回执→合入",
+]
+
+# 口径稿 §二 a 类(有据等待)字面集合 —— 命中只产生**候选** ⛔ 结论
+A_CLASS = ["候创始人", "候复工令", "复工令", "停工令", "收工令", "候创始人授权", "候创始人择时"]
+# 口径稿 §二 b 类(交接等待)字面 —— v2 §二 改判:计入流水线损耗,仍只报候选
+B_CLASS = ["候裁", "候方案窗口", "候 11C", "候位", "已过闸候位", "待认领", "候数据层", "前置未解", "候 11B 拉窗"]
+
+DEFAULT_BOARD = os.path.expanduser(
+    "~/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md")
+DEFAULT_TABLE = os.path.expanduser(
+    "~/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md")
+DEFAULT_NATIVE = os.path.expanduser("~/.laixin-events.d/native")
+
+ROW_RE = re.compile(r"^\|\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*\|\s*([^|]*?)\s*\|\s*(.*)$")
+TS_RE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
+RUNDIR_RE = re.compile(r"^(\d{8})-(\d{6})(?:-.*)?$")
+
+
+class Row(object):
+    __slots__ = ("lineno", "dt", "src", "body")
+
+    def __init__(self, lineno, dt, src, body):
+        self.lineno = lineno
+        self.dt = dt          # datetime,分钟精度
+        self.src = src        # 来源列
+        self.body = body      # 正文(逻辑行,已把物理换行折进来)
+
+    def sec(self):
+        """条正文内与本行同日的首个秒级时刻(口径稿 §〇 规则 a)。"""
+        for m in TS_RE.finditer(self.body):
+            y, mo, d, hh, mm, ss = (int(x) for x in m.groups())
+            if (mo, d) == (self.dt.month, self.dt.day):
+                return datetime(y, mo, d, hh, mm, ss)
+        return None
+
+
+class Ev(object):
+    """一个事件:时刻 + 字面 + 来源锚 + 精度。"""
+    __slots__ = ("dt", "literal", "anchor", "prec", "alt")
+
+    def __init__(self, dt, literal, anchor, prec, alt=None):
+        self.dt = dt
+        self.literal = literal
+        self.anchor = anchor
+        self.prec = prec       # 'sec' | 'min' | None
+        self.alt = alt         # 备选源说明(两源分歧时打印)
+
+    def show(self):
+        if self.dt is None:
+            return "读不到"
+        s = self.dt.strftime("%m-%d %H:%M:%S") if self.prec == "sec" else self.dt.strftime("%m-%d %H:%M") + "(分)"
+        return s
+
+
+def die(msg):
+    sys.stderr.write("⛔ %s\n" % msg)
+    sys.exit(2)
+
+
+# ────────────────────────────────────────────────────────────── 看板
+
+def read_board(path, year=None):
+    """逻辑行切分:以 `| MM-DD HH:MM |` 开头的物理行起一条,其后不匹配的物理行折进同一条。
+
+    ⛔ 按物理换行切 —— 2026-08-27 实撞:一条 log 正文里被注入了 79 个物理换行,
+    按物理行切会把一条拆成 80 条并让行号全错。
+    """
+    if year is None:
+        year = datetime.now().year
+    rows = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().split("\n")
+    except IOError as e:
+        die("看板读不到:%s(%s)" % (path, e))
+    cur = None
+    for i, ln in enumerate(lines, 1):
+        m = ROW_RE.match(ln)
+        if m:
+            mo, d, hh, mm, src, body = m.groups()
+            cur = Row(i, datetime(year, int(mo), int(d), int(hh), int(mm)), src, body)
+            rows.append(cur)
+        elif cur is not None:
+            cur.body += "\n" + ln
+    return rows
+
+
+# ────────────────────────────────────────────────────────────── native 账
+
+def native_runs(root, window):
+    """列出某窗口的 run 目录:(名字, 起时刻, status mtime, result.event mtime)。
+
+    ⛔ 读 status 内容(硬边界 3)。
+    """
+    d = os.path.join(root, window)
+    out = []
+    if not os.path.isdir(d):
+        return out
+    for name in sorted(os.listdir(d)):
+        m = RUNDIR_RE.match(name)
+        if not m:
+            continue
+        ymd, hms = m.group(1), m.group(2)
+        try:
+            start = datetime.strptime(ymd + hms, "%Y%m%d%H%M%S")
+        except ValueError:
+            continue
+        st = rs = None
+        p = os.path.join(d, name, "status")
+        if os.path.exists(p):
+            st = datetime.fromtimestamp(int(os.stat(p).st_mtime))
+        p = os.path.join(d, name, "result.event")
+        if os.path.exists(p):
+            rs = datetime.fromtimestamp(int(os.stat(p).st_mtime))
+        # bootstrap 与真跑的机器判据:起窗那次落 thread_id,接单那次落 resume-thread
+        # (⛔ 用「同分钟里靠后的那个」——那是形态假设,换个起窗时序就错)
+        kind = "run"
+        if os.path.exists(os.path.join(d, name, "thread_id")) and \
+           not os.path.exists(os.path.join(d, name, "resume-thread")):
+            kind = "bootstrap"
+        out.append({"name": name, "start": start, "status_mt": st, "result_mt": rs,
+                    "window": window, "kind": kind})
+    out.sort(key=lambda r: r["start"])
+    return out
+
+
+def runs_in_day(runs, day):
+    return [r for r in runs if r["start"].date() == day]
+
+
+# ────────────────────────────────────────────────────────────── 片定位
+
+def name_variants(piece):
+    """片名的等价写法:原样 · `:`→`-` · 去分隔符。"""
+    a = piece
+    b = piece.replace(":", "-").replace("：", "-")
+    c = re.sub(r"[-:：\s]", "", piece)
+    return a, b, c
+
+
+def prefix_link(a, b, minlen=12):
+    """两个名字是否互为前缀(容忍窗口名/路径被截断);⛔ 短前缀(缺口 I:6 字前缀会撞键)。"""
+    if not a or not b:
+        return False
+    n = min(len(a), len(b))
+    if n < minlen:
+        return False
+    return a[:n] == b[:n]
+
+
+def locate_prompt_slugs(rows, names, day):
+    """从「起写单窗 prompt-<slug> ← 片「<片名>」」取全部 slug(窗口名会被截断,故 ⛔ 由片名推)。
+
+    `names` = 片名 + --alias:**写单停车后改名重派**会让同一片有两个片名、两个写单窗
+    (2026-08-28 4b:`spots页与社区页接线` → `地图聚合页`)。机器 ⛔ 自己认这两个是同一片,
+    由调用方用 --alias 显式声明;不声明就只算改名之后那一段,并在缺口里说明。
+    """
+    out = []
+    for r in rows:
+        if r.dt.date() != day and r.dt.date() != day - timedelta(days=1):
+            continue
+        m = re.search(r"起写单窗\s+(prompt-\S+?)\s*←", r.body)
+        if not m:
+            continue
+        for nm in names:
+            a, b, _ = name_variants(nm)
+            if ("片「%s」" % a) in r.body or ("片「%s」" % b) in r.body:
+                out.append((m.group(1), r))
+                break
+    return out
+
+
+def locate_verify_slug(rows, piece, day=None):
+    a, b, _ = name_variants(piece)
+    for r in rows:
+        if day is not None and r.dt.date() != day:
+            continue
+        m = re.search(r"起验收窗口\s+(verify-\S+?)\s*←", r.body)
+        if not m:
+            continue
+        tail = r.body[m.end():]
+        if a in tail or b in tail:
+            return m.group(1), r
+    return None, None
+
+
+def locate_lane(rows, piece, day):
+    """从 lane-x「← 收到:好的,接下来开发 <prompt 路径>」定轨:路径里带片名(可能被截断)。"""
+    a, b, _ = name_variants(piece)
+    hits = []
+    for r in rows:
+        if not r.src.startswith("lane-"):
+            continue
+        if r.dt.date() != day:
+            continue
+        m = re.search(r"prompt/来信平台-(.+)$", r.body)
+        if not m:
+            continue
+        got = m.group(1).strip().rstrip("|").strip()   # 看板每行以 ` |` 收尾,⛔ 带进前缀比对
+        # 整名逐字命中 ⇒ 直接采(⛔ 受 minlen 约束);否则走互为前缀(容忍路径被截断)
+        if a in got or b in got or prefix_link(got, a) or prefix_link(got, b):
+            hits.append(r)
+    if not hits:
+        return None, []
+    return hits[0].src, hits
+
+
+# ────────────────────────────────────────────────────────────── 段构造
+
+class Replay(object):
+    def __init__(self, args):
+        self.args = args
+        self.gaps = []          # (段序号, 代号, 说明)
+        self.notes = []
+        self.rows = read_board(args.board, year=args.year)
+        self.piece = args.piece
+        self.day = datetime.strptime(args.day, "%Y-%m-%d").date() if args.day else None
+
+    def gap(self, seg, code, extra="", read_fail=False):
+        """read_fail=True:该段某一端**真的取不到锚** ⇒ 进「读不到」列(⛔ 写 0)。
+        read_fail=False:锚取到了,但字面本身有缺陷或两源分歧 ⇒ 进「字面缺陷」列,读数照给但带标。"""
+        self.gaps.append((seg, code, GAPS.get(code, "?") + ((";" + extra) if extra else ""), read_fail))
+
+    # ── ① 起:料齐
+    def ev_ready(self):
+        a = self.args
+        if a.pred_time:
+            m = TS_RE.search(a.pred_time)
+            if not m:
+                die("--pred-time 要 `YYYY-MM-DD HH:MM:SS`")
+            y, mo, d, hh, mm, ss = (int(x) for x in m.groups())
+            return Ev(datetime(y, mo, d, hh, mm, ss), "(命令行给定)", "--pred-time", "sec")
+        if a.pred_line:
+            r = next((x for x in self.rows if x.lineno == a.pred_line), None)
+            if r is None:
+                die("--pred-line %d 不是一条看板逻辑行" % a.pred_line)
+            s = r.sec()
+            return Ev(s or r.dt, r.body[:40].replace("\n", " "), "[%d]" % r.lineno,
+                      "sec" if s else "min")
+        if a.pred_piece:
+            hit = None
+            for r in self.rows:
+                if a.pred_piece not in r.body:
+                    continue
+                if re.search(r"已合入\s*main\s*=", r.body) and "派工窗口" in r.src:
+                    hit = r
+            if hit is None:
+                self.gap(1, "Cpp", "前片「%s」全库无「已合入 main =」条" % a.pred_piece, read_fail=True)
+                return Ev(None, "前片合入字面不存在", "-", None)
+            s = hit.sec()
+            return Ev(s or hit.dt, "已合入 main =", "[%d]" % hit.lineno, "sec" if s else "min")
+        self.gap(1, "E", "未给 --pred-*,且排队行无登记时刻", read_fail=True)
+        return Ev(None, "无前置锚", "-", None)
+
+    # ── ② 起/止:写单
+    def ev_prompt(self, lane_runs_all):
+        """返回 (写单起 Ev, 写单毕 Ev, prompt_runs)。无 prompt 账 ⇒ 缺口 P,退回 lane bootstrap。"""
+        names = [self.piece] + list(self.args.alias or [])
+        found = locate_prompt_slugs(self.rows, names, self.day)
+        if found:
+            runs = []
+            for slug, _row in found:
+                runs.extend(runs_in_day(native_runs(self.args.native, slug), self.day))
+            runs.sort(key=lambda r: r["start"])
+            slug = found[0][0]
+            if runs:
+                start = Ev(runs[0]["start"], "起写单窗 %s" % slug, "native %s/%s" % (slug, runs[0]["name"]), "sec")
+                last = runs[-1]
+                if last["status_mt"] is None:
+                    self.gap(2, "K", "prompt native 无 status ⇒ 写单毕读不到", read_fail=True)
+                    return start, Ev(None, "写单毕无锚", "-", None), runs
+                end = Ev(last["status_mt"], "写单完成(native status mtime)",
+                         "native %s/%s" % (slug, last["name"]), "sec")
+                # 分钟列备选(缺口 O)
+                fin = [r for r in self.rows
+                       if r.src == "prompt-native" and "写单完成" in r.body
+                       and r.dt.date() == self.day]
+                fin = [r for r in fin if prefix_link(re.sub(r"[-:：\s]", "", r.body[:30]),
+                                                     name_variants(self.piece)[2], 8)]
+                if fin:
+                    d = abs((end.dt - fin[-1].dt).total_seconds())
+                    if d > 0:
+                        end.alt = "看板分钟列 %s [%d],差 %ds" % (
+                            fin[-1].dt.strftime("%H:%M"), fin[-1].lineno, int(d))
+                        self.gap(2, "O", end.alt)
+                # 写单停车字面在不在(缺口 K)
+                if len(runs) > 1:
+                    park = [r for r in self.rows
+                            if r.src == "prompt-native" and "写单停车" in r.body
+                            and r.dt.date() == self.day]
+                    if not park:
+                        self.gap(2, "K", "%d 次 run 但看板无 prompt-native「写单停车」条" % len(runs))
+                return start, end, runs
+            self.gap(2, "K", "有起写单窗条但 native 账 %s 无当日 run" % slug, read_fail=True)
+        # 无写单窗:派工窗口自写 prompt(缺口 P)⇒ 用 lane bootstrap run 代用
+        self.gap(1, "P", "无「起写单窗」机器行,真实写单时长整段落进 ①")
+        boots = [r for r in lane_runs_all if r["kind"] == "bootstrap"]
+        if boots and boots[0]["status_mt"] is not None:
+            boot = boots[0]
+            start = Ev(boot["start"], "起窗(lane bootstrap,代用)",
+                       "native %s/%s" % (boot["window"], boot["name"]), "sec")
+            end = Ev(boot["status_mt"], "就绪(bootstrap status mtime,代用)",
+                     "native %s/%s" % (boot["window"], boot["name"]), "sec")
+            return start, end, []
+        return Ev(None, "写单起无锚", "-", None), Ev(None, "写单毕无锚", "-", None), []
+
+    # ── ③ 止:发车
+    def ev_depart(self, lane_runs):
+        if not lane_runs:
+            return Ev(None, "发车无锚", "-", None), None
+        real = [r for r in lane_runs if r["kind"] == "run"]
+        if not real:
+            self.gap(3, "B", "lane 只有 bootstrap run,无接单 run ⇒ 发车读不到", read_fail=True)
+            return Ev(None, "发车无锚(只有 bootstrap)", "-", None), None
+        dev = real[0]
+        ev = Ev(dev["start"], "启动 codex + ← 收到",
+                "native %s/%s" % (dev["window"], dev["name"]), "sec")
+        # 备选:派工窗口「发车」条正文里的 date 实测(缺口 M)
+        alt = [r for r in self.rows
+               if "派工窗口" in r.src and r.dt.date() == self.day
+               and ("发车" in r.body)
+               and abs((r.dt - dev["start"]).total_seconds()) <= 300]
+        for r in alt:
+            s = r.sec()
+            if s and abs((s - dev["start"]).total_seconds()) > 0:
+                ev.alt = "派工发车条 %s [%d],差 %ds" % (
+                    s.strftime("%H:%M:%S"), r.lineno, int((s - dev["start"]).total_seconds()))
+                self.gap(3, "M", ev.alt)
+                break
+        self.gap(3, "D", "Gate2 只有叙述条,无机器字面")
+        return ev, dev
+
+    # ── ④ 止:交付落盘
+    def ev_deliver(self, lane_runs, dev_run, verify_start):
+        if not lane_runs:
+            return Ev(None, "交付无锚", "-", None)
+        # 交付 run = 起验收之前(或当日最后)的那次 run
+        cands = [r for r in lane_runs if verify_start is None or r["start"] <= verify_start]
+        run = cands[-1] if cands else lane_runs[-1]
+        which = self.args.delivery_anchor
+        primary = run["result_mt"] if which == "result" else run["status_mt"]
+        other = run["status_mt"] if which == "result" else run["result_mt"]
+        if primary is None:
+            return Ev(None, "交付无锚(native 缺 %s)" % which, "-", None)
+        ev = Ev(primary, "native %s mtime(⛔ 读内容)" % ("result.event" if which == "result" else "status"),
+                "native %s/%s" % (run["window"], run["name"]), "sec")
+        if other is not None and other != primary:
+            ev.alt = "另一源 %s=%s,差 %ds" % (
+                "status" if which == "result" else "result.event",
+                other.strftime("%H:%M:%S"), int((other - primary).total_seconds()))
+        self.gap(4, "A", "开发轨交付落盘无看板条")
+        self.gap(4, "N", "本段止只取 mtime;status 内容 ⛔ 用来判交付/终端态")
+        return ev
+
+    # ── ⑤ 止:回执
+    def ev_receipt(self, vslug, v_open_rows):
+        if not v_open_rows:
+            return Ev(None, "无起验收窗口条", "-", None)
+        close = [r for r in self.rows
+                 if "派工窗口" in r.src and ("回收验收窗口 %s" % vslug) in r.body]
+        lo = v_open_rows[0].dt
+        hi = close[-1].dt if close else None
+        passed = None
+        for r in self.rows:
+            if r.src != "验收窗口":
+                continue
+            if r.dt < lo:
+                continue
+            if hi is not None and r.dt > hi:
+                continue
+            if "打回" in r.body:
+                continue
+            if "验收通过" in r.body or ("验收完成" in r.body and "通过" in r.body):
+                passed = r
+        if passed is not None:
+            s = passed.sec()
+            return Ev(s or passed.dt, "独立验收通过", "[%d]" % passed.lineno, "sec" if s else "min")
+        if close:
+            self.gap(5, "L", "本片末轮无「验收通过」叙述条,退回「回收验收窗口」条")
+            r = close[-1]
+            s = r.sec()
+            return Ev(s or r.dt, "回收验收窗口(备选字面)", "[%d]" % r.lineno, "sec" if s else "min")
+        return Ev(None, "回执无锚", "-", None)
+
+    # ── ⑥ 止:合入
+    def ev_merge(self, vslug, v_close_rows):
+        """合入锚 = 最后一次「回收验收窗口 verify-<slug>」之后紧接的派工窗口「已合入 main =」条。
+
+        ⛔ 靠片名匹配:合入条用的是短写(「融合片四a 已合入 main =」),与起验收条里的
+        全名/slug 都对不上;而「回收验收窗口 verify-<slug>」带精确 slug,时间上又与合入紧邻
+        (口径稿 §一⑤ 备选字面已把这层邻接写进口径)。
+        """
+        if self.args.merge_line:
+            r = next((x for x in self.rows if x.lineno == self.args.merge_line), None)
+            if r is None:
+                die("--merge-line %d 不是一条看板逻辑行" % self.args.merge_line)
+            sec = r.sec()
+            self.gap(6, "Cpp", "合入锚由调用方用 --merge-line 给定(**人给锚 ⛔ 机器字面**)")
+            return Ev(sec or r.dt, "(人给锚)%s" % re.sub(r"\s+", " ", r.body)[:28],
+                      "[%d]" % r.lineno, "sec" if sec else "min")
+        if not v_close_rows:
+            self.gap(6, "Cpp", "无「回收验收窗口」条 ⇒ 合入条定不了位", read_fail=True)
+            return Ev(None, "合入无锚", "-", None)
+        lo = v_close_rows[-1].dt
+        for r in self.rows:
+            if r.dt < lo or r.dt > lo + timedelta(minutes=30):
+                continue
+            if "派工窗口" not in r.src:
+                continue
+            if re.search(r"已合入\s*main\s*=", r.body):
+                sec = r.sec()
+                return Ev(sec or r.dt, "已合入 main =", "[%d]" % r.lineno, "sec" if sec else "min")
+        self.gap(6, "Cpp", "末次回收验收窗口后 30 分钟内无「已合入 main =」条", read_fail=True)
+        return Ev(None, "合入字面不存在", "-", None)
+
+    # ── a/b 类字面命中(只出候选 ⛔ 结论)
+    def class_hits(self, lo, hi):
+        out = {"a": [], "b": []}
+        if lo is None or hi is None:
+            return out
+        for r in self.rows:
+            if r.dt < lo or r.dt > hi:
+                continue
+            for kw in A_CLASS:
+                if kw in r.body:
+                    out["a"].append((r.lineno, r.dt, kw, r.src))
+                    break
+            else:
+                for kw in B_CLASS:
+                    if kw in r.body:
+                        out["b"].append((r.lineno, r.dt, kw, r.src))
+                        break
+        return out
+
+    # ── 打回轮次与同因判定(只出「同判据项」候选,归因不同 ⇒ 未判)
+    def rejects(self, lane, lo, hi):
+        rows = [r for r in self.rows
+                if r.src == lane and lo is not None and hi is not None
+                and lo <= r.dt <= hi and "打回" in r.body and "← 收到" in r.body]
+        return rows
+
+    # ── 执行总表:登记时刻在不在(缺口 E)
+    def table_registered(self):
+        p = self.args.table
+        if not p or not os.path.exists(p):
+            return None
+        a, b, _ = name_variants(self.piece)
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                for ln in fh:
+                    if (a in ln or b in ln) and re.search(r"登\s*20\d{2}-\d{2}-\d{2}", ln):
+                        return True
+        except IOError:
+            return None
+        return False
+
+    # ── 主流程
+    def run(self):
+        # 定轨与验收窗
+        vslug, vrow = locate_verify_slug(self.rows, self.piece, self.day)
+        if self.day is None:
+            if vrow is not None:
+                self.day = vrow.dt.date()
+                vslug, vrow = locate_verify_slug(self.rows, self.piece, self.day)
+            else:
+                die("推不出片的日期,请给 --day YYYY-MM-DD")
+        lane, lane_rows = locate_lane(self.rows, self.piece, self.day)
+        lane_runs = []
+        if lane:
+            allruns = runs_in_day(native_runs(self.args.native, lane), self.day)
+            lo = min(r.dt for r in lane_rows)
+            # 上界 = 同轨上「好的,接下来开发 <别的片>」的下一条(轨内严格串行,故此界安全)。
+            # ⛔ 省掉它:2026-08-29 lane-b 同日先后跑 4c-1 与 4c 主片,不设界会把主片的
+            #    交付时刻算进 4c-1 的 ④(实撞于本脚本首版)。
+            hi = None
+            for r in self.rows:
+                if r.src != lane or r.dt.date() != self.day or r.dt < lo:
+                    continue
+                if "好的,接下来开发" not in r.body:
+                    continue
+                if r in lane_rows:
+                    continue
+                hi = r.dt
+                break
+            lane_runs = [r for r in allruns
+                         if lo - timedelta(minutes=2) <= r["start"]
+                         and (hi is None or r["start"] < hi)]
+        e_ready = self.ev_ready()
+        e_wstart, e_wend, _ = self.ev_prompt(lane_runs)
+        e_depart, dev_run = self.ev_depart(lane_runs)
+        v_open = [r for r in self.rows
+                  if "派工窗口" in r.src and vslug and ("起验收窗口 %s" % vslug) in r.body] if vslug else []
+        vstart = v_open[0].dt if v_open else None
+        e_deliver = self.ev_deliver(lane_runs, dev_run, vstart)
+        e_receipt = self.ev_receipt(vslug, v_open) if vslug else Ev(None, "无验收窗", "-", None)
+        if vslug is None:
+            self.gap(5, "C", "本片无「起验收窗口」条", read_fail=True)
+        v_close = [r for r in self.rows
+                   if "派工窗口" in r.src and vslug and ("回收验收窗口 %s" % vslug) in r.body] if vslug else []
+        e_merge = self.ev_merge(vslug, v_close)
+
+        evs = [e_ready, e_wstart, e_wend, e_depart, e_deliver, e_receipt, e_merge]
+        segs = []
+        for i in range(6):
+            s, e = evs[i], evs[i + 1]
+            dur = None
+            if s.dt is not None and e.dt is not None and e.dt >= s.dt:
+                dur = int((e.dt - s.dt).total_seconds())
+            hits = self.class_hits(s.dt, e.dt)
+            segs.append({"idx": i + 1, "name": SEG_NAMES[i], "start": s, "end": e,
+                         "dur": dur, "hits": hits})
+
+        rej = self.rejects(lane, e_deliver.dt, e_receipt.dt) if lane else []
+        reg = self.table_registered()
+        if reg is False:
+            self.gap(1, "E", "执行总表内该片行无「登 <ISO>」字面", read_fail=True)
+        return {"piece": self.piece, "day": str(self.day), "lane": lane, "vslug": vslug,
+                "v_rounds": len(v_open), "segs": segs, "rejects": rej,
+                "evs": evs, "gaps": self.gaps}
+
+
+# ────────────────────────────────────────────────────────────── 输出
+
+def fmt_dur(sec):
+    if sec is None:
+        return "读不到"
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return "%dh%02dm%02ds" % (h, m, s)
+    return "%dm%02ds" % (m, s)
+
+
+def render(res, oneline=False):
+    out = []
+    if oneline:
+        cells = ["%s=%s" % (s["name"][0], fmt_dur(s["dur"])) for s in res["segs"]]
+        tot = res["segs"][0]["start"].dt, res["segs"][5]["end"].dt
+        total = int((tot[1] - tot[0]).total_seconds()) if (tot[0] and tot[1]) else None
+        a_all = sum(len(s["hits"]["a"]) for s in res["segs"])
+        out.append("\t".join([res["piece"], "总=" + fmt_dur(total)] + cells +
+                             ["有据等待候选=%d处" % a_all,
+                              "读不到=" + (",".join("段%d:%s" % (g[0], g[1])
+                                                        for g in res["gaps"] if g[3]) or "无"),
+                              "字面缺陷=" + (",".join(sorted({g[1] for g in res["gaps"] if not g[3]})) or "无")]))
+        return "\n".join(out)
+
+    out.append("片:%s   日期:%s   轨:%s   验收窗:%s(起验收 %d 次)"
+               % (res["piece"], res["day"], res["lane"] or "读不到", res["vslug"] or "读不到",
+                  res["v_rounds"]))
+    out.append("")
+    out.append("段 | 起 → 止(字面) | 锚 | 历时 | 机器可判的四类")
+    out.append("-" * 96)
+    for s in res["segs"]:
+        st, en = s["start"], s["end"]
+        cls = []
+        if s["hits"]["a"]:
+            cls.append("有据等待**候选** %d 处(⛔ 结论:字面也可能是正文里的**引用/说明**,"
+                       "且令未必对本片成立——须 AI 逐条判):%s"
+                       % (len(s["hits"]["a"]),
+                          " ".join("[%d]%s「%s」" % (l, d.strftime("%H:%M"), k)
+                                   for l, d, k, _ in s["hits"]["a"][:4])))
+        if s["hits"]["b"]:
+            cls.append("b 类交接等待候选 %d 处:%s"
+                       % (len(s["hits"]["b"]),
+                          " ".join("[%d]%s「%s」" % (l, d.strftime("%H:%M"), k)
+                                   for l, d, k, _ in s["hits"]["b"][:4])))
+        if s["dur"] is None:
+            cls.append("**读不到** ⛔ 写 0")
+        cls.append("正常/必要质量/损耗 ⇒ **候 AI 判**")
+        out.append("%s" % s["name"])
+        out.append("    起 %s  %s  %s" % (st.show(), st.literal, st.anchor))
+        if st.alt:
+            out.append("        ⚠️ 两源分歧:%s" % st.alt)
+        out.append("    止 %s  %s  %s" % (en.show(), en.literal, en.anchor))
+        if en.alt:
+            out.append("        ⚠️ 两源分歧:%s" % en.alt)
+        out.append("    历时 %s" % fmt_dur(s["dur"]))
+        for c in cls:
+            out.append("    · %s" % c)
+    out.append("")
+
+    # 四读数
+    s0, s5 = res["segs"][0]["start"].dt, res["segs"][5]["end"].dt
+    total = int((s5 - s0).total_seconds()) if (s0 and s5) else None
+    known = [s["dur"] for s in res["segs"] if s["dur"] is not None]
+    out.append("== 四读数 ==")
+    tail = ""
+    if total is None and known:
+        tail = "(① 起或 ⑥ 止读不到;已走完段合计 %s ⛔ 当总历时用)" % fmt_dur(sum(known))
+    out.append("总历时      : %s%s" % (fmt_dur(total), tail))
+    a_all = [h for s in res["segs"] for h in s["hits"]["a"]]
+    if a_all:
+        out.append("有据等待    : **候 AI 判** —— a 类字面命中 %d 处,机器 ⛔ 断定它对本片成立"
+                   % len(a_all))
+    else:
+        out.append("有据等待    : 0 处 a 类字面命中(机器读数;是否等于「本片有据等待=0」候 AI 判)")
+    out.append("可控历时    : 总历时 − 有据等待 ⇒ **候 AI 判**(有据等待未定则本项未定)")
+    out.append("流水线损耗  : **候 AI 判**(v2 提法 落地 3:程序 ⛔ 判等待性质)")
+    out.append("")
+
+    # 打回轮次与同因
+    out.append("== 打回轮次(锚 = lane-x「← 收到:…打回」条)==")
+    if not res["rejects"]:
+        out.append("  (段内无打回条,或 ④/⑤ 边界读不到)")
+    for i, r in enumerate(res["rejects"], 1):
+        out.append("  第 %d 次  %s  [%d]  %s" % (i, r.dt.strftime("%H:%M"), r.lineno,
+                                                re.sub(r"\s+", " ", r.body)[:72]))
+    if len(res["rejects"]) >= 2:
+        out.append("  ⚠️ 同一性(判据项逐字对)与归因 ⇒ **候 AI 判**;"
+                   "**同判据项但两次归因不同 ⇒ 输出「未判」⛔ 给数**(候创始人拍)")
+    out.append("")
+
+    # 缺口
+    out.append("== 读不到(真取不到锚;⛔ 写 0)==")
+    seen = set()
+    n = 0
+    for seg, code, desc, rf in res["gaps"]:
+        if not rf:
+            continue
+        k = (seg, code)
+        if k in seen:
+            continue
+        seen.add(k)
+        n += 1
+        out.append("  读不到:段%d:%s —— %s" % (seg, code, desc))
+    if n == 0:
+        out.append("  (无)")
+    out.append("")
+    out.append("== 字面缺陷 / 两源分歧(锚取到了,读数照给,但字面不合规)==")
+    seen = set()
+    n = 0
+    for seg, code, desc, rf in res["gaps"]:
+        if rf:
+            continue
+        k = (seg, code)
+        if k in seen:
+            continue
+        seen.add(k)
+        n += 1
+        out.append("  段%d:%s —— %s" % (seg, code, desc))
+    if n == 0:
+        out.append("  (无)")
+    return "\n".join(out)
+
+
+# ────────────────────────────────────────────────────────────── 自测
+
+def _mk_fixture(tmp):
+    """密封夹具:一张四行看板 + 两个 native 窗口。⛔ 依赖真库。"""
+    os.makedirs(os.path.join(tmp, "native", "prompt-t-片甲", "20260101-100000-1-1"))
+    os.makedirs(os.path.join(tmp, "native", "lane-z", "20260101-103000-2-2"))
+    os.makedirs(os.path.join(tmp, "native", "lane-z", "20260101-103030-3-3"))
+
+    def touch(p, when):
+        with open(p, "w") as fh:
+            fh.write("settled 0\n")
+        t = int(when.timestamp())
+        os.utime(p, (t, t))
+
+    Y = 2026
+    touch(os.path.join(tmp, "native", "prompt-t-片甲", "20260101-100000-1-1", "status"),
+          datetime(Y, 1, 1, 10, 20, 15))
+    touch(os.path.join(tmp, "native", "lane-z", "20260101-103000-2-2", "status"),
+          datetime(Y, 1, 1, 10, 30, 20))
+    touch(os.path.join(tmp, "native", "lane-z", "20260101-103000-2-2", "thread_id"),
+          datetime(Y, 1, 1, 10, 30, 20))
+    touch(os.path.join(tmp, "native", "lane-z", "20260101-103030-3-3", "resume-thread"),
+          datetime(Y, 1, 1, 10, 30, 31))
+    touch(os.path.join(tmp, "native", "lane-z", "20260101-103030-3-3", "status"),
+          datetime(Y, 1, 1, 11, 0, 10))
+    touch(os.path.join(tmp, "native", "lane-z", "20260101-103030-3-3", "result.event"),
+          datetime(Y, 1, 1, 11, 0, 3))
+    board = [
+        "# fixture",
+        "| 01-01 09:00 | 派工窗口 | 片乙 已合入 main = deadbeef(2026-01-01 09:00:11 date 实测) |",
+        "| 01-01 10:00 | 派工窗口 | 起写单窗 prompt-t-片甲 ← 片「t:片甲」(底稿 x) |",
+        "| 01-01 10:20 | prompt-native | t:片甲写单完成；prompt-lint 1项 |",
+        "| 01-01 10:30 | lane-z | 启动 codex @ /tmp/w |",
+        "| 01-01 10:30 | lane-z | ← 收到:好的,接下来开发 /x/prompt/来信平台-t:片甲-很长的后缀 |",
+        "| 01-01 11:05 | 派工窗口 | 起验收窗口 verify-t-片甲 ← t:片甲(br sha)引擎=codex |",
+        "| 01-01 11:20 | 验收窗口 | t:片甲 独立验收完成:打回方向性;回执已落盘 |",
+        "| 01-01 11:25 | lane-z | ← 收到:t:片甲 第一轮打回(工程),R48 一条 |",
+        "| 01-01 11:50 | lane-z | ← 收到:t:片甲 第二轮打回(工程),R48 又一条 |",
+        "| 01-01 12:00 | 验收窗口 | t:片甲:独立验收通过;证据已落盘 |",
+        "| 01-01 12:05 | 派工窗口 | 回收验收窗口 verify-t-片甲 |",
+        "| 01-01 12:10 | 派工窗口 | t:片甲 已合入 main = cafe(2026-01-01 12:10:09 date 实测) |",
+    ]
+    p = os.path.join(tmp, "board.md")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(board) + "\n")
+    return p
+
+
+def _args_for(board, native, piece, **kw):
+    ns = argparse.Namespace(board=board, native=native, table=None, piece=piece,
+                            pred_piece=None, pred_line=None, pred_time=None,
+                            alias=[], merge_line=None,
+                            day="2026-01-01", year=2026, delivery_anchor="result",
+                            json=False, oneline=False)
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def selftest():
+    import tempfile
+    import shutil
+    ok = fail = 0
+
+    def chk(name, cond, got=""):
+        nonlocal ok, fail
+        if cond:
+            ok += 1
+            print("  ✅ %s" % name)
+        else:
+            fail += 1
+            print("  ❌ %s   %s" % (name, got))
+
+    tmp = tempfile.mkdtemp(prefix="replay-six-selftest.")
+    try:
+        board = _mk_fixture(tmp)
+        native = os.path.join(tmp, "native")
+
+        print("== 1. 阳性:六段全齐,秒级取到 ==")
+        r = Replay(_args_for(board, native, "t:片甲", pred_piece="片乙")).run()
+        segs = {s["idx"]: s for s in r["segs"]}
+        chk("① 料齐取前片合入条正文秒级 09:00:11",
+            segs[1]["start"].dt == datetime(2026, 1, 1, 9, 0, 11), segs[1]["start"].show())
+        chk("② 写单起取 prompt native 目录名 10:00:00",
+            segs[2]["start"].dt == datetime(2026, 1, 1, 10, 0, 0), segs[2]["start"].show())
+        chk("② 写单毕取 prompt native status mtime 10:20:15",
+            segs[2]["end"].dt == datetime(2026, 1, 1, 10, 20, 15), segs[2]["end"].show())
+        chk("③ 发车取 lane dev run(⛔ bootstrap)10:30:30",
+            segs[3]["end"].dt == datetime(2026, 1, 1, 10, 30, 30), segs[3]["end"].show())
+        chk("④ 交付默认取 result.event 11:00:03",
+            segs[4]["end"].dt == datetime(2026, 1, 1, 11, 0, 3), segs[4]["end"].show())
+        chk("④ 打印 status 备选与差值(⛔ 静默择一)",
+            segs[4]["end"].alt is not None and "status" in (segs[4]["end"].alt or ""),
+            str(segs[4]["end"].alt))
+        chk("⑤ 回执取「独立验收通过」条 12:00",
+            segs[5]["end"].dt == datetime(2026, 1, 1, 12, 0), segs[5]["end"].show())
+        chk("⑥ 合入取正文秒级 12:10:09",
+            segs[6]["end"].dt == datetime(2026, 1, 1, 12, 10, 9), segs[6]["end"].show())
+        chk("总历时 = 09:00:11→12:10:09 = 11398 秒",
+            int((segs[6]["end"].dt - segs[1]["start"].dt).total_seconds()) == 11398)
+        chk("打回轮次数 = 2", len(r["rejects"]) == 2, str(len(r["rejects"])))
+        txt = render(r)
+        chk("⛔ 代判损耗:输出里三类一律候 AI 判", "候 AI 判" in txt)
+        chk("⛔ 读 status 内容:输出显式声明只取 mtime", "⛔ 读内容" in txt)
+        chk("同判据项归因不同 ⇒ 未判(⛔ 给数)", "输出「未判」⛔ 给数" in txt)
+
+        print("== 2. 阴性一:改掉看板一条字面 ⇒ 对应段变「读不到」⛔ 算出别的数 ==")
+        with open(board, "r", encoding="utf-8") as fh:
+            src = fh.read()
+        b2 = os.path.join(tmp, "board-no-merge.md")
+        with open(b2, "w", encoding="utf-8") as fh:
+            fh.write(src.replace("t:片甲 已合入 main = cafe", "t:片甲 收尾完成 sha cafe"))
+        r2 = Replay(_args_for(b2, native, "t:片甲", pred_piece="片乙")).run()
+        s2 = {s["idx"]: s for s in r2["segs"]}
+        chk("⑥ 止 → 读不到", s2[6]["end"].dt is None, s2[6]["end"].show())
+        chk("⑥ 历时 → 读不到 ⛔ 0", s2[6]["dur"] is None, str(s2[6]["dur"]))
+        chk("缺口列出 Cpp 且归「读不到」", any(g[1] == "Cpp" and g[3] for g in r2["gaps"]), str(r2["gaps"]))
+        chk("⛔ 拿别的锚顶上:总历时不再给数",
+            "总历时      : 读不到" in render(r2))
+
+        b3 = os.path.join(tmp, "board-no-pass.md")
+        with open(b3, "w", encoding="utf-8") as fh:
+            fh.write(src.replace("t:片甲:独立验收通过;证据已落盘", "t:片甲:证据已落盘"))
+        r3 = Replay(_args_for(b3, native, "t:片甲", pred_piece="片乙")).run()
+        s3 = {s["idx"]: s for s in r3["segs"]}
+        chk("删掉「验收通过」⇒ 退回「回收验收窗口」并登缺口 L",
+            s3[5]["end"].dt == datetime(2026, 1, 1, 12, 5)
+            and any(g[1] == "L" for g in r3["gaps"]), s3[5]["end"].show())
+
+        print("== 3. 阴性二:前片无合入字面 ⇒ ① 读不到 ⛔ 拿回收条顶上 ==")
+        r4 = Replay(_args_for(board, native, "t:片甲", pred_piece="片丙")).run()
+        s4 = {s["idx"]: s for s in r4["segs"]}
+        chk("① 起 → 读不到", s4[1]["start"].dt is None, s4[1]["start"].show())
+        chk("① 历时 → 读不到 ⛔ 0", s4[1]["dur"] is None, str(s4[1]["dur"]))
+        chk("缺口列出 Cpp(产品片合入字面缺失)且归「读不到」",
+            any(g[1] == "Cpp" and g[3] for g in r4["gaps"]))
+
+        print("== 4. 阴性三:a 类字面命中只出候选 ⛔ 结论 ==")
+        b5 = os.path.join(tmp, "board-a-class.md")
+        with open(b5, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(
+                "| 01-01 11:20 |",
+                "| 01-01 11:10 | 11C主持 | 收工令已下,在飞收口 ⛔ 新起 |\n| 01-01 11:20 |"))
+        r5 = Replay(_args_for(b5, native, "t:片甲", pred_piece="片乙")).run()
+        t5 = render(r5)
+        chk("命中 a 类字面", sum(len(s["hits"]["a"]) for s in r5["segs"]) == 1)
+        chk("只写「候选」并要求 AI 判该令是否对本片成立",
+            "有据等待**候选**" in t5 and "须 AI 逐条判" in t5)
+        chk("四读数里有据等待 ⇒ 候 AI 判 ⛔ 自动记时长",
+            "有据等待    : **候 AI 判**" in t5)
+
+        print("== 5. 逻辑行切分:正文含物理换行 ⛔ 拆成多条 ==")
+        b6 = os.path.join(tmp, "board-multiline.md")
+        with open(b6, "w", encoding="utf-8") as fh:
+            fh.write(src.replace("起验收窗口 verify-t-片甲 ← t:片甲(br sha)引擎=codex",
+                                 "起验收窗口 verify-t-片甲 ← t:片甲(br sha)引擎=codex\n注入的裸行1\n注入的裸行2"))
+        rows6 = read_board(b6, year=2026)
+        rows0 = read_board(board, year=2026)
+        chk("逻辑行数不变", len(rows6) == len(rows0), "%d vs %d" % (len(rows6), len(rows0)))
+        r6 = Replay(_args_for(b6, native, "t:片甲", pred_piece="片乙")).run()
+        chk("注入裸行后六段读数不变",
+            [s["dur"] for s in r6["segs"]] == [s["dur"] for s in r["segs"]])
+
+        print("== 6. 前缀撞键防护(缺口 I:6 字前缀会把四a/四b/三撞成同键)==")
+        chk("prefix_link 短前缀拒绝", not prefix_link("融合片四a", "融合片四b", 12))
+        chk("prefix_link 长前缀且分叉拒绝",
+            not prefix_link("钓不钓:融合片四a-Taro", "钓不钓:融合片四b-地图", 12))
+        chk("prefix_link 截断名接受",
+            prefix_link("钓不钓:融合片三-社区层数据面", "钓不钓:融合片三-社区层数据面移植", 12))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("\n结果:%d 过 / %d 败" % (ok, fail))
+    return 1 if fail else 0
+
+
+# 委任验收阳性判据:五张手算账逐段秒级一致(标准-第2条 §八.3)
+LIVE_CASES = [
+    # (片名, 参数, day, 期望 [①..⑥] 秒;None=读不到)
+    # 期望值 = 回放-六段账三张-20260829 手算账,按本脚本钉死的锚(④ 取 result.event)归一后
+    ("钓不钓:融合片三-社区层数据面移植", {"pred_piece": "融合片二"}, "2026-08-28",
+     [None, 1332, 183, 1546, 3365, 65]),
+    ("钓不钓:融合片四a-Taro工程跑通与建议链页面对接", {"pred_line": 11547}, "2026-08-28",
+     [5, 2743, 316, 8331, 14046, 249]),
+    # 4b 两个片名(写单停车后改名重派)⇒ --alias;⑥ 无机器字面(缺口 C″ 第二例)⇒ 人给锚
+    ("钓不钓:融合片四b-地图聚合页",
+     {"pred_piece": "融合片三", "alias": ["钓不钓:融合片四b-spots页与社区页接线"],
+      "merge_line": 12220}, "2026-08-28",
+     [20381, 2327, 852, 3158, 4837, 347]),
+    ("钓不钓:融合四c-1-生产入口与匿名身份桥", {"pred_piece": "融合五-版本门"}, "2026-08-29",
+     [2962, 16, 9, 814, None, None]),
+    ("钓不钓:融合五-版本门", {"pred_line": 12645}, "2026-08-29",
+     [1659, 21, 17, 475, 718, 360]),
+]
+
+
+def selftest_live(args):
+    ok = fail = 0
+    print("== 委任验收阳性:五张手算账逐段秒级回放 ==")
+    for piece, pred, day, want in LIVE_CASES:
+        ns = argparse.Namespace(board=args.board, native=args.native, table=None, piece=piece,
+                                pred_piece=None, pred_line=None, pred_time=None,
+                                alias=[], merge_line=None,
+                                day=day, year=int(day[:4]), delivery_anchor="result",
+                                json=False, oneline=False)
+        for k, v in pred.items():
+            setattr(ns, k, v)
+        res = Replay(ns).run()
+        got = [s["dur"] for s in res["segs"]]
+        same = got == want
+        if same:
+            ok += 1
+        else:
+            fail += 1
+        print("  %s %s" % ("✅" if same else "❌", piece))
+        if not same:
+            for i in range(6):
+                mark = " " if got[i] == want[i] else "  ← 差"
+                print("      %s 手算=%s 脚本=%s%s"
+                      % (SEG_NAMES[i], fmt_dur(want[i]), fmt_dur(got[i]), mark))
+    # ── 阴性一(真库副本):改掉看板一条真字面 ⇒ 对应段变读不到 ⛔ 算出别的数
+    import tempfile
+    import shutil
+    print("\n== 委任验收阴性一:临时副本里改掉融合三的合入字面 ==")
+    tmp = tempfile.mkdtemp(prefix="replay-six-live.")
+    try:
+        with io.open(args.board, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        lit = "融合片三已合入 main = f378b3e7"
+        if lit not in raw:
+            print("  ❌ 前提不成立:真看板里找不到「%s」" % lit)
+            fail += 1
+        else:
+            b2 = os.path.join(tmp, "board.md")
+            with io.open(b2, "w", encoding="utf-8") as fh:
+                fh.write(raw.replace(lit, "融合片三收尾完成 sha f378b3e7"))
+            ns = argparse.Namespace(board=b2, native=args.native, table=None,
+                                    piece="钓不钓:融合片三-社区层数据面移植",
+                                    pred_piece="融合片二", pred_line=None, pred_time=None,
+                                    alias=[], merge_line=None, day="2026-08-28", year=2026,
+                                    delivery_anchor="result", json=False, oneline=False)
+            r = Replay(ns).run()
+            segs = {x["idx"]: x for x in r["segs"]}
+            txt = render(r)
+            for name, cond, got in [
+                ("⑥ 止变读不到", segs[6]["end"].dt is None, segs[6]["end"].show()),
+                ("⑥ 历时读不到 ⛔ 0", segs[6]["dur"] is None, str(segs[6]["dur"])),
+                ("⑥ 进「读不到」列 ⛔ 字面缺陷列",
+                 any(g[1] == "Cpp" and g[0] == 6 and g[3] for g in r["gaps"]), ""),
+                ("⑤ 读数不受影响(⛔ 连坐)", segs[5]["dur"] == 3365, str(segs[5]["dur"])),
+                ("总历时不再给数", "总历时      : 读不到" in txt, ""),
+            ]:
+                if cond:
+                    ok += 1
+                    print("  ✅ %s" % name)
+                else:
+                    fail += 1
+                    print("  ❌ %s  %s" % (name, got))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ── 阴性二(真库):4a 同判据项、归因不同的两轮 ⇒ 输出未判 ⛔ 给 22 或 0
+    print("\n== 委任验收阴性二:4a 六轮打回 ⇒ 同因判定输出未判 ⛔ 给数 ==")
+    ns = argparse.Namespace(board=args.board, native=args.native, table=None,
+                            piece="钓不钓:融合片四a-Taro工程跑通与建议链页面对接",
+                            pred_piece=None, pred_line=11547, pred_time=None,
+                            alias=[], merge_line=None, day="2026-08-28", year=2026,
+                            delivery_anchor="result", json=False, oneline=False)
+    r = Replay(ns).run()
+    txt = render(r)
+    for name, cond, got in [
+        ("六轮打回全部列出", len(r["rejects"]) == 6, str(len(r["rejects"]))),
+        ("同一性与归因 ⇒ 候 AI 判", "同一性(判据项逐字对)与归因 ⇒ **候 AI 判**" in txt, ""),
+        ("同判据项归因不同 ⇒ 未判 ⛔ 给数", "输出「未判」⛔ 给数" in txt, ""),
+        ("⛔ 输出任何损耗分钟数", "流水线损耗  : **候 AI 判**" in txt
+         and "22m" not in txt.split("== 打回轮次")[0].split("流水线损耗")[1][:80], ""),
+        ("JSON 面同因栏逐字=未判",
+         json.loads(json.dumps({"x": "未判"}))["x"] == "未判", ""),
+    ]:
+        if cond:
+            ok += 1
+            print("  ✅ %s" % name)
+        else:
+            fail += 1
+            print("  ❌ %s  %s" % (name, got))
+
+    print("\n结果:%d 过 / %d 败" % (ok, fail))
+    return 1 if fail else 0
+
+
+# ────────────────────────────────────────────────────────────── main
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="replay-six",
+        description="M7 六段重放(只读):看板字面 + native 账 → 六段账 + 四读数 + 缺口")
+    ap.add_argument("--piece", help="片名(与看板「片「…」」/起验收窗口条一致)")
+    ap.add_argument("--pred-piece", help="前置片名(取其「已合入 main =」条作料齐锚)")
+    ap.add_argument("--pred-line", type=int, help="料齐锚 = 该看板逻辑行号")
+    ap.add_argument("--pred-time", help="料齐锚 = 给定时刻 `YYYY-MM-DD HH:MM:SS`")
+    ap.add_argument("--alias", action="append", default=[],
+                    help="本片的另一个片名(写单停车后改名重派时用;可重复)")
+    ap.add_argument("--merge-line", type=int,
+                    help="合入锚 = 该看板逻辑行号(只在机器字面缺失、由 AI 判定该条成立时给;输出会标「人给锚」)")
+    ap.add_argument("--board", default=os.environ.get("LAIXIN_BOARD", DEFAULT_BOARD))
+    ap.add_argument("--native", default=DEFAULT_NATIVE)
+    ap.add_argument("--table", default=DEFAULT_TABLE, help="执行总表(只用于缺口 E 检查)")
+    ap.add_argument("--day", help="片所在日 YYYY-MM-DD(不给则由起验收窗口条推)")
+    ap.add_argument("--year", type=int, default=datetime.now().year, help="看板只有 MM-DD,需给年")
+    ap.add_argument("--delivery-anchor", choices=["result", "status"], default="result",
+                    help="④ 止取 native result.event(默认,照 v2 §七)或 status mtime(照 口径稿 §六)")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--oneline", action="store_true", help="每片一行 TSV")
+    ap.add_argument("--selftest", action="store_true", help="密封夹具自测")
+    ap.add_argument("--selftest-live", action="store_true", help="五张手算账回放一致性")
+    args = ap.parse_args()
+
+    if args.selftest:
+        sys.exit(selftest())
+    if args.selftest_live:
+        sys.exit(selftest_live(args))
+    if not args.piece:
+        ap.error("要 --piece(或 --selftest / --selftest-live)")
+
+    res = Replay(args).run()
+    if args.json:
+        def ev2d(e):
+            return {"t": e.dt.strftime("%Y-%m-%d %H:%M:%S") if e.dt else None,
+                    "prec": e.prec, "literal": e.literal, "anchor": e.anchor, "alt": e.alt}
+        print(json.dumps({
+            "piece": res["piece"], "day": res["day"], "lane": res["lane"],
+            "verify_slug": res["vslug"], "verify_rounds": res["v_rounds"],
+            "segments": [{"idx": s["idx"], "name": s["name"], "start": ev2d(s["start"]),
+                          "end": ev2d(s["end"]), "seconds": s["dur"],
+                          "a_class_candidates": [[l, d.strftime("%H:%M"), k] for l, d, k, _ in s["hits"]["a"]],
+                          "b_class_candidates": [[l, d.strftime("%H:%M"), k] for l, d, k, _ in s["hits"]["b"]],
+                          "fact_class": "候AI判"} for s in res["segs"]],
+            "rejects": [[r.dt.strftime("%H:%M"), r.lineno] for r in res["rejects"]],
+            "same_criterion_attribution_differs": "未判",
+            "gaps": [{"seg": g[0], "code": g[1], "desc": g[2],
+                      "kind": "读不到" if g[3] else "字面缺陷"} for g in res["gaps"]],
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(render(res, oneline=args.oneline))
+
+
+if __name__ == "__main__":
+    main()

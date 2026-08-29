@@ -24,6 +24,8 @@
 
 ## 已知的双真相源(改一处必须同步另一处)
 
+> **2026-08-29 收敛**:`contrib-statusline.py` 已改为**单点源=仓内这一份**,线上 `~/.claude-official/statusline.py` 是**指向发布版的软链**(`laixin-lane release` 随发布换链到 `~/.local/bin/laixin-statusline`)。此前它是仓外**独立副本**,而下面那条常量绊线只比对闸门线数值 ⇒ **文件级不同步抓不住**——当日实撞:两份**同时**缺 `import os`(绝对余量闸一次都没执行过)而常量完全一致、绊线全绿。现由 tests 的「状态栏单点源」一条钉住软链解析到当前发布版,**⛔ 不存在即跳过**。
+
 - 交班闸门线:`contrib-statusline.py` 的 `GATE_HARD/GATE_WARN` 与 `bin/laixin-lane` `cmd_ctx` 的 `75/70`(一 python 一 bash,权衡后接受,两边有互指注释;**2026-08-22 起 tests 一条绊线钉住同步**——当日实撞:bash 侧 `07f59d2` 上调 65/75 而 contrib 副本仍 55/70、本条原文也还写 70/55)。
 
 ## 规则的生命周期(2026-08-19 立,创始人认可;复盘页 #55——立规流程反转+卸载通道)

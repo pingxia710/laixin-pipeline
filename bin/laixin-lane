@@ -2208,9 +2208,9 @@ cmd_release(){  # #25 部署原子化:把仓库**已提交版**发布到版本�
   # 仓内其余(卡/文档/测试)根本不进发布物 ⇒ 不该有拦发布的权力。
   # ⚠️ 「发布=已提交态」这条**没松**,只是范围对齐了发布物;其余未提交仍**逐条列出**
   #    ⛔ 改成完全不看——不然哪天发布物之外的东西被误当成已发布,没有一处会露出破绽。
-  dirty_unit="$(git -C "$repo" status --porcelain -- bin 2>/dev/null)" || die "git status 失败:$repo"
+  dirty_unit="$(git -C "$repo" status --porcelain -- bin contrib-statusline.py 2>/dev/null)" || die "git status 失败:$repo"
   if [ -n "$dirty_unit" ]; then
-    die "⛔ 发布单元 bin/ 不干净,拒绝发布(发布=已提交态,与 backup 只推已提交同哲学;先 commit/stash):
+    die "⛔ 发布单元(bin/ 与 contrib-statusline.py)不干净,拒绝发布(发布=已提交态,与 backup 只推已提交同哲学;先 commit/stash):
 $(head -5 <<< "$dirty_unit")"
   fi
   dirty="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
@@ -2288,7 +2288,28 @@ $(head -5 <<< "$dirty_unit")"
   done
   # 回显只许说**真被核过的那件**:判据收窄到发布单元后再说「工作树干净」就是句假话,
   # 而它恰好长得像一条正常的成功回执(仓里可能正躺着未提交的卡)。⇒ 措辞跟判据同步收窄。
-  echo "   已核:发布单元 bin/ 干净(已提交态) · bash -n 语法 · 同目录原子换链 · helper 全集随行(差集空:${helpers:-无 py helper})(#50/#59)"
+  echo "   已核:发布单元(bin/ 与 contrib-statusline.py)干净(已提交态) · bash -n 语法 · 同目录原子换链 · helper 全集随行(差集空:${helpers:-无 py helper})(#50/#59)"
+  # ── 状态栏随发布(2026-08-29;「配置对≠能用」的教科书样本)────────────────────────────
+  # `~/.claude-official/statusline.py` 是**每个窗口都在跑**的那一份,此前是仓外**独立副本**
+  #   ⇒ 仓里改了、测试绿了、发布了,而**生效面为零**。今日实撞:绝对余量闸缺 `import os`,
+  #   两份**同时坏而常量一致** ⇒ 既有「闸门线常量三处一致」那条绊线**抓不住文件级不同步**。
+  # ⇒ 本脚本随发布落到稳定路径 `~/.local/bin/laixin-statusline`,线上那份改为**软链指它**:
+  #   ⛔ 指主树工作副本(未提交改动会直接上屏)· ⛔ 指某个 <sha> 目录(换代即断)。
+  local slsrc="contrib-statusline.py" sl_lbin sl_tmp
+  if git -C "$repo" cat-file -e "HEAD:$slsrc" 2>/dev/null; then
+    if ! git -C "$repo" show "HEAD:$slsrc" > "$rel_home/$slsrc" 2>/dev/null; then
+      rm -rf "$rel_home"; die "⛔ 读状态栏脚本失败($slsrc),已撤本次发布目录拒绝换链"
+    fi
+    chmod +x "$rel_home/$slsrc" || { rm -rf "$rel_home"; die "⛔ 状态栏脚本置可执行失败:$slsrc"; }
+    sl_lbin="$(dirname "$lbin")/laixin-statusline"
+    if [ -d "$sl_lbin" ] && [ ! -L "$sl_lbin" ]; then wrn_release "⛔ $sl_lbin 是目录,跳过换链(人工处理)"
+    else
+      sl_tmp="$(dirname "$lbin")/.laixin-statusline.new.$$"
+      if ln -s "$rel_home/$slsrc" "$sl_tmp" 2>/dev/null && mv -f "$sl_tmp" "$sl_lbin" 2>/dev/null; then
+        echo "   状态栏随发布并换链:${sl_lbin} → ${rel_home}/${slsrc}(各窗经 ~/.claude-official/statusline.py 软链到此)"
+      else rm -f "$sl_tmp"; wrn_release "⛔ 状态栏换链失败——各窗仍跑旧版,新逻辑不生效(人工核:ls -l ${sl_lbin})"; fi
+    fi
+  fi
   [ -n "$sibs" ] && echo "   兄弟脚本随行并换链(与主脚本同版本):${sibs}" || true
 }
 

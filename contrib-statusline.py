@@ -13,6 +13,7 @@
 在屏幕上长得一模一样,而这正是今天反复踩的那一族错误。
 """
 import json
+import os
 import sys
 
 # ── 交班闸门(与 laixin-lane ctx 保持一致;改这里要同步改那边)────────────
@@ -71,6 +72,16 @@ def main():
         else:
             color, tail = GREEN, ""
         # 2026-08-23 双阈(与 bin/laixin-lane ctx_abs_min 同读单点源:env LAIXIN_CTX_ABS_MIN > ~/.laixin-lane-switch/ctx-abs-min;无值=提示态,这里不加噪)
+        # 🔴 2026-08-29 实撞:本段用了 os.* 而文件只 import json/sys ⇒ 每次抛 NameError,
+        #    又被下面那个裸 `except Exception: pass` **当场吞掉** ⇒ 这道闸**一次都没执行过**。
+        #    后果:2026-08-23 双阈裁定「占比为主 + 绝对余量叠加为硬阈」当刻只有一阈在跑,
+        #    而屏幕上「余量充足」与「这道闸根本没跑」完全同形。
+        #    ⇒ 修法两半:补 import os;**把 except 收窄**——
+        #      · 配置缺失 / 格式不对(OSError/ValueError)= 正常,静默;
+        #      · 代码级异常(NameError/AttributeError/TypeError…)= 事故,**必须显形**。
+        #    这正是本文件 docstring 自己写的「兜底不许静默」:它对 ctx 那一半做对了,
+        #    对这一段做反了——把「配置没设」与「代码坏了」吞成同一个结果。
+        _abs_err = ""
         try:
             _am = (os.environ.get("LAIXIN_CTX_ABS_MIN") or "").strip()
             if not _am:
@@ -78,10 +89,13 @@ def main():
                 if os.path.isfile(_p): _am = open(_p).read().strip()
             if _am.isdigit() and int(_am) > 0 and isinstance(used, (int, float)) and isinstance(size, (int, float)) and size - used < int(_am):
                 color, tail = RED, f"  ⛔ 绝对余量 {int(size-used):,} < 下限 {int(_am):,}:交班"
-        except Exception:
-            pass
+        except (OSError, ValueError):
+            pass                      # 读不到开关文件 / 内容不是数字:配置态,⛔ 加噪
+        except Exception as exc:      # 代码级异常:说出来 ⛔ 装作闸跑过了
+            _abs_err = f"{YELLOW}绝对余量闸:读取异常({type(exc).__name__}){R}"
         detail = f" ({human(used)}/{human(size)})" if used and size else ""
         parts.append(f"{color}{bar} {pct:.0f}%{R}{DIM}{detail}{R}{color}{tail}{R}")
+        if _abs_err: parts.append(_abs_err)
     else:
         # ⛔ 关键:拿不到就说拿不到,绝不填 0
         parts.append(f"{YELLOW}ctx ?{R}{DIM}(本次输入无 context_window 字段){R}")

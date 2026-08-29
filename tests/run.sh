@@ -2345,7 +2345,7 @@ tout "dispatch 回显在 --force-rival 下如实说「跳过未核」⛔ 装作�
 tout "relay 回显区分 --resurrect 豁免与 --force-rival 跳过(两种非常规调用语义不同)" "按 --resurrect 豁免" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
 # 措辞随判据一起收窄(2026-08-29):判据只核发布单元,回执就 ⛔ 再说「工作树干净」——
 # 那是一条**看起来正常**的假话(仓里可能正躺着未提交的卡),比没有回执更难发现。
-tout "release 成功回显已核清单(措辞=发布单元 ⛔ 工作树)" "已核:发布单元 bin/ 干净" sed -n "/^cmd_release/,/^}/p" "$LANE"
+tout "release 成功回显已核清单(措辞=发布单元 ⛔ 工作树)" "已核:发布单元(bin/ 与 contrib-statusline.py)干净" sed -n "/^cmd_release/,/^}/p" "$LANE"
 
 echo "== 8j. #51 table-lint 台账写盘断言库(列数+残留竖线+行首唯一;从「各窗口自带」升「库提供」) =="
 TL="$(mktemp -d)"
@@ -3090,6 +3090,25 @@ t "ctx:ctx_watch_tick 函数保留但 ⛔ 被任何地方调用(留作说明,⛔
 #   否则下一任读到「撤因=dispatch 是 codex」会顺手把巡检接回去(引擎换了、纪律跟着换错方向,是同一族失效)。
 t "ctx:wd_loop 0.7 段已写明 dispatch 换回 claude 后仍不恢复巡检(statusline 70/75 已在当事人眼前)" \
   bash -c 'sed -n "/^wd_loop()/,/^}/p" "'"$LANE"'" | grep -qF "引擎换回不是恢复巡检的理由"'
+# ── 绝对余量闸(2026-08-29 实撞:它一次都没执行过)────────────────────────────────────
+# 病灶:该段用 os.environ/os.path 而文件只 import json/sys ⇒ 每次抛 NameError,
+#   又被裸 `except Exception: pass` 当场吞掉 ⇒ 2026-08-23 双阈裁定当刻**只有一阈在跑**,
+#   而屏幕上「余量充足」与「这道闸根本没跑」完全同形(本文件 docstring 自己写着「兜底不许静默」)。
+SLP="$(cd "$(dirname "$0")/.." && pwd)/contrib-statusline.py"
+SLJ='{"model":{"display_name":"T"},"session_name":"s","context_window":{"used_percentage":30,"total_input_tokens":990000,"context_window_size":1000000}}'
+tout "绝对余量闸:余量 1万 < 下限 5万 ⇒ 红行出现(当刻必红)" "绝对余量 10,000 < 下限 50,000" \
+  bash -c 'printf "%s" "$2" | env LAIXIN_CTX_ABS_MIN=50000 python3 "$1"' _ "$SLP" "$SLJ"
+t "绝对余量闸 阴性:无下限配置 ⇒ 不加噪(⛔ 恒挂一行)" bash -c '
+  out="$(printf "%s" "$2" | env -u LAIXIN_CTX_ABS_MIN HOME=/nonexistent-home-4a python3 "$1")"
+  ! grep -q "绝对余量" <<< "$out" && ! grep -q "读取异常" <<< "$out"' _ "$SLP" "$SLJ"
+# ⭐ 对照:拆掉 import os ⇒ 阳性用例**必须**变红,且异常显形 ⛔ 静默绿
+#   (只测「有 import 时能跑」证不了什么:出事前它也一直是绿的)
+t "绝对余量闸 对照:拆掉 import os ⇒ 阳性红行消失且异常显形——绊线能分成败" bash -c '
+  d="$(mktemp -d)"; sed "/^import os$/d" "$1" > "$d/sl.py"
+  out="$(printf "%s" "$2" | env LAIXIN_CTX_ABS_MIN=50000 python3 "$d/sl.py")"
+  rm -rf "$d"
+  ! grep -q "绝对余量 10,000" <<< "$out" && grep -q "绝对余量闸:读取异常(NameError)" <<< "$out"' _ "$SLP" "$SLJ"
+
 # ⭐ AGENTS.md「双真相源」条的机器化(立规先问机器化):contrib-statusline.py 的闸门线与 cmd_ctx claude 分支必须同步。
 #   2026-08-22 实撞:bash 侧 07f59d2 上调 65/75,contrib 副本仍 55/70,AGENTS.md 原文也还写着 70/55——三处两真相。
 t "statusline 双真相源:contrib-statusline.py 闸门线与 cmd_ctx 一致(75/70)" bash -c \
@@ -3124,6 +3143,7 @@ assert len(warn)==1, "laixin-lane 两个引擎分支的预备线值不一致(或
 h,w=hard.pop(),warn.pop()
 assert int(h)>int(w), "硬闸门必须高于预备线:%s/%s" % (h,w)
 sl=os.path.expanduser("~/.claude-official/statusline.py")
+# 常量三处一致这条**保留**(它抓得住常量漂移);文件级不同步由下面那条软链绊线抓。
 if os.path.exists(sl):
     s=open(sl,encoding="utf-8").read()
     gh=re.search(r"GATE_HARD\s*=\s*(\d+)",s); gw=re.search(r"GATE_WARN\s*=\s*(\d+)",s)
@@ -3131,6 +3151,45 @@ if os.path.exists(sl):
     assert gh.group(1)==h and gw.group(1)==w, \
         "闸门线漂移:laixin-lane=%s/%s 而 statusline.py=%s/%s" % (h,w,gh.group(1),gw.group(1))
 ' "$LANE"
+
+# ⭐ 状态栏单点源(2026-08-29 改口径):上面那条只比对**闸门线常量**,而 `~/.claude-official/statusline.py`
+#   当刻是**仓外独立副本** ⇒ 常量漂移抓得住、**文件级不同步抓不住**。今日实撞正是后者:两份
+#   **同时**缺 `import os`(绝对余量闸一次都没执行过)而常量完全一致 ⇒ 那条绊线全绿。
+#   ⇒ 新口径:线上那份必须是**软链**且 `readlink -f` 解析到**当前发布版**的 contrib-statusline.py;
+#     仍是普通文件 / 指向别处 ⇒ **红 ⛔ 跳过**(「不存在即跳过」正是让这个缺陷藏住的那一句)。
+SL_STABLE="$HOME/.local/bin/laixin-statusline"
+# 判据抽成函数,先用**三种夹具态**证明它分得开成败,再拿它去断言真环境
+#   (⛔ 只断言真环境:那样「判据太松」与「真环境合格」同形)
+sl_single_source_ok(){  # <线上文件> <稳定路径> → 0=线上确实是指向该稳定路径的软链
+  local live="$1" stable="$2" a b
+  [ -L "$live" ] || return 1
+  a="$(readlink -f "$live" 2>/dev/null)"; b="$(readlink -f "$stable" 2>/dev/null)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ]
+}
+# ⚠️ 必须 export -f:用例跑在 `bash -c` **子 shell** 里,顶层函数不会被继承 ⇒ 子 shell 里
+#   「命令不存在」返回 127,而两条对照写的是 `! sl_single_source_ok …` ⇒ **127 被取反成绿**。
+#   那两条会**因为判据根本没跑而通过**——是上面那条阳性用例把它揪出来的(首跑实撞)。
+#   ⇒ 凡「对照=期望失败」的用例,必须同时有一条**阳性**用例证明判据真的在跑。
+export -f sl_single_source_ok
+SLF="$(mktemp -d)"; printf 'x\n' > "$SLF/real.py"; printf 'y\n' > "$SLF/other.py"
+ln -s "$SLF/real.py" "$SLF/stable"
+ln -s "$SLF/stable"  "$SLF/live-ok"        # 合格态:软链 → 稳定路径
+cp "$SLF/real.py"    "$SLF/live-copy"      # 病态一:独立副本(今日线上的真实形态)
+ln -s "$SLF/other.py" "$SLF/live-wrong"    # 病态二:软链但指别处
+t "状态栏单点源 判据:软链→稳定路径 ⇒ 合格" bash -c 'sl_single_source_ok "$1/live-ok" "$1/stable"' _ "$SLF"
+t "状态栏单点源 对照:独立副本 ⇒ 必红(今日线上正是这一态)" bash -c '! sl_single_source_ok "$1/live-copy" "$1/stable"' _ "$SLF"
+t "状态栏单点源 对照:软链但指别处 ⇒ 必红" bash -c '! sl_single_source_ok "$1/live-wrong" "$1/stable"' _ "$SLF"
+rm -rf "$SLF"
+if [ ! -e "$SL_STABLE" ]; then
+  echo "  ℹ️ 状态栏单点源(真环境):稳定路径 $SL_STABLE 尚未生成——本特性**首次 release 之前**的一次性引导窗口;"
+  echo "     release 之后它恒存在,下面两条即转为硬断言(⛔ 长期跳过)"
+else
+  t "状态栏单点源 真环境:线上 statusline.py 是软链且解析到当前发布版" \
+    bash -c 'sl_single_source_ok "$HOME/.claude-official/statusline.py" "$1"' _ "$SL_STABLE"
+  t "状态栏单点源 真环境:发布版内容 = 仓内已提交版(换代自动跟随)" bash -c '
+    a="$(readlink -f "$1" 2>/dev/null)"; [ -n "$a" ] || exit 1
+    git -C "$(dirname "$2")/.." show HEAD:contrib-statusline.py 2>/dev/null | diff -q - "$a" >/dev/null' _ "$SL_STABLE" "$LANE"
+fi
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
 # 12:54 验收回执落盘。两处叠加:

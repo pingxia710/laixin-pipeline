@@ -6210,9 +6210,28 @@ except Exception:
 raw_type = obj.get("type")
 
 if engine == "codex":
-    known = {"thread.started", "turn.started", "item.started", "item.completed", "turn.completed", "turn.failed", "error"}
+    # 🔴 2026-08-29 生产实撞(值守例 64):`item.updated` 不在表里 ⇒ reject(unknown_type) ⇒ **整次运行判 failed**,
+    #   而 19:16 lane-b 那车实际 turn.completed、cli_exit=0、成果就在 worktree
+    #   (证据 .laixin-events.d/native/lane-b/20260829-191658-83399-3534:status=failed 1 protocol_unknown
+    #    而 result.event phase=**settled**)。codex 的 todo_list 每更新一发 item.updated ⇒ **任务越大越必命中,⛔ 偶发**。
+    # 🔴 形状=**封闭白名单去判一个开放集合**:协议归上游,每次升级都可能加类型;
+    #   而这个判据的失效方向**朝红**——把一次成功判成失败,成果被丢、还会触发重投。
+    # ⇒ 两层:①表里补上已知的新类型(下面);②**未知类型只记 notice ⛔ 判失败**(再下面)——
+    #   只做①的话,下一个新类型出现时同样的事会原样再发生一次。
+    known = {"thread.started", "turn.started", "item.started", "item.updated", "item.completed",
+             "turn.completed", "turn.failed", "error"}
     if raw_type not in known:
-        reject("unknown_type", raw_type)
+        # 未知类型:**记 notice 并跳过** ⛔ reject —— reject 会写 protocol-error,而那会在 finalize 里
+        #   把已经到达的终态否决掉。⛔ 静默吞:notice 必须可见,否则「上游加了新类型」永远没人知道。
+        emit("events", [envelope("notice", raw_type, session_id=bound, thread_id=bound,
+                                 unknown_type=True, raw=line)])
+        raise SystemExit
+    if raw_type == "item.updated":
+        # 按 notice 处理:⛔ 并进 item.started/completed 那条分支 —— 那条要求 item 是字典、否则 reject,
+        #   而我们正在修的就是「结构不合预期就判整次失败」这个方向。
+        _item = obj.get("item") if isinstance(obj.get("item"), dict) else None
+        emit("events", [envelope("notice", raw_type, session_id=bound, thread_id=bound,
+                                 item=_item, item_type=(_item or {}).get("type"))])
         raise SystemExit
     if raw_type == "thread.started":
         thread_id = obj.get("thread_id")
@@ -6504,8 +6523,36 @@ PY
     finalize)
       local run="$1" window="$2" pid="$3" cwd="$4" cli_rc="$5"
       local reason="" overall="$cli_rc" event
+      # 🔴 **中间事件 ⛔ 否决已到达的终态**(2026-08-29 值守例 64 的根本半边):
+      #   原判序把 protocol-error 排在终态之前 ⇒ 任何一条中间行解析不了,都能把
+      #   「turn.completed 已到 + cli_exit=0」判成 failed。实证:lane-b 那车 result.event phase=settled
+      #   而 status=failed 1 protocol_unknown。⇒ 终态已到且 CLI 正常退出时,协议噪声降级为**可见的 notice**。
+      #   ⚠️ 只在**两条都成立**时降级:终态是 settled **且** cli_rc=0。缺一 ⇒ 照旧按 protocol_unknown 判
+      #   —— 宽容 ⛔ 越界成放行(没有终态就是没跑完)。
+      # 🔴 **降级按理由分档 ⛔ 理由无关**(2026-08-29 本片首跑当场被既有绊线 #165-3 抓到):
+      #   最初写成「任何 protocol-error + 终态 settled + cli_exit=0 都降级」,结果把 `invalid_json`
+      #   也一起吞了 —— badjson 夹具发一行坏 JSON 后仍到达成功终态、CLI 退 0 ⇒ **流里出现损坏行
+      #   不再让运行失败**。那是修一个洞、开一个更大的。
+      # ⇒ 只对**开放集合类**的理由降级:协议归上游、每次升级都可能新增的那一类(当刻=unknown_type)。
+      #   **损坏类**(invalid_json / source_pid_mismatch / second_result / duplicate_session_across_run …)
+      #   一律照旧判红 —— 它们不是「上游加了新东西」,是「这条流本身坏了」,两者只是恰好都走 reject。
+      # ⚠️ 判据取**全称** ⛔ 存在:protocol-error 里**每一行**都在白名单内才降级;混进一条损坏类就不降级
+      #   (⛔ 「只要有一条是 unknown_type 就降级」——那等于让一条坏行搭便车)。
+      # 📌 claude 引擎的 unknown_system_subtype 属同形状**另一族**,归继任的「claude 族白名单」件,
+      #   本片 ⛔ 顺手纳入(它的历史实例 cli_exit=1,本就不满足降级条件)。
+      local _settled_ok=0 _perr_open=1 _pl
+      if [ -s "$run/protocol-error" ]; then
+        while IFS= read -r _pl; do
+          [ -n "$_pl" ] || continue
+          case "$_pl" in unknown_type) : ;; *) _perr_open=0 ;; esac
+        done < "$run/protocol-error"
+      fi
+      if [ -s "$run/result.event" ] && [ "$cli_rc" -eq 0 ] && [ "$_perr_open" -eq 1 ] \
+         && [ "$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("phase",""))
+except Exception: print("")' "$run/result.event" 2>/dev/null)" = settled ]; then _settled_ok=1; fi
       if [ -e "$run/timeout" ]; then reason="init_timeout"
-      elif [ -s "$run/protocol-error" ]; then reason="protocol_unknown"
+      elif [ -s "$run/protocol-error" ] && [ "$_settled_ok" -eq 0 ]; then reason="protocol_unknown"
       elif [ ! -s "$run/accepted" ]; then reason="init_missing"
       elif [ ! -s "$run/result.event" ]; then reason="result_missing"
       elif [ "$native_engine" = claude ] && [ "$cli_rc" -ne 0 ]; then reason="cli_nonzero"
@@ -6530,8 +6577,16 @@ print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 PY
 )"
             printf '%s\n' "$event" >> "$run/events.jsonl"
-            printf 'settled 0\n' > "$run/status.new.$$"
-            mv "$run/status.new.$$" "$run/status"
+            if [ -s "$run/protocol-error" ]; then
+              # 终态成功但**本次确有协议噪声** ⇒ 照常 settled,但把它说出来:
+              #   ⛔ 静默——「上游加了新类型」是要有人知道的事实,只是它 ⛔ 判失败。
+              printf 'settled 0 protocol_notice\n' > "$run/status.new.$$"
+              mv "$run/status.new.$$" "$run/status"
+              board "tool-native" "ℹ️ ${window} ${native_engine} print settled,但本次有协议噪声(未识别行 $(wc -l < "$run/protocol-error" | tr -d ' ') 条:$(head -1 "$run/protocol-error"));终态 turn.completed 已到且 cli_exit=0 ⇒ **⛔ 判失败**;证据=${run}"
+            else
+              printf 'settled 0\n' > "$run/status.new.$$"
+              mv "$run/status.new.$$" "$run/status"
+            fi
             return 0
             ;;
           failed)

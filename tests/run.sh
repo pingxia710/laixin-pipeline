@@ -5212,6 +5212,93 @@ t "#165-4 tmux 回收杀掉 native 进程后，read 不得把旧账读成 runnin
   mkdir -p "$T/run"; printf "running stale-thread\\n" > "$T/run/status"; printf tool-test > "$T/run/window"; printf codex > "$T/run/engine"
   sleep 30 & p=$!; kill "$p"; wait "$p" 2>/dev/null || true; printf "%s\\n" "$p" > "$T/run/pid"
   out="$(tool_native_status read "$T/run")"; grep -q "^failed 1 process_gone" <<< "$out" && grep -qx "failed 1 process_gone" "$T/run/status" && awk -F"|" "\$3 ~ /^ tool-native \$/ && \$4 ~ /process_gone/ { found=1 } END { exit !found }" "$T/board"; rc=$?; rm -rf "$T"; exit "$rc"'
+
+# ══ 2.8 原生事件:封闭白名单去判开放集合(2026-08-29 生产实撞,值守例 64)══════════════
+# 病灶:codex 的 `item.updated`(todo_list 每更新一发)不在白名单 ⇒ reject(unknown_type)
+#   ⇒ 写 protocol-error ⇒ finalize 判整次运行 failed —— 而 19:16 lane-b 那车
+#   **result.event phase=settled、cli_exit=0、成果就在 worktree**(证据 status=failed 1 protocol_unknown)。
+#   任务越大 todo 更新越多 ⇒ **越必命中,⛔ 偶发**;打掉的是合并关口。
+# ⇒ 两层:①白名单补已知新类型;②**未知类型只记 notice ⛔ 判失败**,且**中间事件 ⛔ 否决已到达的终态**。
+echo "== 2.8. 原生未知事件类型:notice ⛔ 判失败;终态 ⛔ 被中间事件否决 =="
+N28="$(mktemp -d)"
+sed -n "/^tool_native_status()/,/^}/p" "$LANE" > "$N28/tns.sh"
+mk28(){ # <名> <phase> <cli噪声:有|无> —— 造一份 finalize 夹具
+  local d="$N28/$1"; mkdir -p "$d"
+  printf 'x\n' > "$d/accepted"; printf 'tool-test\n' > "$d/window"; printf 'codex\n' > "$d/engine"
+  python3 -c "
+import json,sys
+e={'phase':sys.argv[2],'raw_type':'turn.completed','usage':{}}
+if sys.argv[2]=='failed': e.update({'error':{'message':'boom'},'error_message':'boom','raw_type':'turn.failed'})
+open(sys.argv[1],'w').write(json.dumps(e,ensure_ascii=False))" "$d/result.event" "$2"
+  [ "$3" = 有 ] && printf 'unknown_type\n' > "$d/protocol-error" || : > "$d/protocol-error"
+  printf '%s' "$d"
+}
+fin28(){ # <夹具目录> <cli_rc> → stdout=status
+  bash -c 'set -uo pipefail; board(){ :; }; source "$1/tns.sh"
+    LAIXIN_TOOL_NATIVE_ENGINE=codex tool_native_status finalize "$2" tool-test 1 /tmp "$3" >/dev/null 2>&1
+    cat "$2/status" 2>/dev/null' _ "$N28" "$1" "$2"
+}
+# ⚠️ 必须 export -f:用例跑在 `bash -c` **子 shell** 里,顶层函数不被继承 ⇒ 「命令不存在」返回 127,
+#   而期望失败的对照写作 `! fn`,127 会被取反成**绿**——判据根本没跑却报过(本仓 2.4a 首跑实撞过一次)。
+#   同理**顶层变量也不随子 shell 走**:mk28/fin28 体内引用 $N28,不 export 会在 set -u 下直接炸
+#   ——函数与变量要一起导,只导一半和没导一样(本块首跑实撞 7 红)。
+export N28; export -f mk28 fin28
+
+t "2.8 阳性:终态 settled + cli_exit=0 + 有协议噪声 ⇒ settled 且噪声**可见**(⛔ 被中间事件否决 ⛔ 静默吞)" bash -c '
+  d="$(mk28 pos settled 有)"; [ "$(fin28 "$d" 0)" = "settled 0 protocol_notice" ]'
+t "2.8 阴性:终态 settled + cli_exit=0 + **零噪声** ⇒ 干净 settled(⛔ 平白多出 protocol_notice)" bash -c '
+  d="$(mk28 clean settled 无)"; [ "$(fin28 "$d" 0)" = "settled 0" ]'
+t "2.8 阴性:终态 settled 但 **cli_exit≠0** ⇒ ⛔ 降级,仍红(宽容 ⛔ 越界成放行)" bash -c '
+  d="$(mk28 rcbad settled 有)"; grep -q "^failed " <<< "$(fin28 "$d" 1)"'
+t "2.8 阴性:**无终态**(result.event 缺)+ 有噪声 ⇒ 仍红 ⛔ settled(没有终态就是没跑完)" bash -c '
+  d="$(mk28 noterm settled 有)"; rm -f "$d/result.event"; grep -q "^failed " <<< "$(fin28 "$d" 0)"'
+# 🔴 降级必须**按理由分档**(本片首跑当场被既有绊线 #165-3 抓到):最初写成「任何 protocol-error +
+#   终态 settled + cli_exit=0 都降级」,把 `invalid_json` 也吞了 —— badjson 夹具发一行坏 JSON 后
+#   仍到达成功终态、CLI 退 0 ⇒ **流里出现损坏行不再让运行失败**,修一个洞开一个更大的。
+#   ⇒ 只对**开放集合类**(协议升级会新增的,当刻=unknown_type)降级;**损坏类**照旧判红。
+t "2.8 阴性:损坏类理由(invalid_json)+ 终态 settled + cli_exit=0 ⇒ **仍红**(⛔ 把坏流降级成成功)" bash -c '
+  d="$(mk28 corrupt settled 有)"; printf "invalid_json\n" > "$d/protocol-error"
+  grep -q "^failed " <<< "$(fin28 "$d" 0)"'
+t "2.8 阴性:开放集合类**混进**一条损坏类 ⇒ 仍红(判据取全称 ⛔ 存在——⛔ 让坏行搭便车)" bash -c '
+  d="$(mk28 mixed settled 有)"; printf "unknown_type\ninvalid_json\n" > "$d/protocol-error"
+  grep -q "^failed " <<< "$(fin28 "$d" 0)"'
+t "2.8 阳性复核:纯 unknown_type(多行)⇒ 仍降级为 settled + notice" bash -c '
+  d="$(mk28 multiunk settled 有)"; printf "unknown_type\nunknown_type\n" > "$d/protocol-error"
+  [ "$(fin28 "$d" 0)" = "settled 0 protocol_notice" ]'
+
+t "2.8 阴性:真 turn.failed 且零噪声 ⇒ 仍红且理由=turn_failed(⛔ 把宽容未知类型做成什么都不红)" bash -c '
+  d="$(mk28 tf failed 无)"; [ "$(fin28 "$d" 0)" = "failed 1 turn_failed" ]'
+t "2.8 对照:修前判序(噪声非空即红)在同一夹具上必红——绊线分得开成败" bash -c '
+  d="$(mk28 ctl settled 有)"
+  naive(){ [ -s "$1/protocol-error" ] && echo "failed 1 protocol_unknown" || echo "settled 0"; }
+  [ "$(naive "$d")" = "failed 1 protocol_unknown" ] || exit 1
+  [ "$(fin28 "$d" 0)" = "settled 0 protocol_notice" ]'
+
+# ── filter 层:未知类型走 notice ⛔ reject ────────────────────────────────────────
+P28="$(mktemp -d)"; mkdir -p "$P28/run"
+printf 'th-1\n' > "$P28/run/bound"; printf 'th-1\n' > "$P28/run/accepted"
+parse28(){ # <raw行> → 只跑 python 过滤器本体,看它 emit 什么 mode
+  bash -c 'set -uo pipefail
+    sed -n "/^tool_native_parse() {/,/^}/p" "$1" > "$2/tnp.sh"; source "$2/tnp.sh"
+    board(){ :; }
+    tool_native_parse "$2/run" tool-test 1 1 /tmp "$3" >/dev/null 2>&1 || true
+    printf "protocol-error=[%s] events=%s\n" "$(cat "$2/run/protocol-error" 2>/dev/null | tr "\n" " ")" "$(grep -c . "$2/run/events.jsonl" 2>/dev/null || echo 0)"' _ "$LANE" "$P28" "$1"
+}
+export P28 LANE; export -f parse28
+t "2.8 filter:item.updated ⇒ 记 notice,**protocol-error 保持空**(⛔ reject)" bash -c '
+  rm -f "$1/run/protocol-error" "$1/run/events.jsonl"
+  o="$(LAIXIN_TOOL_NATIVE_ENGINE=codex parse28 "{\"type\":\"item.updated\",\"item\":{\"type\":\"todo_list\"}}")"
+  grep -q "protocol-error=\[\]" <<< "$o"' _ "$P28"
+t "2.8 filter:**没见过的新类型** ⇒ 同样只记 notice(⛔ reject)——白名单判开放集合的根本半边" bash -c '
+  rm -f "$1/run/protocol-error" "$1/run/events.jsonl"
+  o="$(LAIXIN_TOOL_NATIVE_ENGINE=codex parse28 "{\"type\":\"turn.whatever.new\"}")"
+  grep -q "protocol-error=\[\]" <<< "$o"' _ "$P28"
+t "2.8 filter 阴性:非法 JSON 仍 reject(⛔ 把「宽容未知类型」做成「什么都不红」)" bash -c '
+  rm -f "$1/run/protocol-error" "$1/run/events.jsonl"
+  o="$(LAIXIN_TOOL_NATIVE_ENGINE=codex parse28 "{not json")"
+  grep -q "invalid_json" <<< "$o"' _ "$P28"
+rm -rf "$N28" "$P28"
+
 t "#165-4 print bootstrap 在接受任务前执行并核 BU 自检" bash -c '
   f="$(sed -n "/^native_print_bootstrap()/,/^}/p" "'$LANE'")"
   grep -q "native_bu_self_check" <<< "$f" && grep -q "BU_CDP_URL" <<< "$f"'

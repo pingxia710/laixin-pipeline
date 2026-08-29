@@ -2763,6 +2763,25 @@ flying=_names_in_section('进行中') | _names_in_section('验收中')
 #    (实测总表里"已完成合入/已发车/已并入/20:3x 发车/交付并交接…"),靠关键词永远追不完。
 done=_names_in_section(r'已完成')
 m=re.search(r'##\s*排队.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
+# ── 路线图子表(「进行中」节里 列=序|片|状态|依赖 的那张)──────────────────────────────
+# ⛔ 计入料仓深度:§八 逐字「对每条启用的开发轨,料仓深度=(ready+可自写〔产品格〕)」,
+#   而这张表**没有轨列** ⇒ 按定义就量不出「哪条轨深度」,计进去=让一个无轨的数冒充轨深度。
+#   只报事实:让「排队节产品 0」这句旁边能看见「料其实在别处、只是没登队」。
+# 判据只看**状态格**(索引 2)⛔ 依赖格:B4 行状态是「候 B3」而依赖格里写着「已解除」,
+#   看依赖格会把一个明确在等的片报成可写。
+rm_writable=[]
+_mi=re.search(r'##\s*进行中.*?\n(.*?)(?=\n##\s|\Z)',s,re.S)
+if _mi:
+    _hdr_seen=False
+    for _l in _mi.group(1).split('\n'):
+        if not _l.startswith('|'): continue
+        _c=[x.strip() for x in _l.strip('|').split('|')]
+        if len(_c)<4: continue
+        _plain=[re.sub(r'[*`~\[\] ]','',x) for x in _c]
+        if _plain[:4]==['序','片','状态','依赖']: _hdr_seen=True; continue   # 按表头认表 ⛔ 按行号
+        if not _hdr_seen or '---' in _l: continue
+        if re.search(r'前置已解|射程已出|射程已重出|可写', _c[2]):
+            rm_writable.append(re.sub(r'[*~\[\]]','',_c[1])[:40])
 buckets={'✅ 可立即发车(prompt ready 且未发)':[], '✏️ 派工窗口可自写(裁定齐/prompt 待写)':[],
          '🚧 缺设计,要方案窗口补':[], '✔️ 已发车或已合入':[]}
 stale=[]; unparsed=[]; blocked_rows=[]
@@ -2800,7 +2819,7 @@ def _track_bucket(_name,_trk):
     if re.match(r'^[ABC](\b|轨|/| )', _trk): return 'prod'
     return 'other'
 def _re_sub_trk(_t): return re.sub(r'[*`]','',_t).strip()
-short_rows=[]; sw_prod=0; sw_tool=0; sw_other=0   # 第一片(2026-08-28):格数不足行 / 可自写按轨列拆 产品·工具·其他
+short_rows=[]; unp_prod=0; sw_prod=0; sw_tool=0; sw_other=0   # 第一片(2026-08-28):格数不足行 / 可自写按轨列拆 产品·工具·其他
 dg_prod=0; dg_tool=0; dg_other=0                  # #186-bis:缺设计桶同样按轨列拆(料断档判据只对产品格负责)
 if m:
     for line in m.group(1).split('\n'):
@@ -2842,7 +2861,11 @@ if m:
                 if _b=='tool': sw_tool+=1
                 elif _b=='prod': sw_prod+=1
                 else: sw_other+=1
-        else: unparsed.append(name)
+        else:
+            # 未归桶行**同时记轨**:轨列与状态格是两列,状态归不了桶不影响读轨 ⇒ 能算出
+            # 「未归桶里有几行在产品轨上」——这一格决定了产品深度这个读数**是否被污染**。
+            unparsed.append(name)
+            if _track_bucket(name,cells[1])=='prod': unp_prod+=1
 ready=len(buckets['✅ 可立即发车(prompt ready 且未发)']); writable=len(buckets['✏️ 派工窗口可自写(裁定齐/prompt 待写)']); design=len(buckets['🚧 缺设计,要方案窗口补'])
 if machine:
     pending=0
@@ -2853,7 +2876,10 @@ if machine:
         pass
     except OSError:
         pending='?'
-    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool} selfwrite_other={sw_other} design_product={dg_prod} design_tool={dg_tool} design_other={dg_other}")
+    print(f"ready={ready} selfwrite={writable} design={design} pending={pending} short={len(short_rows)} selfwrite_product={sw_prod} selfwrite_tool={sw_tool} selfwrite_other={sw_other} design_product={dg_prod} design_tool={dg_tool} design_other={dg_other} unparsed={len(unparsed)} unparsed_product={unp_prod} roadmap_writable={len(rm_writable)}")
+    # 名字**另起行** ⛔ 混进计数行:片名带空格,消费方按空白分词会把它切成一堆假字段。
+    #   第一行是计数契约(消费方只读首行),下面这些行用前缀取。
+    for _n in rm_writable: print(f"#roadmap-writable {_n}")
     sys.exit(0)
 for k,v in buckets.items():
     print(f"  {k}: {len(v)}")
@@ -2863,8 +2889,11 @@ print(f"  🚧 缺设计拆分(按轨列):产品 {dg_prod}(A/B/C 轨)/ 工具 {d
 if short_rows:
     print(f"  ⚠️ 格数不足 {len(short_rows)} 行(不足四格,分桶读不到 ⇒ 既不进已识别也不进未识别=静默漏行;补齐四格):")
     for x in short_rows: print(f"      · {x}")
+if rm_writable:
+    print(f"  🛤️ 路线图子表可写片 {len(rm_writable)}(⛔ 计入料仓深度:该表无轨列,量不出轨深度)——**未登排队节 ⇒ 机器看不见**:")
+    for n_ in rm_writable: print(f"      · {n_}")
 if unparsed:
-    print(f"  ❓ 状态未识别 {len(unparsed)} 行(状态格首段无已知标记;分桶只认首个<br>前的片段,解释文字请放 <br> 之后):")
+    print(f"  ❓ 状态未识别 {len(unparsed)} 行(其中**产品轨 {unp_prod} 行** ⇒ 产品深度读数是否被污染看这一格;分桶只认首个<br>前的片段,解释文字请放 <br> 之后):")
     for n in unparsed: print(f"      · {n}")
 if blocked_rows:
     print(f"  ⏳ 前置未解 {len(blocked_rows)} 行(状态格说可写,前置格挂着未解条件——⛔ 不算燃料;误拦请核前置格并补「已解除」标记):")
@@ -7737,7 +7766,10 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
   if [ "${WD_STATS_TABLE_MTIME:-}" != "$table_mtime" ]; then
     stats="$(cmd_stats --machine 2>/dev/null)" || stats=""
     ready=""; selfwrite=""; design=""; sw_prod=""; sw_tool=""; sw_other=""; dg_prod=""; dg_tool=""; dg_other=""
-    for field in $stats; do
+    # ⚠️ 只按**首行**分词:machine 输出首行是计数契约,其后是 `#roadmap-writable <片名>` 名字行,
+    #   片名带空格,一起丢进词分割会被切成一堆假字段(而未知字段被 case 静默丢弃 ⇒ 不会报错,
+    #   只会悄悄多出噪声——这正是 #186 那族「新格被静默丢弃」的形状)。
+    for field in ${stats%%$'\n'*}; do
       case "$field" in
         ready=*) ready="${field#ready=}" ;;
         # ⚠️ 顺序有意义:`selfwrite=*` 匹配不到 `selfwrite_product=`(第 10 字符是 `_` 不是 `=`),
@@ -7752,8 +7784,13 @@ wd_fuel(){  # → stdout=燃料来源清单(空=无燃料);恒返 0(调用方在
         design_product=*) dg_prod="${field#design_product=}" ;;
         design_tool=*) dg_tool="${field#design_tool=}" ;;
         design_other=*) dg_other="${field#design_other=}" ;;
+        unparsed=*) WD_STATS_UNPARSED="${field#unparsed=}" ;;
+        unparsed_product=*) WD_STATS_UNPARSED_PROD="${field#unparsed_product=}" ;;
+        roadmap_writable=*) WD_STATS_ROADMAP_W="${field#roadmap_writable=}" ;;
       esac
     done
+    # 名字从**原始串**里按前缀取 ⛔ 走词分割
+    WD_STATS_ROADMAP_NAMES="$(awk '/^#roadmap-writable /{sub(/^#roadmap-writable /,""); a=a (a?"、":"") $0} END{print a}' <<< "$stats")"
     if ! [[ "$ready" =~ ^[0-9]+$ && "$selfwrite" =~ ^[0-9]+$ && "$design" =~ ^[0-9]+$ ]]; then
       WD_STATS_READY="?"; WD_STATS_SELFWRITE="?"; WD_STATS_DESIGN="?"; WD_STATS_PENDING="?"
       WD_FUEL="总表分桶失效(探针失效按有燃料)"; printf '%s' "$WD_FUEL"; return 0
@@ -7883,10 +7920,31 @@ ${text}"
 }
 
 wd_fuel_want(){  # 每拍一次;恒返 0(调用方在 set -e 下)
-  local lane LANE ready sw depth state prev mark since text
+  local lane LANE ready sw gready depth state prev mark since text unp unpp rmw rmn scope hint
   mkdir -p "$WD_FUELWANT_DIR" 2>/dev/null || true
   wd_fuel >/dev/null 2>&1 || true          # 复用同一份 stats 解析与 mtime 缓存 ⛔ 另起一份读法
   sw="${WD_STATS_SW_PRODUCT:-}"
+  # 🔴 同一括号里**两个射程**必须各自标记(值守 13:45:22 实撞):`ready` 由 ev_ready_count 按**本轨**算,
+  #   `可自写产品` 是 stats 的**跨轨合计**——不标射程时,「本轨 ready 0、跨轨 ready 1」并存的当刻
+  #   收方看不出后半句说的是哪一层,只能自己再跑一轮核实。今日两次触发(12:39 lane-b、13:45 lane-a)
+  #   都不是误报,却都让收方多跑一轮——那正是本件要省掉的成本。跨轨 ready 一并带上。
+  gready="${WD_STATS_READY:-}"
+  unp="${WD_STATS_UNPARSED:-}"; unpp="${WD_STATS_UNPARSED_PROD:-}"
+  rmw="${WD_STATS_ROADMAP_W:-}"; rmn="${WD_STATS_ROADMAP_NAMES:-}"
+  # 断言范围写回句子里(2026-08-29 值守例 16):机器实际断言=「排队节里没有一行命中料仓词表」,
+  # 此前说出口却是干净的「没料」——派工据此花一整轮去否定它。⇒ 未归桶行数必须随句出现;
+  # 而**未归桶里有没有产品轨**决定这次读数是否被污染:有 ⇒ 未判;没有 ⇒ 照报深度但带上行数。
+  scope=""
+  if [[ "$unp" =~ ^[0-9]+$ ]] && [ "$unp" -gt 0 ]; then
+    scope=";排队节未归桶 ${unp} 行(其中产品轨 ${unpp:-?} 行)"
+  fi
+  # 路线图子表只作**指路** ⛔ 计入深度(该表无轨列,量不出轨深度)
+  hint=""
+  if [[ "$rmw" =~ ^[0-9]+$ ]] && [ "$rmw" -gt 0 ]; then
+    hint="
+🛤️ 路线图子表可写片 ${rmw}(${rmn:-名不可读})**未登排队节** ⇒ 机器量的是排队节,料记在别处就看不见。
+   要被机器看见只有一条路:可自写的产品片登进排队节并带轨(派工台账动作;本条只报事实 ⛔ 指令)。"
+  fi
   for lane in a b c; do
     mark="$WD_FUELWANT_DIR/$lane"
     # 启用轨=当刻有窗 或 被 lanes-enabled 开关点名;未启用就把陈标记清掉 ⛔ 对不存在的席位喊话
@@ -7896,7 +7954,10 @@ wd_fuel_want(){  # 每拍一次;恒返 0(调用方在 set -e 下)
     # ④ 读不出 ⇒ **unknown 自成一态** ⛔ 当有料(会瞒住真断料)⛔ 当无料(会造假要料)
     if [[ "$ready" =~ ^[0-9]+$ ]] && [[ "$sw" =~ ^[0-9]+$ ]]; then
       depth=$((ready + sw))
-      if [ "$depth" -lt "$WD_FUELWANT_MIN" ]; then state=low; else state=ok; fi
+      if [[ "$unpp" =~ ^[0-9]+$ ]] && [ "$unpp" -gt 0 ]; then
+        state=dirty            # 未归桶行里**有产品轨** ⇒ 产品深度这个读数被污染,⛔ 报成干净的数
+      elif [ "$depth" -lt "$WD_FUELWANT_MIN" ]; then state=low
+      else state=ok; fi
     else
       depth="?"; state=unknown
     fi
@@ -7906,6 +7967,7 @@ wd_fuel_want(){  # 每拍一次;恒返 0(调用方在 set -e 下)
     local ready_d sw_d
     if [[ "$ready" =~ ^[0-9]+$ ]]; then ready_d="$ready"; else ready_d="读不出${ready:+(原值 ${ready})}"; fi
     if [[ "$sw"    =~ ^[0-9]+$ ]]; then sw_d="$sw";       else sw_d="读不出${sw:+(原值 ${sw})}"; fi
+    local gready_d; if [[ "$gready" =~ ^[0-9]+$ ]]; then gready_d="$gready"; else gready_d="读不出${gready:+(原值 ${gready})}"; fi
     prev=""
     [ ! -f "$mark" ] || prev="$(head -1 "$mark" 2>/dev/null | cut -d'|' -f1)"
     if [ "$state" = ok ]; then
@@ -7921,19 +7983,26 @@ wd_fuel_want(){  # 每拍一次;恒返 0(调用方在 set -e 下)
     # ③ 标记里记**进入时刻与当时深度**:第 2 条尺 6「料齐→发车延迟」以后可直接从标记算
     printf '%s|%s|%s|depth=%s|ready=%s|sw_product=%s\n' \
       "$state" "$(date +%s)" "$(date '+%F %T')" "$depth" "$ready_d" "$sw_d" > "$mark" 2>/dev/null || true
-    if [ "$state" = unknown ]; then
-      echo "[$(date '+%F %T')] 🟡 要料未判:lane-${lane} ready=${ready_d} 可自写产品=${sw_d}" >> "$WD_LOG"
-      board "看门狗" "🟡 要料未判:lane-${lane} 料仓深度判不出(ready=${ready_d} · 可自写产品=${sw_d})——⛔ 当有料 ⛔ 当无料,人工核 stats 分桶"
+    if [ "$state" = dirty ]; then
+      echo "[$(date '+%F %T')] 🟡 要料未判(读数被污染):lane-${lane} 未归桶产品行 ${unpp};深度 ${depth}${scope}" >> "$WD_LOG"
+      board "看门狗" "🟡 要料未判:lane-${lane} 排队节有 ${unpp} 行**产品轨**未归桶 ⇒ 产品深度读数被污染(名义深度 ${depth})——⛔ 当有料 ⛔ 当无料,先把那几行的状态格补成可分桶措辞"
+      wd_fuelwant_deliver "【事件】未判:料仓读数被污染 —— lane-${lane}
+名义深度 ${depth}(本轨 ready ${ready} · 跨轨 ready ${gready_d} · 跨轨可自写产品 ${sw})${scope}
+⚠️ 未归桶行里有 ${unpp} 行在**产品轨**上 ⇒ 这个深度**判不得**:它们可能是料、也可能不是。
+⛔ 当有料 ⛔ 当无料。处置:核 laixin-lane stats 的「状态未识别」清单,把产品轨那几行的状态格补成可分桶措辞。${hint}"
+    elif [ "$state" = unknown ]; then
+      echo "[$(date '+%F %T')] 🟡 要料未判:lane-${lane} 本轨 ready=${ready_d} 跨轨 ready=${gready_d} 跨轨可自写产品=${sw_d}" >> "$WD_LOG"
+      board "看门狗" "🟡 要料未判:lane-${lane} 料仓深度判不出(本轨 ready=${ready_d} · 跨轨 ready=${gready_d} · 跨轨可自写产品=${sw_d})——⛔ 当有料 ⛔ 当无料,人工核 stats 分桶"
       wd_fuelwant_deliver "【事件】未判:燃料读不到 —— lane-${lane}
-料仓深度判不出:ready=${ready_d} · 可自写产品=${sw_d}
-⛔ 当有料 ⛔ 当无料。人工核 laixin-lane stats 的分桶字段后再判。"
+料仓深度判不出:本轨 ready=${ready_d} · 跨轨 ready=${gready_d} · 跨轨可自写产品=${sw_d}
+⛔ 当有料 ⛔ 当无料。人工核 laixin-lane stats 的分桶字段后再判。${hint}"
     else
-      echo "[$(date '+%F %T')] 🔴 要料:lane-${lane} 深度 ${depth}<${WD_FUELWANT_MIN}(ready ${ready} · 可自写产品 ${sw});缺设计产品 ${WD_STATS_DG_PRODUCT:-?}" >> "$WD_LOG"
-      board "看门狗" "🔴 要料:lane-${lane} 料仓深度 ${depth}<${WD_FUELWANT_MIN}(ready ${ready} · 可自写产品 ${sw});缺设计 ${WD_STATS_DG_PRODUCT:-?}——机器只推事实,写不写/发不发归收方判"
-      wd_fuelwant_deliver "【事件】要料:lane-${lane} 料仓深度 ${depth}<${WD_FUELWANT_MIN}(ready ${ready} · 可自写产品 ${sw});缺设计 ${WD_STATS_DG_PRODUCT:-?}
+      echo "[$(date '+%F %T')] 🔴 要料:lane-${lane} 深度 ${depth}<${WD_FUELWANT_MIN}(本轨 ready ${ready} · 跨轨 ready ${gready_d} · 跨轨可自写产品 ${sw})${scope};缺设计产品 ${WD_STATS_DG_PRODUCT:-?}${rmw:+;路线图可写 ${rmw}}" >> "$WD_LOG"
+      board "看门狗" "🔴 要料:lane-${lane} 料仓深度 ${depth}<${WD_FUELWANT_MIN}(本轨 ready ${ready} · 跨轨 ready ${gready_d} · 跨轨可自写产品 ${sw})${scope};缺设计 ${WD_STATS_DG_PRODUCT:-?}${rmw:+;🛤️ 路线图子表可写片 ${rmw} 未登排队节}——机器只推事实,写不写/发不发归收方判"
+      wd_fuelwant_deliver "【事件】要料:lane-${lane} 料仓深度 ${depth}<${WD_FUELWANT_MIN}(本轨 ready ${ready} · 跨轨 ready ${gready_d} · 跨轨可自写产品 ${sw})${scope};缺设计 ${WD_STATS_DG_PRODUCT:-?}
 料仓领先律(创始人 2026-08-29):一个轨道少于 ${WD_FUELWANT_MIN} 片就该开始要料 ⛔ 等轨空 ⛔ 等验收。
 按三桶自决:可自写>0 ⇒ 写单就是当下动作;=0 且缺设计>0 ⇒ 等卡点或按现有问料程序向方案要方向。
-⛔ 自动发车 ⛔ 催窗 ⛔ 代判——机器只推事实,决定在你。"
+⛔ 自动发车 ⛔ 催窗 ⛔ 代判——机器只推事实,决定在你。${hint}"
     fi
   done
   return 0

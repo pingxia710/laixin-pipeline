@@ -3653,9 +3653,14 @@ cat > "$T137/table.md" <<'EOF'
 EOF
 mkdir -p "$T137/home/.laixin-events.d"
 printf '1|待验片|P\n' > "$T137/home/.laixin-events.d/pending.ack"
+# ⚠️ 这两条用**整行全等**钉 machine 契约 ⛔ 松成子串:全等才抓得住「新加的格被静默丢弃」
+#   (#186 那族的形状:未列 case 分支的字段被无声丢掉,不报错、只是读数少一格)。
+#   2026-08-29 加 unparsed/unparsed_product/roadmap_writable 三格,期望值同批更新——
+#   两份夹具的排队行都能归桶(T1S 那条三格行走 short ⛔ 走 unparsed),进行中节表头也不是
+#   路线图那套(序|片|状态|依赖)⇒ 三格皆 0 是**算出来的**,⛔ 照抄实际输出。
 t "#夜间断链:stats --machine 复用既有四桶分桶,输出可自写/缺设计/待认领读数" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
-  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1 short=0 selfwrite_product=1 selfwrite_tool=0 selfwrite_other=0 design_product=1 design_tool=0 design_other=0" ]' _ "$T137" "$LANE"
+  [ "$out" = "ready=1 selfwrite=1 design=1 pending=1 short=0 selfwrite_product=1 selfwrite_tool=0 selfwrite_other=0 design_product=1 design_tool=0 design_other=0 unparsed=0 unparsed_product=0 roadmap_writable=0" ]' _ "$T137" "$LANE"
 # 第一片(2026-08-28 创始人改判后首片,创始人窗口直修;料窗 B 附带发现 a+b):
 #   a 三格行原被 len(cells)<4 静默跳过——既不进已识别也不进未识别(总表 L8032 实撞)⇒ 报「格数不足」;
 #   b 可自写合计会被读成产品线有活(当日 8 件全是 11B 工具件而两条开发轨空)⇒ 按片名前缀拆产品/工具。
@@ -3678,7 +3683,7 @@ EOF
 mkdir -p "$T1S/home/.laixin-events.d" "$T1S/kb"; : > "$T1S/board"   # 人读面读看板节奏节,夹具须有空看板 ⛔ 只给 --machine 用的最小集
 t "第一片a:排队节三格行报 short=1 ⛔ 静默跳过(machine 行)" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats --machine)"
-  [ "$out" = "ready=0 selfwrite=3 design=0 pending=0 short=1 selfwrite_product=1 selfwrite_tool=1 selfwrite_other=1 design_product=0 design_tool=0 design_other=0" ]' _ "$T1S" "$LANE"
+  [ "$out" = "ready=0 selfwrite=3 design=0 pending=0 short=1 selfwrite_product=1 selfwrite_tool=1 selfwrite_other=1 design_product=0 design_tool=0 design_other=0 unparsed=0 unparsed_product=0 roadmap_writable=0" ]' _ "$T1S" "$LANE"
 t "第一片a+b:人读面点名三格片且可自写按轨列拆为 产品 1 / 工具 1 / 其他 1(⛔ 前缀名单)" bash -c '
   out="$(HOME="$1/home" LAIXIN_TABLE="$1/table.md" LAIXIN_KB="$1/kb" LAIXIN_BOARD="$1/board" "$2" stats 2>/dev/null)"
   grep -q "格数不足 1 行" <<< "$out" && grep -q "· 三格片" <<< "$out" && grep -q "产品 1(A/B/C 轨)/ 工具 1 / 其他 1" <<< "$out"' _ "$T1S" "$LANE"
@@ -5748,7 +5753,7 @@ mkdir -p "$EV_DIR" "$LANE_SWITCH_DIR"; : > "$FW/delivered"
 win_exists(){ case " ${FW_WINS:-lane-a lane-b} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 board(){ printf '%s\n' "$2" >> "$FW/board"; }
 ev_deliver(){ printf '%s\n' "$2" >> "$FW/delivered"; }
-wd_fuel(){ WD_STATS_SW_PRODUCT="$FW_SW"; WD_STATS_DG_PRODUCT="${FW_DG:-0}"; return 0; }
+wd_fuel(){ WD_STATS_SW_PRODUCT="$FW_SW"; WD_STATS_DG_PRODUCT="${FW_DG:-0}"; WD_STATS_READY="${FW_GREADY:-0}"; return 0; }
 fw_table(){ # <B轨ready条数> [A轨ready条数=3] —— A 默认 3 条保持 ok、不干扰对 B 的判读;
             # 要证明「A 也被评估」的用例必须把 A 压到 0,否则 A 恒 ok ⇒ 评了与没评零事件同形
   { echo "## 排队"; echo "| 片 | 轨 | 内容 | 状态 |"; echo "|---|---|---|---|"
@@ -5762,7 +5767,7 @@ t "要料:B 轨深度 0<2 ⇒ 恰一条,正文带轨名与三桶实数" env FW="
   source "$FW/env.sh"; fw_table 0
   wd_fuel_want
   [ "$(fw_b)" -eq 1 ] || exit 1
-  grep -q "要料:lane-b 料仓深度 0<2(ready 0 · 可自写产品 0);缺设计 2" "$FW/delivered"'
+  grep -q "要料:lane-b 料仓深度 0<2(本轨 ready 0 · 跨轨 ready 0 · 跨轨可自写产品 0);缺设计 2" "$FW/delivered"'
 
 t "要料:同一状态第二拍零新事件(状态转移单次 ⛔ 时间窗)" env FW="$FW" FWF="$FWF" FW_SW=0 bash -c '
   source "$FW/env.sh"; fw_table 0
@@ -5838,6 +5843,108 @@ t "要料 挂点:wd_fuel_want 排在「全轨在跑=正常等待」的 continue 
   [ -n "$w" ] && [ -n "$c" ] && [ "$w" -lt "$c" ]' _ "$LANE"
 
 rm -rf "$FW"
+
+# ── 料仓读数写回断言范围 + 路线图指路(值守例 16;2026-08-29)────────────────────────
+# 病灶:机器实际断言=「排队节里没有一行命中料仓词表」,说出口却是干净的「没料」⇒ 派工花一整轮否定它。
+# ⚠️ 单里原诊断(分桶器词表漏认「前置已解」⇒ B3 归不进桶)在真数据上**不成立**:B3 那行在
+#   `## 进行中` 的路线图子表里(列=序|片|状态|依赖,无轨列),分桶器只扫排队节 ⇒ 结构性读不到;
+#   且排队节 85 行里产品轨 **0 行** ⇒ 未归桶行全部归桶,产品格仍是 0。故改法落在**说清断言范围**。
+echo "== 料仓断言范围与路线图指路 =="
+BK="$(mktemp -d)"
+cat > "$BK/table.md" <<'EOBK'
+## 进行中(= 轨道占用)
+
+### 🛤️ 片序与依赖链
+
+| 序 | 片 | 状态 | 依赖 |
+|---|---|---|---|
+| 1 | ~~甲片~~ | ✅ **已合入 `abc1234`** | — |
+| 2 | **乙片** | 🟢 **前置已解**(射程已重出) | ~~甲片合入~~ ✅ 已达成 |
+| 3 | **丙片** | 候 乙片 | 乙片(前置**已解除**) |
+
+## 排队(测试)
+
+| 片 | 轨 | 内容 | 发车状态 |
+|---|---|---|---|
+| 产品待写片 | B | x | 待写 |
+| 工具待写片 | 工具轨 | x | 待写 |
+| 怪状态产品片 | A | x | 候起件 |
+| 怪状态工具片 | 工具轨 | x | 候起件 |
+EOBK
+BKM="$(env LAIXIN_TABLE="$BK/table.md" "$LANE" stats --machine 2>/dev/null)"   # EV_PENDING 无 env 覆盖,缺文件时 pending 自落 0
+
+tout "断言范围:machine 首行带 unparsed 与 unparsed_product" "unparsed=2 unparsed_product=1" \
+  bash -c 'printf "%s\n" "${1%%$'"'"'\n'"'"'*}"' _ "$BKM"
+tout "路线图:只计状态格「前置已解」那一行(已合入 ⛔ 计)" "roadmap_writable=1" \
+  bash -c 'printf "%s\n" "${1%%$'"'"'\n'"'"'*}"' _ "$BKM"
+# ⭐ 判据只看状态格 ⛔ 依赖格:丙片状态是「候 乙片」而依赖格里写着「已解除」——看依赖格会把一个
+#   明确在等的片报成可写。这条正是「两列同权」在别处成立、在这里**不**成立的地方。
+t "路线图 对照:依赖格含「已解除」但状态在等 ⇒ ⛔ 计(⛔ 两列同权)" bash -c '
+  grep -q "^#roadmap-writable 乙片" <<< "$1" && ! grep -q "丙片" <<< "$1" && ! grep -q "甲片" <<< "$1"' _ "$BKM"
+t "断言范围 对照:名字**另起行** ⛔ 混进计数行(片名带空格会被词分割切碎)" bash -c '
+  first="${1%%$'"'"'\n'"'"'*}"; ! grep -q "roadmap-writable" <<< "$first" && grep -q "^#roadmap-writable " <<< "$1"' _ "$BKM"
+t "断言范围:轨列与状态格是两列——状态归不了桶仍能算出产品轨 1 行" bash -c '
+  grep -q "unparsed=2 unparsed_product=1" <<< "${1%%$'"'"'\n'"'"'*}"' _ "$BKM"
+
+# 要料链侧四条反向探针(stub wd_fuel 控三个数)
+BF="$BK/fn.sh"
+for fn in ev_next_ready wd_fuelwant_target wd_fuelwant_lane_enabled wd_fuelwant_deliver wd_fuel_want; do
+  sed -n "/^${fn}()/,/^}/p" "$LANE" >> "$BF"
+done
+grep '^ev_ready_count()' "$LANE" >> "$BF"
+cat > "$BK/env.sh" <<'EOBE'
+source "$BF"
+EV_DIR="$BK/ev"; WD_FUELWANT_DIR="$EV_DIR/fuelwant"; WD_LOG="$BK/wd.log"; WD_FUELWANT_MIN=2
+DISPATCH_WIN=dispatch; SESSION=s; LANE_SWITCH_DIR="$BK/switch"; TABLE="$BK/t2.md"
+rm -rf "$EV_DIR" "$LANE_SWITCH_DIR" "$BK/delivered" "$BK/wd.log"; mkdir -p "$EV_DIR" "$LANE_SWITCH_DIR"; : > "$BK/delivered"
+win_exists(){ [ "$1" = lane-b ]; }; board(){ :; }
+ev_deliver(){ printf '%s\n' "$2" >> "$BK/delivered"; }
+wd_fuel(){ WD_STATS_SW_PRODUCT=0; WD_STATS_DG_PRODUCT=0; WD_STATS_READY="${BK_GREADY:-0}"
+           WD_STATS_UNPARSED="$BK_UNP"; WD_STATS_UNPARSED_PROD="$BK_UNPP"
+           WD_STATS_ROADMAP_W="$BK_RMW"; WD_STATS_ROADMAP_NAMES="$BK_RMN"; }
+printf '## 排队\n| 片 | 轨 | 内容 | 状态 |\n|---|---|---|---|\n' > "$TABLE"
+EOBE
+
+t "断言范围:未归桶**产品轨**>0 ⇒ 推「未判:料仓读数被污染」⛔ 报干净的深度" \
+  env BK="$BK" BF="$BF" BK_UNP=5 BK_UNPP=2 BK_RMW=0 BK_RMN="" bash -c '
+  source "$BK/env.sh"; wd_fuel_want
+  grep -q "未判:料仓读数被污染" "$BK/delivered" &&
+  grep -q "未归桶行里有 2 行在\*\*产品轨\*\*上" "$BK/delivered" &&
+  ! grep -q "【事件】要料:lane-b" "$BK/delivered"'
+
+t "断言范围:未归桶但**产品轨 0** ⇒ 照报深度,句中带未归桶行数(⛔ 未判把真信号淹掉)" \
+  env BK="$BK" BF="$BF" BK_UNP=39 BK_UNPP=0 BK_RMW=0 BK_RMN="" bash -c '
+  source "$BK/env.sh"; wd_fuel_want
+  grep -q "【事件】要料:lane-b" "$BK/delivered" &&
+  grep -q "排队节未归桶 39 行(其中产品轨 0 行)" "$BK/delivered" &&
+  ! grep -q "未判" "$BK/delivered"'
+
+t "断言范围:零未归桶 ⇒ 句中**不出现**未归桶字样(⛔ 恒挂一个 0 让人麻木)" \
+  env BK="$BK" BF="$BF" BK_UNP=0 BK_UNPP=0 BK_RMW=0 BK_RMN="" bash -c '
+  source "$BK/env.sh"; wd_fuel_want
+  grep -q "【事件】要料:lane-b" "$BK/delivered" && ! grep -q "未归桶" "$BK/delivered"'
+
+t "路线图指路:排队节产品 0 而路线图有可写片 ⇒ 句子能看出「料在别处」" \
+  env BK="$BK" BF="$BF" BK_UNP=0 BK_UNPP=0 BK_RMW=1 BK_RMN="乙片" bash -c '
+  source "$BK/env.sh"; wd_fuel_want
+  grep -q "路线图子表可写片 1(乙片)" "$BK/delivered" &&
+  grep -q "未登排队节" "$BK/delivered" &&
+  grep -q "登进排队节并带轨" "$BK/delivered" &&
+  grep -q "料仓深度 0<2" "$BK/delivered"'   # ⛔ 计入深度:深度仍是 0
+
+# ⭐ 射程标记(值守 13:45:22 实撞):同句里 ready 是**本轨**、可自写产品是**跨轨合计**,
+#   不标射程时「本轨 0、跨轨 ≥1」并存的当刻收方看不出后半句是哪一层 ⇒ 只能再跑一轮核实。
+t "射程标记:本轨 ready 0 而跨轨 ≥1 ⇒ 句中必须出现跨轨数(⛔ 只写一个光秃秃的 ready)" \
+  env BK="$BK" BF="$BF" BK_UNP=0 BK_UNPP=0 BK_RMW=0 BK_RMN="" BK_GREADY=1 bash -c '
+  source "$BK/env.sh"; wd_fuel_want
+  grep -q "本轨 ready 0 · 跨轨 ready 1 · 跨轨可自写产品 0" "$BK/delivered"'
+
+t "射程标记 对照:三个数都标了射程,句中零裸 ready(⛔ 无标记的旧写法)" \
+  env BK="$BK" BF="$BF" BK_UNP=0 BK_UNPP=0 BK_RMW=0 BK_RMN="" BK_GREADY=1 bash -c '
+  source "$BK/env.sh"; wd_fuel_want
+  ! grep -qE "\(ready [0-9]" "$BK/delivered"'
+
+rm -rf "$BK"
 
 echo "== 并发闸:运行器自取互斥锁 =="
 LK="$(mktemp -d)"; LKF="$LK/fn.sh"; LKSELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"

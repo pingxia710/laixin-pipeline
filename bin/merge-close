@@ -1,0 +1,859 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""merge-close —— 替代表 M6:派工批准后的一条事务式命令(合并 + 台账收口)
+
+权威 : 11B raw/提案-机器替代AI替代表-20260829.md 「### M6 merge-close」表 ①–⑤ + v0.3-12
+替代 : A7a · A21b · A22(派工合并后的三段手写);A21a「批准」**AI 保留** ⇒ 本命令
+       只在派工窗口已经批准之后被敲一次,**⛔ 自己决定该不该合**。
+
+**它做什么**:输入=片名 + 候选 commit。先跑**四项预检(零写)**,四项全过才动手,
+然后四步写盘,每步三态,可从断点续跑。
+
+**它 ⛔ 做什么(硬边界,每条都有出处)**:
+  1. **⛔ release ⛔ 产品部署** —— 工具仓 `laixin-lane release` 与 `laixin-deploy` 卡各是
+     独立幂等命令、单独回执、单独失败(v0.3-12)。合并成功与发布成功是**两个状态**,
+     ⛔ 折叠成一个真假状态:部署失败与成功同形,不能被合并的绿盖住。本命令**只报合并态**。
+  2. **⛔ 生成第二份回执或台账** —— 回执是验收窗产物,再造一份 = 第二真相源。
+  3. **⛔「已合入待清」半态** —— 那会新增一次清账动作,A22 等于没删。中途失败一律留
+     「合并已成 · 台账第 N 步未成」的**明确态**并非零退出。
+  4. **⛔ 沿用 find_key 前缀撞键**(④)—— 片名匹配用**整名包含 + 唯一**;零/多匹配一律
+     整项未判、一个字不写,把候选行连行号列给派工窗口。
+     出处:料 B §〇 记过 stats 片级周期解析器按前 6 字前缀配对,把「融合片四a / 四b / 三」
+     撞成同键;M7 同族已实撞一次(全名/简名两种写法)。
+  5. **⛔ 自己判该不该合** —— 预检只答「能不能合、台账认不认得出这一片」,
+     「该不该合」是派工窗口的 A21a,保留给人。
+
+**幂等从产物本身读,⛔ 只信状态文件**:状态文件会丢、会过期,而「已经合过了」这件事
+在 main 里、「看板条已经写了」这件事在看板里。每一步先问产物,再问状态文件。
+
+用法:
+  merge-close <片名> <候选commit> --repo <产品仓> [--kind product|tool]
+  merge-close <片名> <候选commit> --repo <仓> --dry     # 只跑预检并打印将写什么,零写
+  merge-close --selftest                                # 隔离夹具自测(抛弃式克隆 + 看板/总表副本)
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+
+STEPS = ["S1 ff-only 合并", "S2 总表移已完成 + table-lint", "S3 看板固定字面", "S4 撤别处登记校验 + kb-commit"]
+SECTIONS = ["已完成", "验收中", "进行中", "排队"]
+
+DEFAULT_BOARD = os.environ.get(
+    "LAIXIN_BOARD",
+    os.path.expanduser("~/Obsidian/项目入口/来信平台/知识库/4-开发层/来信平台-流水线看板.md"))
+DEFAULT_KB = os.environ.get("LAIXIN_KB", os.path.expanduser("~/Obsidian/项目入口/来信平台/知识库"))
+DEFAULT_TABLE = os.environ.get("LAIXIN_TABLE", os.path.join(DEFAULT_KB, "4-开发层/来信平台-执行总表.md"))
+
+
+def sh(cmd, cwd=None, env=None, check=False):
+    e = dict(os.environ)
+    if env:
+        e.update(env)
+    p = subprocess.run(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    if check and p.returncode != 0:
+        raise RuntimeError("命令失败(rc=%d):%s\n%s" % (p.returncode, " ".join(cmd), p.stdout))
+    return p.returncode, p.stdout
+
+
+def git(repo, *args):
+    return sh(["git", "-C", repo] + list(args))
+
+
+class Res(object):
+    """三态:成立 / 不成立 / 未判。⛔ 第四态,⛔ 把未判写成不成立。"""
+    __slots__ = ("state", "why", "extra")
+
+    def __init__(self, state, why, extra=None):
+        assert state in ("成立", "不成立", "未判")
+        self.state = state
+        self.why = why
+        self.extra = extra or []
+
+    def ok(self):
+        return self.state == "成立"
+
+
+# ────────────────────────────────────────────────────── 总表
+
+def split_sections(text):
+    """把总表切成 [(节名, 起行, 止行)];节名取 `## ` 后到第一个标点前的词。"""
+    lines = text.split("\n")
+    heads = []
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            heads.append((i, ln))
+    out = []
+    for k, (i, ln) in enumerate(heads):
+        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
+        out.append({"line": i, "head": ln, "end": end})
+    return lines, out
+
+
+def section_of(sections, name):
+    """取**第一个**标题里含该词的 `## ` 节(总表里同名节只应有一个)。"""
+    for s in sections:
+        if name in s["head"][:40]:
+            return s
+    return None
+
+
+def row_cells(line):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def stem(x):
+    """片名主干:去掉 markdown 记号与括注。与 laixin-lane `_stem` 同款口径。"""
+    x = re.sub(r"[*~`\[\]]", "", x)
+    return re.split(r"[((]", x)[0].strip()
+
+
+def find_piece_rows(lines, sections, piece):
+    """在四节里找**整名包含**该片名的表行。返回 [(节名, 行号, 行文)]。
+
+    🔴 判据 = 整名包含 ⛔ 前缀比对。前缀比对会把「融合片四a / 四b」撞成同一片
+    (料 B §〇 的 find_key 实撞),而整名包含在片名本身唯一时不会。
+    """
+    hits = []
+    key = stem(piece)
+    for name in SECTIONS:
+        s = section_of(sections, name)
+        if not s:
+            continue
+        for i in range(s["line"], s["end"]):
+            ln = lines[i]
+            if not ln.startswith("|") or "---" in ln[:8]:
+                continue
+            cells = row_cells(ln)
+            if not cells:
+                continue
+            # 片名可能在第 1 或第 2 格(进行中节是 | 序 | 片 | … |)
+            names = [stem(c) for c in cells[:2]]
+            if any(n and (key == n or (key in n) or (n in key and len(n) >= 6)) for n in names):
+                hits.append((name, i, ln))
+    return hits
+
+
+def name_candidates(lines, sections, piece, minlen=6):
+    """零匹配时给**候选行** ⛔ 自动采用(④)。"""
+    key = re.sub(r"[-:：\s*]", "", stem(piece))
+    out = []
+    for name in SECTIONS:
+        s = section_of(sections, name)
+        if not s:
+            continue
+        for i in range(s["line"], s["end"]):
+            ln = lines[i]
+            if not ln.startswith("|") or "---" in ln[:8]:
+                continue
+            cells = row_cells(ln)
+            for c in cells[:2]:
+                n = re.sub(r"[-:：\s*]", "", stem(c))
+                if not n or n.startswith("片") or n.startswith("序"):
+                    continue
+                m = min(len(n), len(key))
+                if m >= minlen and n[:m] == key[:m]:
+                    out.append((name, i + 1, ln[:110]))
+                    break
+    return out
+
+
+# ────────────────────────────────────────────────────── 预检
+
+class MergeClose(object):
+    def __init__(self, a):
+        self.a = a
+        self.piece = a.piece
+        self.cand = a.commit
+        self.repo = a.repo
+        self.board = a.board
+        self.table = a.table
+        self.lane = a.lane_bin
+        self.notes = []
+        os.makedirs(a.state_dir, exist_ok=True)
+        h = hashlib.sha1(("%s\n%s" % (self.piece, self.cand)).encode("utf-8")).hexdigest()[:16]
+        self.state_path = os.path.join(a.state_dir, "%s.json" % h)
+        self.state = {"piece": self.piece, "commit": self.cand, "done": []}
+        if os.path.exists(self.state_path):
+            try:
+                self.state = json.load(open(self.state_path, encoding="utf-8"))
+            except ValueError:
+                pass
+
+    def save(self):
+        self.state["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(self.state_path, "w", encoding="utf-8") as fh:
+            json.dump(self.state, fh, ensure_ascii=False, indent=2)
+
+    def lane_env(self):
+        e = {"LAIXIN_BOARD": self.board, "LAIXIN_TABLE": self.table,
+             "LAIXIN_KB": os.path.dirname(os.path.dirname(self.table)),
+             "LAIXIN_REPO": self.repo}
+        if self.a.vault:
+            e["LAIXIN_VAULT"] = self.a.vault
+        return e
+
+    # ── P1 片名在总表唯一匹配
+    def p1(self):
+        if not os.path.exists(self.table):
+            return Res("未判", "执行总表读不到:%s" % self.table)
+        text = open(self.table, encoding="utf-8").read()
+        lines, sections = split_sections(text)
+        hits = find_piece_rows(lines, sections, self.piece)
+        # 已在「已完成」节的那一行不参与唯一性(重跑时它是我们自己上一轮写的)
+        src = [h for h in hits if h[0] != "已完成"]
+        if len(src) == 1:
+            return Res("成立", "唯一匹配:%s 节 第 %d 行" % (src[0][0], src[0][1] + 1))
+        if not src:
+            cands = name_candidates(lines, sections, self.piece)
+            return Res("未判", "总表**零匹配**该片名 ⇒ 整项未判,一个字不写",
+                       ["候选行(⛔ 自动采用,请派工窗口逐字确认后重跑):"] +
+                       ["  %s 节 第 %d 行:%s" % c for c in cands[:6]] or ["  (无任何近似行)"])
+        return Res("未判", "总表**多匹配**(%d 行)⇒ 整项未判,一个字不写" % len(src),
+                   ["  %s 节 第 %d 行:%s" % (n, i + 1, ln[:110]) for n, i, ln in src])
+
+    # ── P2 merge-guard(调既有命令 ⛔ 复制一份)
+    def p2(self):
+        rc, out = sh([self.lane, "merge-guard", self.cand, "--ref", "main"],
+                     env={"LAIXIN_REPO": self.repo})
+        tail = "\n".join([x for x in out.strip().split("\n")[-3:]])
+        if rc == 0:
+            return Res("成立", "merge-guard rc=0", [tail])
+        return Res("不成立", "merge-guard rc=%d" % rc, [tail])
+
+    # ── P3 ff 可行
+    def p3(self):
+        rc, _ = git(self.repo, "cat-file", "-e", "%s^{commit}" % self.cand)
+        if rc != 0:
+            return Res("未判", "候选 commit 在 %s 里解析不出" % self.repo)
+        rc, _ = git(self.repo, "rev-parse", "--verify", "-q", "main")
+        if rc != 0:
+            return Res("未判", "main 解析不出")
+        rc, _ = git(self.repo, "merge-base", "--is-ancestor", "main", self.cand)
+        if rc == 0:
+            _, m = git(self.repo, "rev-parse", "--short", "main")
+            _, c = git(self.repo, "rev-parse", "--short", self.cand)
+            if m.strip() == c.strip():
+                return Res("成立", "main 已等于候选(**已合入形态**,S1 将按幂等跳过)")
+            return Res("成立", "候选领先 main 且含其全部历史 ⇒ ff-only 可行")
+        rc, _ = git(self.repo, "merge-base", "--is-ancestor", self.cand, "main")
+        if rc == 0:
+            return Res("成立", "候选已是 main 祖先(**已合入形态**,S1 将按幂等跳过)")
+        return Res("不成立", "候选与 main 已分叉 ⇒ ff-only 不可行,需 rebase(⛔ 由本命令代做)")
+
+    # ── P4 回执「合法且当前」
+    def p4(self):
+        """判法(**技术裁定,本窗按自决先定,已列进议题 8 候审**):
+
+        合法 = 回执文件存在且末行形如
+               `【验收回执】通过 <验收分支> <候选sha> <基点sha>`;结论须逐字是「通过」。
+        当前 = 回执末行里的**候选 sha 与本次候选逐字同前缀** —— **⛔ 用时限**。
+               理由:「多久算当前」是个要拍板的口径,而「这份回执正是对这个 commit 出的」
+               是免语义的机器判据,且严格更强。基点前移由 P2/P3 兜(ff 仍可行即放行),
+               只记一条观察 ⛔ 拦。
+        """
+        d = os.path.join(os.path.dirname(self.table), "记录")
+        if not os.path.isdir(d):
+            return Res("未判", "记录目录读不到:%s" % d)
+        # 🔴 回执文件名与片名的分隔符**不一致**:片名带 `:`,文件名里没有
+        #    (真库实证:片「钓不钓:融合片四b-地图聚合页」⇄ 档「钓不钓-融合片四b-地图聚合页-验收回执.md」)。
+        #    ⇒ 两边**都归一掉分隔符**再比,⛔ 拿原样片名去 in 文件名(首版实撞:0 份匹配,
+        #    而「回执真的没有」与「名字对不上」在那一行输出上同形)。
+        def _norm(x):
+            return re.sub(r"[-:：_\s*`~]", "", x)
+        key = stem(self.piece)
+        nk = _norm(key)
+        cands = [f for f in os.listdir(d) if "验收回执" in f and nk and nk in _norm(f)]
+        if len(cands) != 1:
+            return Res("未判", "回执文件零/多匹配(%d 份)⇒ 未判 ⛔ 猜一份" % len(cands),
+                       ["  " + c for c in cands[:6]])
+        path = os.path.join(d, cands[0])
+        last = ""
+        for ln in open(path, encoding="utf-8").read().strip().split("\n"):
+            if ln.strip().startswith("【验收回执】"):
+                last = ln.strip()
+        if not last:
+            return Res("未判", "回执无【验收回执】末行 ⇒ 未判 ⛔ 当通过", ["  " + cands[0]])
+        parts = last.replace("【验收回执】", "").split()
+        if not parts or parts[0] != "通过":
+            return Res("不成立", "回执末行结论逐字=「%s」⛔ 通过" % (parts[0] if parts else "(空)"))
+        shas = [p for p in parts[1:] if re.fullmatch(r"[0-9a-f]{7,40}", p)]
+        if not shas:
+            return Res("未判", "回执末行无可解析的候选 sha ⇒ 未判", ["  " + last[:120]])
+        n = min(len(shas[0]), len(self.cand))
+        if shas[0][:n] != self.cand[:n]:
+            return Res("不成立", "回执是对 %s 出的,本次候选是 %s ⇒ **⛔ 当前**" % (shas[0][:12], self.cand))
+        if len(shas) >= 2:
+            _, m = git(self.repo, "rev-parse", "main")
+            if not m.strip().startswith(shas[1][:8]):
+                self.notes.append("观察:回执基点 %s 与当刻 main %s 不同(main 已前移);"
+                                  "ff 仍可行故 ⛔ 拦,只记(v0.3-9「历史片盖不住 main 前移」)"
+                                  % (shas[1][:8], m.strip()[:8]))
+        return Res("成立", "回执合法且当前(通过 · 候选 sha 逐字对上)", ["  " + cands[0]])
+
+    # ── 写盘四步(每步先问产物再问状态文件)
+    def board_literal(self, sha):
+        return "%s 已合入 main = %s" % (self.piece, sha)
+
+    def s1(self):
+        _, m = git(self.repo, "rev-parse", "--short", "main")
+        _, c = git(self.repo, "rev-parse", "--short", self.cand)
+        if m.strip() == c.strip():
+            return Res("成立", "main 已等于候选 ⇒ **幂等跳过 ⛔ 重复合并**(产物面判定)")
+        rc, _ = git(self.repo, "merge-base", "--is-ancestor", self.cand, "main")
+        if rc == 0:
+            return Res("成立", "候选已在 main 历史里 ⇒ 幂等跳过 ⛔ 重复合并(产物面判定)")
+        dirty = [l for l in git(self.repo, "status", "--porcelain")[1].split("\n")
+                 if l[:2].strip() and not l.startswith("??")]
+        if dirty:
+            return Res("不成立", "主树有未提交的**已跟踪**改动 %d 条 ⇒ ⛔ 合并" % len(dirty),
+                       ["  " + x for x in dirty[:5]])
+        rc, out = git(self.repo, "merge", "--ff-only", self.cand)
+        if rc != 0:
+            return Res("不成立", "ff-only 合并失败", ["  " + out.strip()[:200]])
+        _, new = git(self.repo, "rev-parse", "--short", "main")
+        return Res("成立", "main %s → %s(ff-only)" % (m.strip(), new.strip()))
+
+    def s2(self):
+        text = open(self.table, encoding="utf-8").read()
+        lines, sections = split_sections(text)
+        _, sha = git(self.repo, "rev-parse", "--short", self.cand)
+        sha = sha.strip()
+        done = section_of(sections, "已完成")
+        if done is None:
+            return Res("未判", "总表无「已完成」节 ⇒ 未判 ⛔ 自己造一个节")
+        key = stem(self.piece)
+        for i in range(done["line"], done["end"]):
+            if lines[i].startswith("|") and key in lines[i] and sha in lines[i]:
+                return Res("成立", "已完成节已有本片本 sha 的行 ⇒ 幂等跳过(产物面判定)")
+        hits = find_piece_rows(lines, sections, self.piece)
+        src = [h for h in hits if h[0] != "已完成"]
+        if len(src) != 1:
+            return Res("未判", "写盘前复查:源行不再唯一(%d 行)⇒ 停 ⛔ 猜" % len(src))
+        secname, idx, srcline = src[0]
+        _, br = git(self.repo, "branch", "--contains", self.cand, "--format=%(refname:short)")
+        brs = [b for b in br.split("\n") if b.strip() and b.strip() != "main"]
+        branch = brs[0].strip() if brs else "(分支已回收)"
+        today = datetime.now().strftime("%Y-%m-%d")
+        newrow = "| **%s** | %s | `%s` @ `%s` | ✅ **已合入** main = `%s`(%s;merge-close) |" % (
+            self.piece, self.a.lane_letter or "—", branch, sha, sha, today)
+        # 源行就地划改(与人工惯例一致:~~片名~~ + ✅已合入),⛔ 删行 —— 删行会让「本来就没登记过」
+        # 与「登记过已收口」在总表上同形。
+        cells = row_cells(srcline)
+        ni = 0 if stem(cells[0]) and key in stem(cells[0]) else 1
+        if ni < len(cells):
+            cells[ni] = "~~%s~~" % stem(cells[ni])
+        if len(cells) >= 3:
+            cells[2] = "✅ **已合入 `%s`**(%s;merge-close)" % (sha, today)
+        lines[idx] = "| " + " | ".join(cells) + " |"
+        ins = done["line"] + 1
+        while ins < done["end"] and not lines[ins].startswith("|"):
+            ins += 1
+        ins += 2  # 跳过表头行与分隔行
+        # 🔴 越界守卫:节里若根本没有表(或只有半张),上面的 +2 会把新行插进**下一节**,
+        #    而那种插错在总表上与「插对了」几乎同形(都只是多了一行)。⇒ 判不出就停,⛔ 硬插。
+        if ins > done["end"] or ins - 1 >= len(lines) or not lines[ins - 1].lstrip().startswith("|"):
+            return Res("未判", "「已完成」节里找不到完整表头+分隔行 ⇒ 插入位判不出,停 ⛔ 硬插",
+                       ["  节起于第 %d 行,止于第 %d 行" % (done["line"] + 1, done["end"])])
+        lines.insert(ins, newrow)
+        open(self.table, "w", encoding="utf-8").write("\n".join(lines))
+        rc, out = sh([self.lane, "table-lint", self.table, "--lines", "%d,%d" % (ins + 1, idx + 1)],
+                     env=self.lane_env())
+        if rc != 0:
+            return Res("不成立", "table-lint 未过(表已改,**⛔ 自动回滚**——回滚会把人工在同一轮的改动一起抹掉)",
+                       ["  " + out.strip()[:300],
+                        "  人工核:%s 第 %d 行(新增)与第 %d 行(划改)" % (self.table, ins + 1, idx + 1)])
+        return Res("成立", "已完成节新增 1 行(第 %d 行);%s 节源行就地划改(第 %d 行);table-lint 过"
+                   % (ins + 1, secname, idx + 1))
+
+    def s3(self):
+        _, sha = git(self.repo, "rev-parse", "--short", self.cand)
+        lit = self.board_literal(sha.strip())
+        if os.path.exists(self.board) and lit in open(self.board, encoding="utf-8").read():
+            return Res("成立", "看板已有该固定字面 ⇒ 幂等跳过 ⛔ 重复写条(产物面判定)")
+        rc, out = sh([self.lane, "log", lit],
+                     env=dict(self.lane_env(), LAIXIN_WINDOW="派工窗口"))
+        if rc != 0:
+            return Res("不成立", "laixin-lane log 失败", ["  " + out.strip()[:200]])
+        if lit not in open(self.board, encoding="utf-8").read():
+            return Res("不成立", "log 返回 0 但看板里读不到该字面 ⇒ **⛔ 当成功**")
+        return Res("成立", "看板固定字面已写:%s" % lit)
+
+    def s4(self):
+        text = open(self.table, encoding="utf-8").read()
+        lines, sections = split_sections(text)
+        left = []
+        for name in ("排队", "进行中", "验收中"):
+            s = section_of(sections, name)
+            if not s:
+                continue
+            for i in range(s["line"], s["end"]):
+                ln = lines[i]
+                if not ln.startswith("|") or "---" in ln[:8]:
+                    continue
+                if stem(self.piece) in ln and "已合入" not in ln:
+                    left.append("  %s 节 第 %d 行:%s" % (name, i + 1, ln[:110]))
+        if left:
+            return Res("不成立", "仍有 %d 处别处登记未收口 ⇒ **⛔「已合入待清」半态**,人工核" % len(left), left)
+        files = [self.table]
+        if os.path.exists(self.board):
+            files.append(self.board)
+        rc, out = sh([self.lane, "kb-commit", "merge-close:%s 合入收口 %s" % (self.piece, self.cand)] + files,
+                     env=self.lane_env())
+        if rc != 0:
+            return Res("不成立", "kb-commit 失败(文件已改,⛔ 自动回滚)", ["  " + out.strip()[:300]])
+        return Res("成立", "别处登记零残留;总表与看板已 kb-commit 落库")
+
+    # ── 主流程
+    def run(self):
+        out = []
+        out.append("片:%s   候选:%s   仓:%s" % (self.piece, self.cand, self.repo))
+        out.append("看板:%s" % self.board)
+        out.append("总表:%s" % self.table)
+        out.append("")
+        out.append("== 预检(零写;四项全过才动手)==")
+        checks = [("① 片名在总表唯一匹配", self.p1), ("② merge-guard", self.p2),
+                  ("③ ff 可行", self.p3), ("④ 回执合法且当前", self.p4)]
+        allok = True
+        for name, fn in checks:
+            r = fn()
+            out.append("%s:**%s** — %s" % (name, r.state, r.why))
+            for e in r.extra:
+                out.append(e)
+            if not r.ok():
+                allok = False
+        for n in self.notes:
+            out.append("· " + n)
+        out.append("")
+        if not allok:
+            out.append("⛔ **预检未全过 ⇒ 整项未判,一个字没写**(总表/看板/仓库零改动)。")
+            out.append("   「该不该合」是派工窗口的 A21a,本命令 ⛔ 代判;请按上面的候选行逐字确认后重跑。")
+            return "\n".join(out), 3
+        if self.a.dry:
+            _, sha = git(self.repo, "rev-parse", "--short", self.cand)
+            out.append("== --dry:四项全过,将写(**本次零写**)==")
+            out.append("  S1 ff-only 合并 %s" % sha.strip())
+            out.append("  S2 总表:已完成节新增 1 行 + 源行就地划改 + table-lint")
+            out.append("  S3 看板固定字面:%s" % self.board_literal(sha.strip()))
+            out.append("  S4 撤别处登记校验 + kb-commit(总表 + 看板)")
+            return "\n".join(out), 0
+
+        out.append("== 写盘四步(每步先问产物,再问状态文件)==")
+        fns = [self.s1, self.s2, self.s3, self.s4]
+        failed_at = None
+        for i, fn in enumerate(fns, 1):
+            key = STEPS[i - 1]
+            r = fn()
+            out.append("%s:**%s** — %s" % (key, r.state, r.why))
+            for e in r.extra:
+                out.append(e)
+            if r.ok():
+                if key not in self.state["done"]:
+                    self.state["done"].append(key)
+                self.save()
+            else:
+                failed_at = i
+                self.state["failed_at"] = key
+                self.save()
+                break
+        out.append("")
+        if failed_at:
+            merged = "S1 ff-only 合并" in self.state["done"]
+            out.append("🔴 **明确态**:%s · 台账第 %d 步未成(%s)。"
+                       % ("合并已成" if merged else "合并未成", failed_at, STEPS[failed_at - 1]))
+            out.append("   重跑本命令即从断点续:已成的步按**产物面**判定跳过,⛔ 重复合并 ⛔ 重复写看板条。")
+            out.append("   状态文件:%s" % self.state_path)
+            return "\n".join(out), 4
+        out.append("✅ **合并态:成**(四步全过)。")
+        out.append("⛔ 本命令只报合并态 —— **release(工具仓)与产品部署各是独立幂等命令、单独回执、单独失败**,")
+        out.append("   ⛔ 把它们折进这条绿:部署失败与成功同形,不能被合并的绿盖住(v0.3-12)。")
+        # 顺带出一行六段账(只打印 ⛔ 写库)
+        if shutil.which("replay-six") and not self.a.no_replay:
+            rc, rout = sh(["replay-six", "--piece", self.piece, "--day",
+                           datetime.now().strftime("%Y-%m-%d"), "--year",
+                           datetime.now().strftime("%Y"), "--oneline", "--board", self.board],
+                          env=self.lane_env())
+            out.append("")
+            out.append("== 顺带:M7 六段账一行(**只打印 ⛔ 写库**)==")
+            out.append("  " + (rout.strip().split("\n")[-1] if rout.strip() else "(replay-six 无输出)"))
+        return "\n".join(out), 0
+
+
+# ────────────────────────────────────────────────────── 隔离夹具与自测
+#
+# 🔴 **全部在隔离夹具里跑**:抛弃式克隆 + 看板/总表/回执副本 + 独立 vault。
+#    ⛔ 碰真钓不钓 main ⛔ 真看板 ⛔ 真总表 —— 本命令是会写盘的,自测更要先证明自己不越界。
+# 🔴 **真 laixin-lane 用在能用的地方**(merge-guard / table-lint / log / kb-commit 全走真命令,
+#    靠 LAIXIN_REPO / LAIXIN_BOARD / LAIXIN_TABLE / LAIXIN_VAULT 重定向);
+#    **只有两处必须注入失败的用替身**(merge-guard 不过、log 失败)——那两处测的是
+#    merge-close 对失败的处置,⛔ 测被调命令本身。替身与真命令的分界在每个用例里写明。
+
+LANE_STUB = """#!/bin/bash
+# 受控替身:只为注入失败。⛔ 当它是 laixin-lane —— 它只实现被测路径要用到的那几个子命令。
+case "$1" in
+  merge-guard) [ "${STUB_MG_FAIL:-0}" = 1 ] && { echo "受控替身:merge-guard 判定不过"; exit 1; }; echo ok; exit 0 ;;
+  log)         [ "${STUB_LOG_FAIL:-0}" = 1 ] && { echo "受控替身:log 失败"; exit 1; }
+               shift; printf '| %s | %s | %s |\\n' "$(date '+%m-%d %H:%M')" "${LAIXIN_WINDOW:-未标注来源}" "$*" >> "$LAIXIN_BOARD"; exit 0 ;;
+  table-lint)  exit 0 ;;
+  kb-commit)   exit 0 ;;
+  *) echo "受控替身不实现:$1" >&2; exit 2 ;;
+esac
+"""
+
+
+def _run(cmd, cwd=None, env=None):
+    return sh(cmd, cwd=cwd, env=env)
+
+
+def _mkvault(root, rows_live, receipts):
+    """造一个独立 vault:看板 + 总表(四节)+ 记录/回执,并 git init 好让 kb-commit 能用。"""
+    kb = os.path.join(root, "vault", "项目入口/来信平台/知识库")
+    d = os.path.join(kb, "4-开发层")
+    os.makedirs(os.path.join(d, "记录"))
+    board = os.path.join(d, "来信平台-流水线看板.md")
+    with open(board, "w", encoding="utf-8") as fh:
+        fh.write("# 夹具看板\n\n| 时刻 | 来源 | 事件 |\n|---|---|---|\n")
+    table = os.path.join(d, "来信平台-执行总表.md")
+    with open(table, "w", encoding="utf-8") as fh:
+        fh.write("# 夹具总表\n\n## 已完成(今日)\n| 片 | 轨 | 分支与 commit | 合入结论 |\n|---|---|---|---|\n\n")
+        fh.write("## 验收中 / 待整改\n| 片 | 轨 | 分支 / 验收窗口 | 状态 |\n|---|---|---|---|\n")
+        for r in rows_live:
+            fh.write(r + "\n")
+        fh.write("\n## 进行中\n| 序 | 片 | 状态 | 依赖 |\n|---|---|---|---|\n\n")
+        fh.write("## 排队\n| 片 | 状态 | 内容 | 备注 |\n|---|---|---|---|\n\n")
+    for fname, body in receipts.items():
+        with open(os.path.join(d, "记录", fname), "w", encoding="utf-8") as fh:
+            fh.write(body)
+    v = os.path.join(root, "vault")
+    _run(["git", "init", "-q", v])
+    _run(["git", "-C", v, "add", "-A"])
+    _run(["git", "-C", v, "-c", "user.name=fx", "-c", "user.email=f@x", "commit", "-qm", "fixture"])
+    return v, board, table
+
+
+def _mkrepo(root):
+    """抛弃式小仓:main 一个 commit,slice 分支再一个 ⇒ ff-only 可行。"""
+    r = os.path.join(root, "repo")
+    os.makedirs(r)
+    _run(["git", "init", "-q", "-b", "main", r])
+    open(os.path.join(r, "a.txt"), "w").write("1\n")
+    _run(["git", "-C", r, "add", "a.txt"])
+    _run(["git", "-C", r, "-c", "user.name=fx", "-c", "user.email=f@x", "commit", "-qm", "base"])
+    _run(["git", "-C", r, "checkout", "-qb", "slice"])
+    open(os.path.join(r, "a.txt"), "w").write("2\n")
+    _run(["git", "-C", r, "add", "a.txt"])
+    _run(["git", "-C", r, "-c", "user.name=fx", "-c", "user.email=f@x", "commit", "-qm", "slice work"])
+    _, sha = git(r, "rev-parse", "--short", "HEAD")
+    _run(["git", "-C", r, "checkout", "-q", "main"])
+    return r, sha.strip()
+
+
+def _args(piece, commit, repo, board, table, vault, lane, state_dir, **kw):
+    ns = argparse.Namespace(piece=piece, commit=commit, repo=repo, board=board, table=table,
+                            vault=vault, lane_bin=lane, state_dir=state_dir, dry=False,
+                            lane_letter="B", no_replay=True)
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def _dirty(path):
+    """夹具零改动自证:vault(git)与仓(git)各自 status 必须为空。"""
+    _, o = git(path, "status", "--porcelain")
+    return [x for x in o.split("\n") if x.strip()]
+
+
+def selftest():
+    ok = fail = 0
+
+    def chk(name, cond, got=""):
+        nonlocal ok, fail
+        if cond:
+            ok += 1
+            print("  ✅ %s" % name)
+        else:
+            fail += 1
+            print("  ❌ %s   %s" % (name, got))
+
+    real_lane = shutil.which("laixin-lane") or "laixin-lane"
+    PIECE = "t:片甲-地图聚合页"
+    SIB = "t:片甲-社区层数据面"
+    ROW = "| **%s** | B | `slice` / 验收窗 verify-t | 验收通过 |" % PIECE
+    ROW2 = "| **%s** | B | `slice2` / 验收窗 verify-t2 | 验收通过 |" % SIB
+
+    print("== 1. 阳性:四项预检全过 ⇒ 四步写盘全成(真 laixin-lane,隔离 vault 与抛弃式仓)==")
+    tmp = tempfile.mkdtemp(prefix="merge-close-st.")
+    try:
+        repo, sha = _mkrepo(tmp)
+        rec = {"t片甲-地图聚合页-验收回执.md":
+               "# 回执\n- 结论:通过。\n\n【验收回执】通过 verify/t-%s %s %s\n"
+               % (sha, sha, git(repo, "rev-parse", "main")[1].strip())}
+        vault, board, table = _mkvault(tmp, [ROW, ROW2], rec)
+        sd = os.path.join(tmp, "state")
+        a = _args(PIECE, sha, repo, board, table, vault, real_lane, sd)
+        text, rc = MergeClose(a).run()
+        chk("退出码 0", rc == 0, "rc=%d\n%s" % (rc, text[-700:]))
+        chk("四项预检全成立", text.count("**成立**") >= 4, text[:400])
+        chk("S1 合并后 main == 候选",
+            git(repo, "rev-parse", "--short", "main")[1].strip() == sha)
+        tb = open(table, encoding="utf-8").read()
+        chk("S2 已完成节多了本片本 sha 的一行",
+            ("**%s**" % PIECE) in tb.split("## 验收中")[0] and sha in tb.split("## 验收中")[0], "")
+        chk("S2 源行就地划改 ⛔ 删行(⛔ 让「没登记过」与「已收口」同形)",
+            "~~%s~~" % PIECE in tb and "已合入" in tb)
+        bd = open(board, encoding="utf-8").read()
+        chk("S3 看板固定字面逐字在", "%s 已合入 main = %s" % (PIECE, sha) in bd, bd[-200:])
+        chk("S3 看板条来源=派工窗口", "派工窗口" in bd)
+        chk("⛔ 把 release/部署折进这条绿", "release(工具仓)与产品部署各是独立幂等命令" in text)
+        chk("兄弟片 ⛔ 被连带改动", ("~~%s~~" % SIB) not in tb)
+
+        print("== 1b. 幂等:同一条命令再敲一次 ⇒ ⛔ 二次合并 ⛔ 二次看板条 ==")
+        text2, rc2 = MergeClose(_args(PIECE, sha, repo, board, table, vault, real_lane, sd)).run()
+        chk("重跑仍 rc=0", rc2 == 0, "rc=%d" % rc2)
+        chk("S1 报幂等跳过", "幂等跳过" in text2)
+        bd2 = open(board, encoding="utf-8").read()
+        chk("看板条仍只有一条",
+            bd2.count("%s 已合入 main = %s" % (PIECE, sha)) == 1,
+            str(bd2.count("%s 已合入 main = %s" % (PIECE, sha))))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("== 2. 阴性①:片名故意撞前缀 ⇒ 整项未判,总表/看板/仓 零改动 ==")
+    tmp = tempfile.mkdtemp(prefix="merge-close-st.")
+    try:
+        repo, sha = _mkrepo(tmp)
+        vault, board, table = _mkvault(tmp, [ROW, ROW2], {})
+        before_main = git(repo, "rev-parse", "main")[1].strip()
+        a = _args("t:片甲", sha, repo, board, table, vault, real_lane, os.path.join(tmp, "state"))
+        text, rc = MergeClose(a).run()
+        chk("退出码=3(预检未过)", rc == 3, "rc=%d" % rc)
+        chk("① 报**多匹配 ⇒ 整项未判**", "多匹配" in text and "未判" in text, text[:300])
+        chk("列出候选行给派工 ⛔ 自己挑", "验收中 节 第" in text, text[:400])
+        chk("vault 零改动(git status 空)", not _dirty(vault), str(_dirty(vault)))
+        chk("仓零改动:main 未动", git(repo, "rev-parse", "main")[1].strip() == before_main)
+        chk("⛔ 写看板", "已合入 main" not in open(board, encoding="utf-8").read())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("== 3. 阴性②:merge-guard 不过 ⇒ 零写(受控替身注入失败;⛔ 测 merge-guard 本身)==")
+    tmp = tempfile.mkdtemp(prefix="merge-close-st.")
+    try:
+        repo, sha = _mkrepo(tmp)
+        rec = {"t片甲-地图聚合页-验收回执.md":
+               "【验收回执】通过 verify/t-%s %s %s\n" % (sha, sha, git(repo, "rev-parse", "main")[1].strip())}
+        vault, board, table = _mkvault(tmp, [ROW], rec)
+        stub = os.path.join(tmp, "lane-stub")
+        open(stub, "w").write(LANE_STUB)
+        os.chmod(stub, 0o755)
+        before_main = git(repo, "rev-parse", "main")[1].strip()
+        os.environ["STUB_MG_FAIL"] = "1"
+        text, rc = MergeClose(_args(PIECE, sha, repo, board, table, vault, stub,
+                                    os.path.join(tmp, "state"))).run()
+        os.environ.pop("STUB_MG_FAIL", None)
+        chk("退出码=3", rc == 3, "rc=%d" % rc)
+        chk("② 报不成立", "② merge-guard:**不成立**" in text, text[:300])
+        chk("main 未动", git(repo, "rev-parse", "main")[1].strip() == before_main)
+        chk("vault 零改动", not _dirty(vault), str(_dirty(vault)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("== 4. 断点续:S2 后中断 ⇒ 重跑 ⛔ 二次合并 ⛔ 二次看板条,且留明确态 ==")
+    tmp = tempfile.mkdtemp(prefix="merge-close-st.")
+    try:
+        repo, sha = _mkrepo(tmp)
+        rec = {"t片甲-地图聚合页-验收回执.md":
+               "【验收回执】通过 verify/t-%s %s %s\n" % (sha, sha, git(repo, "rev-parse", "main")[1].strip())}
+        vault, board, table = _mkvault(tmp, [ROW], rec)
+        stub = os.path.join(tmp, "lane-stub")
+        open(stub, "w").write(LANE_STUB)
+        os.chmod(stub, 0o755)
+        sd = os.path.join(tmp, "state")
+        os.environ["STUB_LOG_FAIL"] = "1"
+        text, rc = MergeClose(_args(PIECE, sha, repo, board, table, vault, stub, sd)).run()
+        os.environ.pop("STUB_LOG_FAIL", None)
+        chk("中断后退出码=4", rc == 4, "rc=%d" % rc)
+        chk("留「合并已成 · 台账第 3 步未成」明确态",
+            "合并已成 · 台账第 3 步未成" in text, text[-400:])
+        chk("⛔「已合入待清」半态字样", "已合入待清" not in text.replace("⛔「已合入待清」半态", ""))
+        merged_at = git(repo, "rev-parse", "main")[1].strip()
+        text2, rc2 = MergeClose(_args(PIECE, sha, repo, board, table, vault, stub, sd)).run()
+        chk("重跑 rc=0(断点续成功)", rc2 == 0, "rc=%d\n%s" % (rc2, text2[-500:]))
+        chk("⛔ 二次合并:main 未再动", git(repo, "rev-parse", "main")[1].strip() == merged_at)
+        chk("S1/S2 报幂等跳过", text2.count("幂等跳过") >= 2, text2[:600])
+        bd = open(board, encoding="utf-8").read()
+        chk("看板条恰一条",
+            bd.count("%s 已合入 main = %s" % (PIECE, sha)) == 1,
+            str(bd.count("%s 已合入 main = %s" % (PIECE, sha))))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("\n结果:%d 过 / %d 败" % (ok, fail))
+    return 1 if fail else 0
+
+
+# ── ⑤ 回放:对 4b 重放(抛弃式克隆真仓 + 真看板/真总表的**副本**;⛔ 碰真身)
+REPLAY = {
+    "piece": "钓不钓:融合片四b-地图聚合页",
+    "src_repo": os.path.expanduser("~/钓不钓-基座"),
+    "base": "c3c79369",          # 08-28 18:02 合并前的 main
+    "tip": "f0ba061a",           # 4b 候选
+    "board_cut": 12219,          # 真看板第 12220 行 = 派工手写合入条 ⇒ 取其前为快照
+    "table_snap": "7ba618df",    # Obsidian 2026-08-28T17:50:28 的总表快照(4b 合并前)
+    "receipt": "钓不钓-融合片四b-地图聚合页-验收回执.md",
+    "handwritten_line": 12220,
+}
+
+
+def selftest_replay():
+    """⑤ 回放:与看板 :12220 派工手写条**逐字列 diff** ⛔ 只说「等价」。"""
+    ok = fail = 0
+
+    def chk(name, cond, got=""):
+        nonlocal ok, fail
+        if cond:
+            ok += 1
+            print("  ✅ %s" % name)
+        else:
+            fail += 1
+            print("  ❌ %s   %s" % (name, got))
+
+    R = REPLAY
+    real_board = DEFAULT_BOARD
+    vault_root = os.path.expanduser("~/Obsidian")
+    if not os.path.isdir(R["src_repo"]) or not os.path.exists(real_board):
+        print("  ⚠️ 回放**未判**:源仓或真看板读不到 ⛔ 当通过")
+        return 1
+    tmp = tempfile.mkdtemp(prefix="merge-close-replay.")
+    try:
+        repo = os.path.join(tmp, "repo")
+        rc, out = _run(["git", "clone", "--shared", "-q", R["src_repo"], repo])
+        if rc != 0:
+            print("  ⚠️ 回放**未判**:克隆失败 ⛔ 当通过\n%s" % out[:200])
+            return 1
+        _run(["git", "-C", repo, "checkout", "-qB", "main", R["base"]])
+        _run(["git", "-C", repo, "branch", "-f", "mvp-fusion-map-page", R["tip"]])
+
+        kb = os.path.join(tmp, "vault", "项目入口/来信平台/知识库/4-开发层")
+        os.makedirs(os.path.join(kb, "记录"))
+        board = os.path.join(kb, "来信平台-流水线看板.md")
+        with open(real_board, encoding="utf-8") as fh:
+            all_lines = fh.read().split("\n")
+        hand = all_lines[R["handwritten_line"] - 1]
+        with open(board, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(all_lines[:R["board_cut"]]) + "\n")
+        table = os.path.join(kb, "来信平台-执行总表.md")
+        rc, snap = _run(["git", "-C", vault_root, "show",
+                         "%s:项目入口/来信平台/知识库/4-开发层/来信平台-执行总表.md" % R["table_snap"]])
+        if rc != 0:
+            print("  ⚠️ 回放**未判**:总表快照取不到 ⛔ 当通过")
+            return 1
+        open(table, "w", encoding="utf-8").write(snap)
+        shutil.copy(os.path.join(os.path.dirname(real_board), "记录", R["receipt"]),
+                    os.path.join(kb, "记录", R["receipt"]))
+        v = os.path.join(tmp, "vault")
+        _run(["git", "init", "-q", v]); _run(["git", "-C", v, "add", "-A"])
+        _run(["git", "-C", v, "-c", "user.name=fx", "-c", "user.email=f@x", "commit", "-qm", "snap"])
+        lane = shutil.which("laixin-lane") or "laixin-lane"
+        sd = os.path.join(tmp, "state")
+
+        print("== 5a. 忠实回放(总表用 17:50 真快照,一字未加)==")
+        text, rc = MergeClose(_args(R["piece"], R["tip"], repo, board, table, v, lane, sd)).run()
+        chk("① 报**零匹配 ⇒ 整项未判**(4b 当时确实没登记在四节里)",
+            "零匹配" in text and rc == 3, "rc=%d\n%s" % (rc, text[:400]))
+        chk("零写:vault git status 空", not _dirty(v), str(_dirty(v)))
+        chk("零写:main 未动",
+            git(repo, "rev-parse", "--short", "main")[1].strip().startswith(R["base"][:7]))
+        print("  📌 **这是一条真发现 ⛔ 工具缺陷**:08-28 合 4b 那一刻,总表「进行中/验收中」两节都是空的,")
+        print("     4b 只在收工令那一节里有一行 ⇒ **M6 当天不可能替它收账**,它会如实说「认不出这一片」。")
+
+        print("== 5b. 把当时该有的那一行补进验收中后回放(补的一行在下面逐字列出)==")
+        added = "| **%s** | A | `mvp-fusion-map-page` @ `%s` / 验收窗 verify-钓不钓-融合片四b-地图聚合页 | 第三轮验收通过 |" % (R["piece"], R["tip"])
+        print("     补入行:%s" % added)
+        t = open(table, encoding="utf-8").read().split("\n")
+        for i, ln in enumerate(t):
+            if ln.startswith("## 验收中"):
+                j = i
+                while j < len(t) and "---|" not in t[j]:
+                    j += 1
+                t.insert(j + 1, added)
+                break
+        open(table, "w", encoding="utf-8").write("\n".join(t))
+        _run(["git", "-C", v, "add", "-A"])
+        _run(["git", "-C", v, "-c", "user.name=fx", "-c", "user.email=f@x", "commit", "-qm", "add row"])
+        text, rc = MergeClose(_args(R["piece"], R["tip"], repo, board, table, v, lane, sd)).run()
+        chk("四步全成 rc=0", rc == 0, "rc=%d\n%s" % (rc, text[-900:]))
+        _, newmain = git(repo, "rev-parse", "--short", "main")
+        chk("main c3c79369 → f0ba061a(ff-only)", newmain.strip().startswith(R["tip"][:7]), newmain)
+        lit = "%s 已合入 main = %s" % (R["piece"], newmain.strip())
+        chk("看板固定字面已写", lit in open(board, encoding="utf-8").read(), lit)
+
+        print("\n== 5c. 与真人手写条 :%d 逐字对照 ==" % R["handwritten_line"])
+        print("  【手写条原文(截 300 字)】")
+        print("    " + re.sub(r"\s+", " ", hand)[:300])
+        print("  【机器条原文】")
+        print("    " + lit)
+        facts = [
+            ("合并事实 main→new", "c3c79369" in hand and "f0ba061a" in hand,
+             newmain.strip().startswith(R["tip"][:7]), "机器把旧值放在总表行与 git 里 ⛔ 看板条正文"),
+            ("ff-only", "ff-only" in hand, True, "机器用 --ff-only 且 P3 先判过可行性"),
+            ("片名 + 合入 sha", True, lit.startswith(R["piece"]) and R["tip"][:7] in lit, "两边都有"),
+            ("tag", "tag=" in hand, False, "**机器 ⛔ 打 tag** —— tag 与 release 同族,归独立命令(v0.3-12)"),
+            ("合并后全量复跑", "Ran 136" in hand, False, "**机器 ⛔ 复跑** —— 全量是验收窗的活,再跑一遍=第二真相源"),
+            ("merge-guard 前后各跑", "merge-guard" in hand, True, "机器在 P2 跑一次(前);后置那次归 merge-guard 自己"),
+            ("worktree 回收", "工位全部回收" in hand or "只剩主树" in hand, False,
+             "**机器 ⛔ 回收 worktree** —— 不在 ② 的四步里,归派工"),
+        ]
+        print("  逐项 diff(手写条有 / 机器条有 / 说明):")
+        for nm, h, m, why in facts:
+            print("    %-16s 手写=%s  机器=%s  —— %s" % (nm, "有" if h else "无", "有" if m else "无", why))
+        covered = [f for f in facts if f[1] and f[2]]
+        notcov = [f for f in facts if f[1] and not f[2]]
+        chk("手写条的**合并态三段**(合并事实 · ff-only · 片名+sha)机器全覆盖", len(covered) >= 3,
+            str([f[0] for f in covered]))
+        chk("未覆盖的四项**全部落在 release/deploy/验收 射程外**(⛔ 漏做,是边界)",
+            all(("tag" in f[0]) or ("全量" in f[0]) or ("worktree" in f[0]) for f in notcov),
+            str([f[0] for f in notcov]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("\n回放结果:%d 过 / %d 败" % (ok, fail))
+    return 1 if fail else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="merge-close",
+                                 description="替代表 M6:派工批准后的合并 + 台账收口(事务式,可断点续)")
+    ap.add_argument("piece", nargs="?", help="片名(与总表行、看板条一致)")
+    ap.add_argument("commit", nargs="?", help="候选 commit")
+    ap.add_argument("--repo", default=os.environ.get("LAIXIN_REPO", os.path.expanduser("~/来信平台")))
+    ap.add_argument("--board", default=DEFAULT_BOARD)
+    ap.add_argument("--table", default=DEFAULT_TABLE)
+    ap.add_argument("--vault", default=os.environ.get("LAIXIN_VAULT", ""))
+    ap.add_argument("--lane-bin", default=shutil.which("laixin-lane") or "laixin-lane")
+    ap.add_argument("--state-dir", default=os.path.expanduser("~/.laixin-merge-close"))
+    ap.add_argument("--lane-letter", default="", help="轨(A/B/C),写进已完成节那一行")
+    ap.add_argument("--dry", action="store_true", help="只跑预检并打印将写什么,零写")
+    ap.add_argument("--no-replay", action="store_true", help="合入后 ⛔ 顺带调 replay-six")
+    ap.add_argument("--selftest", action="store_true", help="隔离夹具自测(合成仓 + 独立 vault)")
+    ap.add_argument("--selftest-replay", action="store_true", help="⑤ 回放:对 4b 重放(抛弃式克隆真仓)")
+    a = ap.parse_args()
+    if a.selftest:
+        sys.exit(selftest())
+    if a.selftest_replay:
+        sys.exit(selftest_replay())
+    if not a.piece or not a.commit:
+        ap.error("要 <片名> <候选commit>(或 --selftest / --selftest-replay)")
+    text, rc = MergeClose(a).run()
+    print(text)
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

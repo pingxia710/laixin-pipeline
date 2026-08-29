@@ -13,6 +13,57 @@ unset LAIXIN_WINDOW LAIXIN_BOARD_SRC TMUX_PANE TMUX 2>/dev/null || true
 # 🔴 套件零副作用的机器半边(2026-08-22 实撞):真实派工权锁在套件开跑时若在,跑完必须还在——
 #   当日 halt fixture 用真 HOME 的锁,把在班 dispatch 的派工权删了两遍而套件全绿;「绝不碰派工权锁」此前只是上面那行自述。
 REAL_LOCK_BEFORE="$(cat "$HOME/.laixin-dispatch.lock" 2>/dev/null || true)"
+
+# ── 并发闸下沉到运行器自身(2026-08-29 值守窗「配合问题第 1 例」实撞)────────────────────
+# 🔴 各窗此前的自核闸(合并前 `pgrep -f 'bash tests/run.sh'` 看是不是 0)**双源都会在放行方向骗人**:
+#   · `pgrep -f` 在本机遇到命令行含非法字节的进程时**报错并让 stdout 为空** ⇒ 管到 `wc -l` 就是
+#     一个漂亮的 `0`,与「真的没人在跑」完全同形 ⇒ **假零=放行合并**(本机 2026-08-29 10:19 实撞:
+#     `pgrep: Regular expression evaluation error (illegal byte sequence)` 之后紧跟一行 `0`)。
+#   · 换成 `ps | grep` 又反过来:命令行里**提到** tests/run.sh 的外壳(如包着它的 zsh -c)被当成在跑
+#     ⇒ 假阳性=白等。两种实现各自在**它要防的那个方向上**失效,而两种失效都不可见。
+# ⇒ 修法不是给每个窗一条更好的 grep(那还是同一族判据),而是**让运行器自己拒绝第二实例**:
+#   起跑即取互斥锁;拿不到就明说是谁、从几点在跑,并 rc≠0 退出 ⛔ 静默等待 ⛔ 静默继续。
+#   各窗口径随之变成「直接跑,被拒即等」——闸从"每个调用方各自记得核一次"收到唯一一处。
+# 锁路径可被 LAIXIN_TESTS_LOCK 覆盖:本文件的自测绊线要在临时锁上跑,⛔ 碰真锁。
+TESTS_LOCK="${LAIXIN_TESTS_LOCK:-$HOME/.laixin-tests.lock}"
+tests_lock_acquire(){ # <锁目录> → 0=取到;1=占用。stdout 写明谁/为什么。⛔ 阻塞等待 ⛔ 静默
+  local lock="$1" pid started
+  # mkdir 是原子的:两个实例同刻只可能一个成功(⛔ 用 [ -e ] 再 mkdir,那中间有窗口)
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s\n' "$$" > "$lock/pid"; date '+%H:%M:%S' > "$lock/started"; return 0
+  fi
+  pid="$(cat "$lock/pid" 2>/dev/null || true)"
+  # ④ 读不出持有者 ⇒ **按占用处理**并写「未判」⛔ 当空闲——空闲是放行方向,正是本件要堵的那一侧
+  case "$pid" in
+    '')        printf '未判:锁 %s 在但 pid 读不到,按占用处理,人工核\n' "$lock"; return 1 ;;
+    *[!0-9]*)  printf '未判:锁 %s 的 pid 非法(%s),按占用处理,人工核\n' "$lock" "$pid"; return 1 ;;
+  esac
+  if kill -0 "$pid" 2>/dev/null; then
+    started="$(cat "$lock/started" 2>/dev/null || true)"
+    printf '另一实例 pid %s 自 %s 在跑\n' "$pid" "${started:-未知}"; return 1
+  fi
+  # 陈旧锁:持有者已不在(崩溃/被 kill/断电)⇒ 回收再取;回收后被抢先仍按占用 ⛔ 硬闯
+  rm -rf "$lock" 2>/dev/null || true
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s\n' "$$" > "$lock/pid"; date '+%H:%M:%S' > "$lock/started"
+    printf '已回收陈旧锁(原 pid %s 已不在)\n' "$pid"; return 0
+  fi
+  printf '陈旧锁回收后被他人抢先,按占用处理\n'; return 1
+}
+tests_lock_release(){ # <锁目录> —— 只放**自己持有**的那一把(⛔ 删别人的:回收只在 acquire 里按 pid 判)
+  local lock="$1"
+  [ -d "$lock" ] || return 0
+  [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ] || return 0
+  rm -rf "$lock" 2>/dev/null || true
+}
+if TESTS_LOCK_MSG="$(tests_lock_acquire "$TESTS_LOCK")"; then
+  [ -z "$TESTS_LOCK_MSG" ] || echo "并发闸:$TESTS_LOCK_MSG"
+  trap 'tests_lock_release "$TESTS_LOCK"' EXIT
+else
+  echo "⛔ 本机已有一套自测在跑,拒绝并发:$TESTS_LOCK_MSG" >&2
+  echo "   口径:直接跑、被拒即等 —— ⛔ 再用 pgrep/ps 自核(两者都会在放行方向骗人)" >&2
+  exit 3
+fi
 t(){ # t <名字> <命令...> —— 退出码 0 即过
   local name="$1"; shift
   if "$@" >/dev/null 2>&1; then PASS=$((PASS+1)); echo "  ✅ $name";
@@ -1874,6 +1925,16 @@ t "#25 绊线:链已指新版且旧发布文件仍保留(旧 inode 不销毁)" b
   tgt="$(readlink "$1/bin/laixin-lane")"
   grep -q "echo v2" "$tgt" || exit 1
   [ "$(ls "$1/rel" | wc -l | tr -d " ")" -ge 2 ]' 25 "$R25"
+# ⭐ 绊线(2026-08-29 立):干净判据只管**发布物**——`bin/` 之外的未提交 ⛔ 挡发布,但必须列出来。
+#   实撞:派工窗口未提交的卡改动(skills/)两次挡住发布,其中一次让「事件总线假阴性」的修复
+#   合入 main 却上不了线,生产继续跑旧行为 ⇒ 拦的东西根本不进发布物,拦它没有任何不出错收益。
+mkdir -p "$R25/repo/skills"; printf 'card body\n' > "$R25/repo/skills/CARD.md"
+tout "#25 绊线:发布物之外脏 ⇒ 仍发布(卡改动 ⛔ 挡发布)" "已发布" "${RENV[@]}" "$LANE" release
+tout "#25 绊线:发布物之外脏时逐条列出备核(⛔ 静默放行)" "仓内其余未提交" "${RENV[@]}" "$LANE" release
+t "#25 对照:同一状态下旧全仓判据会拒、新发布单元判据放行——绊线能分成败" bash -c '
+  [ -n "$(git -C "$1/repo" status --porcelain)" ] || exit 1
+  [ -z "$(git -C "$1/repo" status --porcelain -- bin)" ]' 25 "$R25"
+rm -rf "$R25/repo/skills"
 # ⭐ 绊线:已提交版语法坏 ⇒ 拒绝发布(半坏版换上=每次调用都死,比旧版继续跑危害大)
 printf '#!/bin/bash\nif [ x ; then\n' > "$R25/repo/bin/laixin-lane"
 git -C "$R25/repo" add bin/laixin-lane
@@ -2276,7 +2337,9 @@ tout "up 回显预告 10s 启动验尸" "10s 启动验尸已挂后台" sed -n "/
 tout "dispatch 回显守卫已核态" "双派工守卫已核:无对手" sed -n "/^cmd_dispatch/,/^}/p" "$LANE"
 tout "dispatch 回显在 --force-rival 下如实说「跳过未核」⛔ 装作核过" "跳过(未核,风险自担)" sed -n "/^cmd_dispatch/,/^}/p" "$LANE"
 tout "relay 回显区分 --resurrect 豁免与 --force-rival 跳过(两种非常规调用语义不同)" "按 --resurrect 豁免" sed -n "/^cmd_relay()/,/^}/p" "$LANE"
-tout "release 成功回显已核清单" "已核:工作树干净" sed -n "/^cmd_release/,/^}/p" "$LANE"
+# 措辞随判据一起收窄(2026-08-29):判据只核发布单元,回执就 ⛔ 再说「工作树干净」——
+# 那是一条**看起来正常**的假话(仓里可能正躺着未提交的卡),比没有回执更难发现。
+tout "release 成功回显已核清单(措辞=发布单元 ⛔ 工作树)" "已核:发布单元 bin/ 干净" sed -n "/^cmd_release/,/^}/p" "$LANE"
 
 echo "== 8j. #51 table-lint 台账写盘断言库(列数+残留竖线+行首唯一;从「各窗口自带」升「库提供」) =="
 TL="$(mktemp -d)"
@@ -5620,6 +5683,54 @@ t "⑥ 对照:修前推导对 ①② 必红(①推不出 ②推出但文件不�
 
 rm -rf "$N172"
 
+
+# ── 并发闸:运行器自取互斥锁(2026-08-29 值守窗「配合问题第 1 例」)────────────────────
+# 被替掉的是各窗「跑套件前先 pgrep 自核」这一步:该判据两种实现各自在**放行方向**失效且不可见
+# (pgrep 遇非法字节 ⇒ 报错 + stdout 空 ⇒ 假零;ps|grep ⇒ 把提到该串的外壳算成在跑 ⇒ 假阳性)。
+echo "== 并发闸:运行器自取互斥锁 =="
+LK="$(mktemp -d)"; LKF="$LK/fn.sh"; LKSELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+for fn in tests_lock_acquire tests_lock_release; do
+  sed -n "/^${fn}()/,/^}/p" "$LKSELF" >> "$LKF"
+done
+
+t "并发闸:首取成功,锁里写下自己的 pid 与起时" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/a"
+  tests_lock_acquire "$L" >/dev/null || exit 1
+  [ -d "$L" ] && [ "$(cat "$L/pid")" = "$$" ] && [ -s "$L/started" ]'
+
+tfail "并发闸:持有者活着 ⇒ 第二实例被拒,并报是谁从几点在跑" "另一实例 pid" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/b"; mkdir -p "$L"
+  printf "%s\n" "$$" > "$L/pid"; printf "09:41:07\n" > "$L/started"
+  out="$(tests_lock_acquire "$L")"; rc=$?; printf "%s\n" "$out"; exit $rc'
+
+tfail "并发闸:锁在但 pid 读不到 ⇒ 写「未判」并按占用 ⛔ 当空闲" "未判" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/c"; mkdir -p "$L"
+  out="$(tests_lock_acquire "$L")"; rc=$?; printf "%s\n" "$out"; exit $rc'
+
+t "并发闸:陈旧锁(持有者已不在)被回收后重取到" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/d"; mkdir -p "$L"
+  ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null
+  printf "%s\n" "$dead" > "$L/pid"; printf "09:00:00\n" > "$L/started"
+  out="$(tests_lock_acquire "$L")" || exit 1
+  grep -q "已回收陈旧锁" <<< "$out" && [ "$(cat "$L/pid")" = "$$" ]'
+
+t "并发闸:release 只放自己那把,别人的锁不误删" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/e"; mkdir -p "$L"; printf "1\n" > "$L/pid"
+  tests_lock_release "$L"; [ -d "$L" ] || exit 1
+  L2="$LK/f"; tests_lock_acquire "$L2" >/dev/null || exit 1
+  tests_lock_release "$L2"; [ ! -d "$L2" ]'
+
+t "并发闸 对照:朴素判据(无 pid 即空闲)在同一状态放行、本闸拒——绊线能分成败" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"
+  naive(){ [ -d "$1" ] || return 0; [ -n "$(cat "$1/pid" 2>/dev/null)" ] || return 0; return 1; }
+  L="$LK/g"; mkdir -p "$L"
+  naive "$L" || exit 1
+  ! tests_lock_acquire "$L" >/dev/null 2>&1'
+
+t "并发闸 真跑:本次自测此刻确实握着真锁(pid=自己)" env TL="$TESTS_LOCK" SELFPID="$$" bash -c '
+  [ -d "$TL" ] && [ "$(cat "$TL/pid" 2>/dev/null)" = "$SELFPID" ]'
+
+rm -rf "$LK"
 
 echo
 echo "结果:$PASS 过 / $FAIL 败"

@@ -2168,13 +2168,23 @@ cmd_release(){  # #25 部署原子化:把仓库**已提交版**发布到版本�
   local lbin="${LAIXIN_RELEASE_BIN:-$HOME/.local/bin/laixin-lane}"
   local rel_dir="${LAIXIN_RELEASE_DIR:-$HOME/.local/libexec/laixin-lane-releases}"
   [ -d "$repo/.git" ] || die "发布源不是 git 仓库:$repo"
-  local hash dirty
+  local hash dirty dirty_unit
   hash="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null)" || die "读 HEAD 失败:$repo"
   [ -n "$hash" ] || die "读 HEAD 失败:$repo"
-  dirty="$(git -C "$repo" status --porcelain 2>/dev/null)" || die "git status 失败:$repo"
+  # 干净判据对齐**发布物**(2026-08-29 立;当日派工窗口的卡改动两次挡住与发布物无关的发布,
+  # 其中一次让「事件总线假阴性」的修复合入了 main 却上不了线,生产继续跑旧行为)。
+  # 发布单元 = `bin/` 全体:下面三段枚举的正是 `HEAD -- bin/`(主脚本 + bin/*.py helper + 兄弟可执行),
+  # 仓内其余(卡/文档/测试)根本不进发布物 ⇒ 不该有拦发布的权力。
+  # ⚠️ 「发布=已提交态」这条**没松**,只是范围对齐了发布物;其余未提交仍**逐条列出**
+  #    ⛔ 改成完全不看——不然哪天发布物之外的东西被误当成已发布,没有一处会露出破绽。
+  dirty_unit="$(git -C "$repo" status --porcelain -- bin 2>/dev/null)" || die "git status 失败:$repo"
+  if [ -n "$dirty_unit" ]; then
+    die "⛔ 发布单元 bin/ 不干净,拒绝发布(发布=已提交态,与 backup 只推已提交同哲学;先 commit/stash):
+$(head -5 <<< "$dirty_unit")"
+  fi
+  dirty="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
   if [ -n "$dirty" ]; then
-    die "⛔ 工作树不干净,拒绝发布(发布=已提交态,与 backup 只推已提交同哲学;先 commit/stash):
-$(head -5 <<< "$dirty")"
+    printf '⚠️ 仓内其余未提交(不进发布物,不挡发布;列出备核):\n%s\n' "$(head -5 <<< "$dirty")" >&2
   fi
   # #59(2026-08-19 复工试火第 1 条当场翻车,relay 四任报+dispatch 判据):**发布单元必须等于运行单元**——
   # 子命令走 readlink -f "$0" 取同级 .py(opt_status/copy_audit),首版只复制主脚本 ⇒ 发布目录里没有它们,
@@ -2245,7 +2255,9 @@ $(head -5 <<< "$dirty")"
     if ln -s "$rel_home/$sib" "$sib_tmp" 2>/dev/null && mv -f "$sib_tmp" "$sib_lbin" 2>/dev/null; then :
     else rm -f "$sib_tmp"; wrn_release "⛔ $sib 换链失败——PATH 上仍是旧版,它的新逻辑不生效(人工核:ls -l $sib_lbin)"; fi
   done
-  echo "   已核:工作树干净(已提交态) · bash -n 语法 · 同目录原子换链 · helper 全集随行(差集空:${helpers:-无 py helper})(#50/#59)"
+  # 回显只许说**真被核过的那件**:判据收窄到发布单元后再说「工作树干净」就是句假话,
+  # 而它恰好长得像一条正常的成功回执(仓里可能正躺着未提交的卡)。⇒ 措辞跟判据同步收窄。
+  echo "   已核:发布单元 bin/ 干净(已提交态) · bash -n 语法 · 同目录原子换链 · helper 全集随行(差集空:${helpers:-无 py helper})(#50/#59)"
   [ -n "$sibs" ] && echo "   兄弟脚本随行并换链(与主脚本同版本):${sibs}" || true
 }
 

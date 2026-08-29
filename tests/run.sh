@@ -3142,8 +3142,10 @@ assert len(hard)==1, "laixin-lane 两个引擎分支的硬闸门值不一致(或
 assert len(warn)==1, "laixin-lane 两个引擎分支的预备线值不一致(或没找到):%s" % warn
 h,w=hard.pop(),warn.pop()
 assert int(h)>int(w), "硬闸门必须高于预备线:%s/%s" % (h,w)
-sl=os.path.expanduser("~/.claude-official/statusline.py")
-# 常量三处一致这条**保留**(它抓得住常量漂移);文件级不同步由下面那条软链绊线抓。
+# 🔴 2.4b:改读**仓内** contrib-statusline.py ⛔ 线上那份 —— 仓内那份本就是单点源,
+#   读它天然封闭;读线上那份会让这条测试随机器环境忽红忽绿(线上是否已发布、发布到哪一版)。
+#   「线上那份与仓内是否脱节」不归本条管,归 doctor §9c + 看门狗每 N 拍自检(2.4b 迁移的正题)。
+sl=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1]))),"contrib-statusline.py")
 if os.path.exists(sl):
     s=open(sl,encoding="utf-8").read()
     gh=re.search(r"GATE_HARD\s*=\s*(\d+)",s); gw=re.search(r"GATE_WARN\s*=\s*(\d+)",s)
@@ -3157,63 +3159,140 @@ if os.path.exists(sl):
 #   **同时**缺 `import os`(绝对余量闸一次都没执行过)而常量完全一致 ⇒ 那条绊线全绿。
 #   ⇒ 新口径:线上那份必须是**软链**且 `readlink -f` 解析到**当前发布版**的 contrib-statusline.py;
 #     仍是普通文件 / 指向别处 ⇒ **红 ⛔ 跳过**(「不存在即跳过」正是让这个缺陷藏住的那一句)。
-SL_STABLE="$HOME/.local/bin/laixin-statusline"
-# 判据抽成函数,先用**三种夹具态**证明它分得开成败,再拿它去断言真环境
-#   (⛔ 只断言真环境:那样「判据太松」与「真环境合格」同形)
-sl_single_source_ok(){  # <线上文件> <稳定路径> → 0=线上确实是指向该稳定路径的软链
-  local live="$1" stable="$2" a b
-  [ -L "$live" ] || return 1
-  a="$(readlink -f "$live" 2>/dev/null)"; b="$(readlink -f "$stable" 2>/dev/null)"
-  [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ]
-}
-# ⚠️ 必须 export -f:用例跑在 `bash -c` **子 shell** 里,顶层函数不会被继承 ⇒ 子 shell 里
-#   「命令不存在」返回 127,而两条对照写的是 `! sl_single_source_ok …` ⇒ **127 被取反成绿**。
-#   那两条会**因为判据根本没跑而通过**——是上面那条阳性用例把它揪出来的(首跑实撞)。
-#   ⇒ 凡「对照=期望失败」的用例,必须同时有一条**阳性**用例证明判据真的在跑。
-export -f sl_single_source_ok
-SLF="$(mktemp -d)"; printf 'x\n' > "$SLF/real.py"; printf 'y\n' > "$SLF/other.py"
-ln -s "$SLF/real.py" "$SLF/stable"
-ln -s "$SLF/stable"  "$SLF/live-ok"        # 合格态:软链 → 稳定路径
-cp "$SLF/real.py"    "$SLF/live-copy"      # 病态一:独立副本(今日线上的真实形态)
-ln -s "$SLF/other.py" "$SLF/live-wrong"    # 病态二:软链但指别处
-t "状态栏单点源 判据:软链→稳定路径 ⇒ 合格" bash -c 'sl_single_source_ok "$1/live-ok" "$1/stable"' _ "$SLF"
-t "状态栏单点源 对照:独立副本 ⇒ 必红(今日线上正是这一态)" bash -c '! sl_single_source_ok "$1/live-copy" "$1/stable"' _ "$SLF"
-t "状态栏单点源 对照:软链但指别处 ⇒ 必红" bash -c '! sl_single_source_ok "$1/live-wrong" "$1/stable"' _ "$SLF"
-rm -rf "$SLF"
-if [ ! -e "$SL_STABLE" ]; then
-  echo "  ℹ️ 状态栏单点源(真环境):稳定路径 $SL_STABLE 尚未生成——本特性**首次 release 之前**的一次性引导窗口;"
-  echo "     release 之后它恒存在,下面两条即转为硬断言(⛔ 长期跳过)"
-else
-  t "状态栏单点源 真环境:线上 statusline.py 是软链且解析到当前发布版" \
-    bash -c 'sl_single_source_ok "$HOME/.claude-official/statusline.py" "$1"' _ "$SL_STABLE"
-  # 🔴 2026-08-29 本片改判:原判据比的是 `HEAD:contrib-statusline.py`,而 HEAD 在**任何开发分支**上
-  #   都是那条分支的版本 ⇒ 它把「开发分支有尚未发布的改动」(完全正常)与「发布版与仓库脱节」
-  #   (真缺陷)判成同一件事。本片改这个文件时它当场必红,而红的原因**恰恰是流程正常**。
-  #   ⇒ 改为**与分支无关**的两条真不变量:
-  #     ① 发布出去的那份 == **它自称的那个 sha** 的已提交版(抓「发布物被手改/半写」);
-  #     ② 那个 sha 在 **main 的历史里**(抓「线上跑的是某条开发分支的版本」)。
-  #   两条都不依赖当前 checkout 是谁,且在真环境上始终应当成立。
-  t "状态栏单点源 真环境:发布物 = 它自称那个 sha 的已提交版(抓发布物被手改/半写)" bash -c '
-    a="$(readlink -f "$1" 2>/dev/null)"; [ -n "$a" ] || { echo "线上链解析不出"; exit 1; }
-    sha="$(basename "$(dirname "$a")")"
-    case "$sha" in *[!0-9a-f]*|"") echo "发布路径不含 sha 段:$a"; exit 1 ;; esac
-    r="$(cd "$(dirname "$2")/.." && pwd)"
-    git -C "$r" cat-file -e "${sha}^{commit}" 2>/dev/null || { echo "发布版 sha 在仓里不存在:$sha"; exit 1; }
-    git -C "$r" show "${sha}:contrib-statusline.py" 2>/dev/null | diff -q - "$a" >/dev/null' _ "$SL_STABLE" "$LANE"
-  # 判据先证明分得开成败,再拿去断言真环境(⛔ 只断言真环境:那样「判据太松」与「真环境合格」同形)
-  t "状态栏单点源 对照:发布物被改一个字节 ⇒ 必不一致(证明内容判据 ⛔ 摆设)" bash -c '
-    r="$(cd "$(dirname "$1")/.." && pwd)"; sha="$(git -C "$r" rev-parse --short HEAD)"
-    d="$(mktemp -d)"; git -C "$r" show "${sha}:contrib-statusline.py" > "$d/f" || exit 9
-    git -C "$r" show "${sha}:contrib-statusline.py" | diff -q - "$d/f" >/dev/null || { rm -rf "$d"; exit 1; }
-    printf "#\n" >> "$d/f"
-    if git -C "$r" show "${sha}:contrib-statusline.py" | diff -q - "$d/f" >/dev/null; then rm -rf "$d"; exit 2; fi
-    rm -rf "$d"' _ "$LANE"
-  t "状态栏单点源 真环境:发布版 sha 在 main 历史里(⛔ 线上跑着某条开发分支的版本)" bash -c '
-    a="$(readlink -f "$1" 2>/dev/null)"; [ -n "$a" ] || exit 1
-    sha="$(basename "$(dirname "$a")")"
-    r="$(cd "$(dirname "$2")/.." && pwd)"
-    git -C "$r" merge-base --is-ancestor "$sha" main' _ "$SL_STABLE" "$LANE"
-fi
+# 📌 2.4b:此处原有一个 `sl_single_source_ok` 的三态夹具块,已**移除** —— 它是**测试本地**的
+#   helper(生产代码 0 处引用),而它那三种态(软链→稳定 ✓ / 独立副本 ✗ / 软链指别处 ✗)
+#   已被下面 `release_chain_check` 的夹具版**完全覆盖且更严**(另加内容比对 · sha 存在性 ·
+#   sha ∈ main · 读不到 ⇒ unknown)。留着等于**判据在测判据**:测一个只有测试自己在用的函数,
+#   证明不了生产那条路径。⇒ **覆盖面只增不减,少的是重复。**
+
+# ══ 2.4b:真环境读数已迁 doctor §9c + 看门狗每 N 拍自检;这里只留**封闭夹具版** ═══════════
+# 迁走的三条(线上是软链且解析到当前发布版 · 发布物 = 自称 sha 的已提交版 · sha ∈ main)
+#   抓的都是真缺陷,但它们**读真实环境** ⇒ 套件不封闭。⛔ 删掉了事:删掉等于把
+#   「线上跑着旧版/被手改」重新变回无人负责发现。⇒ 换住处 ⛔ 换有没有。
+# 判据本体抽成 `release_chain_check <线上> <稳定> <仓>`(判定与取数分离,#75 家法)⇒ 夹具能造出
+#   各种病态直接喂它,⛔ 只能靠真环境碰运气;doctor/看门狗拿同一个函数去断言真环境。
+RCF="$(mktemp -d)"
+sed -n "/^release_chain_check(){/,/^}/p" "$LANE" > "$RCF/fn.sh"
+# 夹具:一个真 git 仓 + releases/<sha>/ 布局 + 稳定路径 + 线上软链(三层与生产同构)
+( set -e; cd "$RCF"; git init -q .; printf 'x\n' > contrib-statusline.py
+  git add -A; git -c user.email=t@t -c user.name=t commit -qm i; git branch -M main
+  S="$(git rev-parse --short HEAD)"; mkdir -p "rel/$S"
+  git show "$S:contrib-statusline.py" > "rel/$S/contrib-statusline.py"
+  ln -s "$RCF/rel/$S/contrib-statusline.py" "$RCF/stable"; ln -s "$RCF/stable" "$RCF/live"
+  cp "rel/$S/contrib-statusline.py" "$RCF/copy"; ln -s "$RCF/contrib-statusline.py" "$RCF/wrong"
+  printf '%s\n' "$S" > "$RCF/sha" ) >/dev/null 2>&1
+rcc(){ bash -c 'set -uo pipefail; source "$1/fn.sh"; release_chain_check "$2" "$3" "$4"' _ "$RCF" "$1" "$2" "$RCF"; }
+export RCF; export -f rcc
+
+t "2.4b 夹具 阳性:软链→稳定→发布物 ∧ 内容 = 该 sha 已提交版 ∧ sha ∈ main ⇒ ok" bash -c '
+  grep -q "^verdict=ok " <<< "$(rcc "$RCF/live" "$RCF/stable")"'
+t "2.4b 夹具 阴性①:线上是**独立副本**(非软链)⇒ drift(2026-08-29 线上真是这一态)" bash -c '
+  o="$(rcc "$RCF/copy" "$RCF/stable")"; grep -q "^verdict=drift " <<< "$o" && grep -q "不是软链" <<< "$o"'
+t "2.4b 夹具 阴性②:软链但**指别处** ⇒ drift 且点名两边各解析到哪" bash -c '
+  o="$(rcc "$RCF/wrong" "$RCF/stable")"; grep -q "^verdict=drift " <<< "$o" && grep -q "稳定路径解析到" <<< "$o"'
+t "2.4b 夹具 阴性③:发布物**被改一个字节** ⇒ drift(证明内容判据 ⛔ 摆设)" bash -c '
+  printf "# drift\n" >> "$RCF/rel/$(cat "$RCF/sha")/contrib-statusline.py"
+  o="$(rcc "$RCF/live" "$RCF/stable")"
+  git -C "$RCF" show "$(cat "$RCF/sha"):contrib-statusline.py" > "$RCF/rel/$(cat "$RCF/sha")/contrib-statusline.py"
+  grep -q "^verdict=drift " <<< "$o" && grep -q "已提交版不一致" <<< "$o"'
+t "2.4b 夹具 阴性④:线上文件**不存在** ⇒ **unknown ⛔ ok ⛔ drift**(读不到 ⛔ 当健康 ⛔ 当故障)" bash -c '
+  o="$(rcc "$RCF/nope" "$RCF/stable")"; grep -q "^verdict=unknown " <<< "$o"'
+t "2.4b 夹具 阴性⑤:发布路径**不含 sha 段** ⇒ unknown 且点名(⛔ 拿路径乱猜)" bash -c '
+  mkdir -p "$RCF/nosha"; cp "$RCF/contrib-statusline.py" "$RCF/nosha/contrib-statusline.py"
+  ln -sf "$RCF/nosha/contrib-statusline.py" "$RCF/stable2"; ln -sf "$RCF/stable2" "$RCF/live2"
+  o="$(rcc "$RCF/live2" "$RCF/stable2")"; grep -q "^verdict=unknown " <<< "$o" && grep -q "不含 sha 段" <<< "$o"'
+t "2.4b 夹具 阴性⑥:sha 段合法但**仓里不存在该 commit** ⇒ drift 且点名来路不明" bash -c '
+  mkdir -p "$RCF/rel/deadbee"; cp "$RCF/contrib-statusline.py" "$RCF/rel/deadbee/contrib-statusline.py"
+  ln -sf "$RCF/rel/deadbee/contrib-statusline.py" "$RCF/stable3"; ln -sf "$RCF/stable3" "$RCF/live3"
+  o="$(rcc "$RCF/live3" "$RCF/stable3")"; grep -q "^verdict=drift " <<< "$o" && grep -q "在仓里不存在" <<< "$o"'
+rm -rf "$RCF"
+
+# ── 迁移的**另一半**:看门狗必须真跑它。少了这半,闸就从「每次跑套件都查」降级成
+#   「但愿有人跑 doctor」,而**拆掉之后的样子与迁移完成之后的样子完全同形**(套件都绿、
+#   doctor 里都查得到)⇒ 这几条钉的正是那个"同形"里唯一不同的地方。
+t "2.4b 迁移另一半:wd_loop **真调** release_chain_tick(⛔ 只留挂点)且每 N 拍 ⛔ 每拍" bash -c '
+  b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"; [ -n "$b" ] || exit 9
+  grep -qE "qtick % \\$\{WD_RELEASE_CHECK_EVERY:-10\}" <<< "$b" &&
+  grep -qE "^\s*\( release_chain_tick \)" <<< "$b"' _ "$LANE"
+t "2.4b 迁移另一半:调用是**子 shell 隔离**(#44:保命循环里裸调用会被 die 无声带死宿主)" bash -c '
+  b="$(sed -n "/^wd_loop()/,/^}/p" "$1")"; grep -qE "^\s*\( release_chain_tick \)" <<< "$b"' _ "$LANE"
+t "2.4b tick:落盘含 verdict/ts/since/sha/why 且**每拍覆盖** ⛔ 追加(态文件是当刻态)" bash -c '
+  b="$(sed -n "/^release_chain_tick()/,/^}/p" "$1")"; [ -n "$b" ] || exit 9
+  grep -q "> \"\$RELEASE_STATE_FILE\"" <<< "$b" && ! grep -q ">> \"\$RELEASE_STATE_FILE\"" <<< "$b" &&
+  for k in verdict ts since sha why; do grep -q "printf .${k}=" <<< "$b" || exit 1; done' _ "$LANE"
+
+# ── 推送挂点:钉「挂点在 ∧ 当刻不出声」。⛔ 让它退化成"但愿以后有人接线":
+#   挂点被删时这条必须变红,而当刻若已出声也必须变红(那就是写了占位代码)。
+t "2.4b 推送挂点:标记**在**(挂点被删则红)" bash -c '
+  grep -q "RELEASE_CHAIN_EMIT_HOOK" "$1"' _ "$LANE"
+t "2.4b 推送挂点:当刻**不出声**——tick 体内零 board / 零 desktop_notify(片② 才接线)" bash -c '
+  b="$(sed -n "/^release_chain_tick()/,/^}/p" "$1" | grep -v "^[[:space:]]*#")"; [ -n "$b" ] || exit 9
+  ! grep -qE "board |desktop_notify " <<< "$b"' _ "$LANE"
+t "2.4b 推送挂点 阳性对照:同一判据喂一段**真出声**的 tick ⇒ 必红(证明它 ⛔ 恒绿)" bash -c '
+  fake="release_chain_tick(){\n  board \"x\" \"y\"\n}"
+  b="$(printf "%b" "$fake" | sed -n "/^release_chain_tick()/,/^}/p" | grep -v "^[[:space:]]*#")"
+  grep -qE "board |desktop_notify " <<< "$b"'
+
+# ── doctor §9c 三态(喂夹具态文件;⛔ 读真环境)
+t "2.4b doctor §9c:态文件不存在 ⇒ ⚠️ 且明说「本节当刻只有你手跑这一次」⛔ 报绿" bash -c '
+  o="$(LAIXIN_RELEASE_STATE=/nope/nope/x "$1" doctor 2>&1)"
+  seg="$(sed -n "/== 9c/,/^== /p" <<< "$o")"; [ -n "$seg" ] || exit 9
+  grep -q "⚠️" <<< "$seg" && grep -q "看门狗没在跑" <<< "$seg"' _ "$LANE"
+t "2.4b doctor §9c:自检在自动跑(读数新鲜)⇒ ✅ 通过态可见(#50)" bash -c '
+  d="$(mktemp -d)"; printf "ts=%s\nverdict=ok\nsince=1\nsha=abc\nwhy=\n" "$(date +%s)" > "$d/s"
+  o="$(LAIXIN_RELEASE_STATE="$d/s" "$1" doctor 2>&1)"; rm -rf "$d"
+  seg="$(sed -n "/== 9c/,/^== /p" <<< "$o")"
+  grep -q "发布链自检在自动跑" <<< "$seg"' _ "$LANE"
+t "2.4b doctor §9c:自检读数**陈旧** ⇒ ⚠️ 并点名「自动那一半失效时本节退回但愿有人跑 doctor」" bash -c '
+  d="$(mktemp -d)"; printf "ts=%s\nverdict=ok\nsince=1\nsha=abc\nwhy=\n" "$(( $(date +%s) - 99999 ))" > "$d/s"
+  o="$(LAIXIN_RELEASE_STATE="$d/s" "$1" doctor 2>&1)"; rm -rf "$d"
+  seg="$(sed -n "/== 9c/,/^== /p" <<< "$o")"
+  grep -q "自检读数已陈旧" <<< "$seg" && grep -q "但愿有人跑 doctor" <<< "$seg"' _ "$LANE"
+
+# ── statusline 发布链段(夹具态文件,与 seat_line 同族纪律)
+SLR="$(cd "$(dirname "$0")/.." && pwd)/contrib-statusline.py"; SLRIN='{"context_window":{"used_percentage":30}}'
+# 🔴 两处读数必须比一次(本件真验过程当场逼出来的):doctor §9c 的结论是**当场重跑**得来的,
+#   而所有窗状态栏读的是**态文件** —— 两个来源可以不一致,而不一致时谁都不会知道
+#   (doctor 显绿、屏幕显红,各说各的)。这正是本轮修过两次的那一族,⛔ 在这里第三次留下它。
+t "2.4b doctor §9c:当场重跑与态文件**不一致** ⇒ 点名两个数并给两种解释 ⛔ 只信一个" bash -c '
+  d="$(mktemp -d)"
+  printf "ts=%s\nverdict=drift\nsince=1\nsha=deadbee\nwhy=造出来的不一致\n" "$(date +%s)" > "$d/s"
+  o="$(LAIXIN_RELEASE_STATE="$d/s" "$1" doctor 2>&1)"; rm -rf "$d"
+  seg="$(sed -n "/== 9c/,/^== /p" <<< "$o")"
+  grep -q "两处读数\*\*不一致\*\*" <<< "$seg" && grep -q "当场重跑得" <<< "$seg" &&
+  grep -q "态文件是" <<< "$seg" && grep -q "⛔ 只信其中一个" <<< "$seg"' _ "$LANE"
+t "2.4b doctor §9c 阴性:两处**一致**时 ⛔ 报不一致(⛔ 恒噪)" bash -c '
+  d="$(mktemp -d)"
+  printf "ts=%s\nverdict=ok\nsince=1\nsha=abc\nwhy=\n" "$(date +%s)" > "$d/s"
+  o="$(LAIXIN_RELEASE_STATE="$d/s" "$1" doctor 2>&1)"; rm -rf "$d"
+  seg="$(sed -n "/== 9c/,/^== /p" <<< "$o")"
+  ! grep -q "两处读数" <<< "$seg"' _ "$LANE"
+
+t "2.4b statusline:态文件不存在 ⇒ **零输出**(本机没跑流水线,⛔ 加噪)" bash -c '
+  o="$(printf "%s" "$3" | LAIXIN_SEAT_STATE=/nope LAIXIN_RELEASE_STATE=/nope/x python3 "$2" | sed "s/\x1b\[[0-9;]*m//g")"
+  ! grep -q "发布链" <<< "$o"' _ "" "$SLR" "$SLRIN"
+t "2.4b statusline:ok ⇒ 留暗色通过态标记(#50);drift ⇒ 红且带 why" bash -c '
+  d="$(mktemp -d)"
+  printf "ts=%s\nverdict=ok\nsha=abc\nwhy=\n" "$(date +%s)" > "$d/s"
+  a="$(printf "%s" "$3" | LAIXIN_SEAT_STATE=/nope LAIXIN_RELEASE_STATE="$d/s" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g")"
+  printf "ts=%s\nverdict=drift\nsha=abc\nwhy=发布物与 abc 的已提交版不一致\n" "$(date +%s)" > "$d/s"
+  b="$(printf "%s" "$3" | LAIXIN_SEAT_STATE=/nope LAIXIN_RELEASE_STATE="$d/s" python3 "$2")"
+  rm -rf "$d"
+  grep -q "发布链 ✓" <<< "$a" && grep -q "发布链脱节" <<< "$(sed "s/\x1b\[[0-9;]*m//g" <<< "$b")" &&
+  grep -q $'"'"'\033\[1;31m'"'"' <<< "$b"' _ "" "$SLR" "$SLRIN"
+t "2.4b statusline:unknown ⇒ 黄「未判」⛔ 红 ⛔ 绿;陈旧 ⇒ 报秒数;坏文件 ⇒ 报不可解析" bash -c '
+  d="$(mktemp -d)"; r(){ printf "%s" "$3" | LAIXIN_SEAT_STATE=/nope LAIXIN_RELEASE_STATE="$d/s" python3 "$2" | sed "s/\x1b\[[0-9;]*m//g"; }
+  printf "ts=%s\nverdict=unknown\nsha=—\nwhy=线上文件不存在\n" "$(date +%s)" > "$d/s"; u="$(r "" "$2" "$3")"
+  printf "ts=%s\nverdict=ok\nsha=abc\nwhy=\n" "$(( $(date +%s) - 99999 ))" > "$d/s"; o="$(r "" "$2" "$3")"
+  printf "garbage\n" > "$d/s"; g="$(r "" "$2" "$3")"
+  rm -rf "$d"
+  grep -q "发布链 未判" <<< "$u" && grep -qE "发布链 读数陈旧 [0-9]+s" <<< "$o" && grep -q "态文件不可解析" <<< "$g"' _ "" "$SLR" "$SLRIN"
+t "2.4b statusline:发布链段异常 ⛔ 带死整条状态栏(拆掉 import os ⇒ ctx 行仍在)" bash -c '
+  d="$(mktemp -d)"; sed "/^import os$/d" "$2" > "$d/sl.py"
+  o="$(printf "%s" "$3" | python3 "$d/sl.py" | sed "s/\x1b\[[0-9;]*m//g")"; rm -rf "$d"
+  grep -q "30%" <<< "$o"' _ "" "$SLR" "$SLRIN"
+
+
 # ── M1 升级提醒的销账判据(2026-08-22 监测中实撞)──────────────────────────────────
 # 13:09 事件总线报「交付 V0.2包①… 投递 45 分钟无认领」,而**该片 12:58 就已 ff-only 合入 main**、
 # 12:54 验收回执落盘。两处叠加:
@@ -4633,6 +4712,11 @@ t "cmd_ctx 传 CTX_ABS_MIN 并分三态报(硬阈/准备区/提示态待校准);
 rm -rf "$TCX"
 
 # ── 套件零副作用:真实派工权锁(开跑时在 ⇒ 跑完仍在;内容允许变,在班 dispatch/看门狗会续期)──
+# 🔴 **2.4b 有意保留的例外,⛔ 后人当漏网补掉**:2.4b 把「读真实环境」的断言迁去了 doctor/看门狗
+#   (理由=套件必须封闭)。**本条不迁**,因为它是**元检查**:它验的是「**套件自己有没有弄脏真环境**」,
+#   而它的全部价值恰恰在于**读的是真的** —— 换夹具就等于让它去检查一把假锁,永远通过。
+#   ⇒ 判准:被测对象是"外部世界"的断言归 doctor;被测对象是"本套件自身行为"的断言留在这里。
+#   ⚠️ 它带一个合法的 ℹ️ 分支(开跑时无真锁 ⇒ 无对象不计)⇒ **本套件的「零跳过」不是无条件的**。
 if [ -n "$REAL_LOCK_BEFORE" ]; then
   t "套件零副作用:真实派工权锁 ~/.laixin-dispatch.lock 未被本套件删除(2026-08-22 halt fixture 实撞)" bash -c '[ -f "$HOME/.laixin-dispatch.lock" ]'
 else
@@ -6715,10 +6799,11 @@ s=open(sys.argv[1],encoding="utf-8").read()
 g=re.search(r"^SEAT_GATE_HARD=\"\$\{LAIXIN_SEAT_GATE_HARD:-(\d+)\}\"",s,re.M); assert g,"找不到 SEAT_GATE_HARD"
 hard=set(re.findall(r"pct>=(\d+): print\(\"\N{LARGE RED CIRCLE}", s)); assert len(hard)==1, hard
 assert g.group(1)==hard.pop(), "闸门线漂移:SEAT_GATE_HARD 与 cmd_ctx 不一致"
-sl=os.path.expanduser("~/.claude-official/statusline.py")
+# 2.4b:同上,改读**仓内**单点源 ⇒ 天然封闭
+sl=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1]))),"contrib-statusline.py")
 if os.path.exists(sl):
     m=re.search(r"GATE_HARD\s*=\s*(\d+)",open(sl,encoding="utf-8").read())
-    assert m and m.group(1)==g.group(1), "闸门线漂移:SEAT_GATE_HARD 与线上 statusline.py 不一致"
+    assert m and m.group(1)==g.group(1), "闸门线漂移:SEAT_GATE_HARD 与仓内 contrib-statusline.py 不一致"
 ' "$LANE"
 
 # ── wd_loop 挂点:位置本身就是判据(挂错=机制在该生效的时候不生效)────────────────────

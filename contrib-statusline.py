@@ -85,6 +85,34 @@ def seat_line():
     mism = "  ⚠️ 三路不一致" if (kv.get("mismatch") or "").strip() else ""
     return f"{RED}派工席:{state} {t}{R}{RED}{mism}{R}"
 
+
+# ── 2.4b:发布链一致性对**所有窗**可见 ─────────────────────────────────────────────
+# 与 seat_line 同族、同纪律:文件不存在 ⇒ 零输出(本机没跑流水线,⛔ 加噪);读数陈旧 ⇒ 显式报;
+#   ok ⇒ 留暗色通过态标记(#50:「没有报警」与「没有这项检查」不得同形);drift ⇒ 红。
+# 🔴 它存在的理由:2.4b 把 5 条真环境断言从 tests 迁进 doctor/看门狗,而 doctor 要人去跑。
+#   状态栏是**唯一不需要谁想起来**的可见面 —— 少了它,这道闸就只剩「但愿有人跑 doctor」。
+def release_line():
+    path = os.environ.get("LAIXIN_RELEASE_STATE") or os.path.expanduser(
+        "~/.laixin-events.d/release-chain.state")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            kv = dict(l.rstrip("\n").split("=", 1) for l in fh if "=" in l)
+    except (OSError, ValueError):
+        return None
+    raw_ts = (kv.get("ts") or "").strip()
+    if not raw_ts.isdigit():
+        return f"{YELLOW}发布链 态文件不可解析(缺 ts;⛔ 当健康){R}"
+    age = int(time.time()) - int(raw_ts)
+    # 陈旧线按「每 N 拍一次」放宽:默认 60s×10×3
+    if age > int(os.environ.get("LAIXIN_RELEASE_STALE_SECS") or 1800):
+        return f"{YELLOW}发布链 读数陈旧 {age}s(看门狗可能没在跑){R}"
+    v = kv.get("verdict") or "?"
+    if v == "ok":
+        return f"{DIM}发布链 ✓{R}"
+    if v == "drift":
+        return f"{RED}🔴 发布链脱节:{(kv.get('why') or '').strip()[:60]}{R}"
+    return f"{YELLOW}发布链 未判:{(kv.get('why') or '').strip()[:50]}{R}"
+
 def main():
     try:
         d = json.load(sys.stdin)
@@ -158,6 +186,13 @@ def main():
         _seat = f"{YELLOW}席位态:读取异常({type(exc).__name__}){R}"
     if _seat:
         parts.append(_seat)
+
+    try:
+        _rel = release_line()
+    except Exception as exc:          # 同 seat_line:代码级异常显形 ⛔ 静默 ⛔ 带死整条状态栏
+        _rel = f"{YELLOW}发布链:读取异常({type(exc).__name__}){R}"
+    if _rel:
+        parts.append(_rel)
 
     cost = (d.get("cost") or {}).get("total_cost_usd")
     if isinstance(cost, (int, float)) and cost > 0:

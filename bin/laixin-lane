@@ -2769,6 +2769,44 @@ cmd_doctor() {
     fi
   fi
 
+  echo "== 9c. 发布链一致性(2.4b:真环境读数归体检 ⛔ 归套件;⛔ 「读不到」当健康) =="
+  # 🔴 这一节是从 tests/run.sh 迁来的 5 条真环境断言的**新住处**。迁移的另一半是看门狗每
+  #   WD_RELEASE_CHECK_EVERY 拍自动跑它 —— 少了那一半,这道闸就从「每次跑套件都查」
+  #   降级成「但愿有人跑 doctor」,而两者在读数面上完全同形。
+  local _rcv _rcvd _rcw _rcs
+  _rcv="$(release_chain_check 2>/dev/null || true)"
+  _rcvd="$(sed -E 's/.*(^| )verdict=([^ ]*).*/\2/' <<< "$_rcv")"
+  _rcs="$(sed -E 's/.*(^| )sha=([^ ]*).*/\2/' <<< "$_rcv")"
+  _rcw="${_rcv#*why=}"
+  case "$_rcvd" in
+    ok)      ok "发布链一致(发布版 ${_rcs};线上 statusline 是软链→稳定路径→该 sha 的发布物,内容 = 已提交版,且 sha ∈ main)" ;;
+    drift)   bad "🔴 发布链**脱节**:${_rcw}——线上跑的与仓里的不是同一份。修:laixin-lane release(先确认发布单元干净)" ;;
+    *)       wrn "发布链**未判**:${_rcw:-读不出}——⛔ 当健康(读不到只说明这一次没测到)" ;;
+  esac
+  # 看门狗那一半在不在跑:态文件的读数龄自己会说话
+  if [ -f "${RELEASE_STATE_FILE:-}" ]; then
+    local _rts _rage; _rts="$(sed -n 's/^ts=//p' "$RELEASE_STATE_FILE" | head -1)"
+    if [[ "$_rts" =~ ^[0-9]+$ ]]; then
+      _rage=$(( $(date +%s) - _rts ))
+      if [ "$_rage" -gt $(( ${WD_INTERVAL:-60} * ${WD_RELEASE_CHECK_EVERY:-10} * 3 )) ]; then
+        wrn "发布链自检读数已陈旧 ${_rage}s(看门狗可能没在跑)——**自动那一半失效时,这一节就退回「但愿有人跑 doctor」**"
+      else
+        ok "发布链自检在自动跑(读数龄 ${_rage}s;每 ${WD_RELEASE_CHECK_EVERY:-10} 拍一次)"
+        # 🔴 **两处读数必须比一次**:本节的结论是**当场重跑**得来的,而所有窗状态栏读的是**态文件**
+        #   —— 两个来源可以不一致,而不一致时**谁都不会知道**(doctor 显绿、屏幕显红,各说各的)。
+        #   这正是本轮修过两次的那一族(A 路 vs C 路 · 线上发布物 vs 仓内),⛔ 在这里第三次留下它。
+        #   不一致的合法解释有两个:①刚发布/刚修完,自动那一半还没跑到下一拍;②它其实没在跑。
+        #   ⇒ 只报事实与两种解释,⛔ 替读者选一个。
+        local _rcvf; _rcvf="$(sed -n 's/^verdict=//p' "$RELEASE_STATE_FILE" | head -1)"
+        if [ -n "$_rcvf" ] && [ "$_rcvf" != "$_rcvd" ]; then
+          wrn "发布链两处读数**不一致**:本节当场重跑得「${_rcvd}」,而自动那一半的态文件是「${_rcvf}」(读数龄 ${_rage}s)——要么刚变还没跑到下一拍,要么它没在跑;⛔ 只信其中一个"
+        fi
+      fi
+    else wrn "发布链自检态文件损坏(缺 ts)⛔ 当健康"; fi
+  else
+    wrn "发布链自检态文件未生成——看门狗没在跑 或 发布版早于 2.4b;**本节当刻只有你手跑这一次**"
+  fi
+
   echo
   echo "体检结果:$fail 个错误 / $warn 个警告"
   [ "$fail" -eq 0 ] && echo "可以开工。" || echo "先修错误再开工。"
@@ -5337,6 +5375,83 @@ ctx_sample_mark(){  # <看板行> → stdout=handoff|takeover|none(dispatch 交�
   if grep -qE '\| 派工窗口 \| ?[^|]{0,10}(收班|交班|换班) dispatch 第[一二三四五六七八九十]+任' <<< "$1"; then echo handoff
   elif grep -qE '\| 派工窗口 \| ?[^|]{0,10}(接管|接班) dispatch 第[一二三四五六七八九十]+任' <<< "$1"; then echo takeover
   else echo none; fi
+  return 0
+}
+
+# ══ 2.4b 发布链一致性:真环境读数归 doctor/看门狗,tests 只留夹具 ═══════════════════
+#
+# 由来:2.4a 与片① 往 tests/run.sh 里加了 5 条**读真实环境**的断言(线上 statusline 软链 ·
+#   发布物内容 · 发布版 sha 属不属 main · 闸门线三处一致)。它们抓的都是真缺陷,但**放错了地方**:
+#   套件必须封闭(首行自律:「会因环境忽红忽绿的测试比没有测试更糟」),而真环境读数天然不封闭。
+# ⇒ 迁到**运行时体检**:doctor 有 ok/wrn/bad 三态显形,看门狗每 N 拍自动跑。
+#
+# 🔴 **迁移的两半必须同批 ⛔ 只做前半**:光把断言从 tests 拿掉,套件里就**再没有任何一处**会在
+#   「线上发布版与仓库脱节」时变红 —— 闸从「每次跑套件都查」降级成「但愿有人跑 doctor」。
+#   而**拆掉之后的样子与迁移完成之后的样子完全同形**(套件都绿、doctor 里都查得到)。
+#   ⇒ 「看门狗每 N 拍自检」不是附加项,是**保住这道闸**的那一半。
+#
+# ⚠️ 判定与取数**分离**(#75 家法):本函数三个路径全部可传参 ⇒ 夹具能造出各种病态直接喂它,
+#   ⛔ 只能靠真环境碰运气。它自己**只读不写**,落盘与出声都在调用方。
+RELEASE_STATE_FILE="${LAIXIN_RELEASE_STATE:-$EV_DIR/release-chain.state}"
+WD_RELEASE_CHECK_EVERY="${LAIXIN_WD_RELEASE_CHECK_EVERY:-10}"   # 每 N 拍一次:发布链只在 release 那一刻变
+                                                                #   ⛔ 每拍(白烧 git 调用);与额度哨兵 WD_QUOTA_EVERY 同族形状
+
+release_chain_check(){  # [线上文件] [稳定路径] [仓库] → stdout "verdict=<ok|drift|unknown> sha=<x|—> why=<...>"
+  # env 覆盖(与本仓 LAIXIN_CC_SOCKS / LAIXIN_SEAT_STATE 同族的夹具钩子):**只改「读哪份文件」**,
+  #   调用链一字不变(wd_loop → release_chain_tick → release_chain_check 逐字同一条)⇒ 真验时
+  #   能在**真实调用路径**上对一份被改过的副本判定,⛔ 去动每个窗口正在跑的那份发布件。
+  # 🔴 为什么 ⛔ 动生产件:还原失败与还原成功**在当刻长得一模一样**,而残留会让这道闸**永久报红** ——
+  #   那恰恰是它唯一会红的场景 ⇒ 真红与人造的红再也分不开,等于用一次可能永久污染信号源的操作
+  #   去验证信号源本身(pingxia-ec 2026-08-29 叫停,理由采纳)。
+  local live="${1:-${LAIXIN_RELEASE_LIVE:-$HOME/.claude-official/statusline.py}}"
+  local stable="${2:-${LAIXIN_RELEASE_STABLE:-$HOME/.local/bin/laixin-statusline}}"
+  local repo="${3:-${LAIXIN_RELEASE_REPO:-$HOME/Developer/laixin-pipeline}}"
+  local a b sha
+  # ① 线上那份必须是**软链**且与稳定路径解析到同一处(单点源;⛔ 仓外独立副本——2026-08-29 实撞:
+  #    两份同时缺 import os 而常量完全一致 ⇒ 只比常量的绊线全绿,文件级不同步抓不住)
+  if [ ! -e "$live" ]; then printf 'verdict=unknown sha=— why=线上文件不存在:%s\n' "$live"; return 0; fi
+  if [ ! -L "$live" ]; then printf 'verdict=drift sha=— why=线上 %s 不是软链(仓外独立副本?)\n' "$live"; return 0; fi
+  a="$(readlink -f "$live" 2>/dev/null)"; b="$(readlink -f "$stable" 2>/dev/null)"
+  if [ -z "$a" ] || [ -z "$b" ]; then printf 'verdict=unknown sha=— why=软链解析不出(live=%s stable=%s)\n' "${a:-空}" "${b:-空}"; return 0; fi
+  if [ "$a" != "$b" ]; then printf 'verdict=drift sha=— why=线上软链解析到 %s,而稳定路径解析到 %s\n' "$a" "$b"; return 0; fi
+  # ② 解析结果里必须有 sha 段,且该 sha 在仓里存在
+  sha="$(basename "$(dirname "$a")")"
+  case "$sha" in *[!0-9a-f]*|"") printf 'verdict=unknown sha=— why=发布路径不含 sha 段:%s\n' "$a"; return 0 ;; esac
+  if ! git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+    printf 'verdict=drift sha=%s why=发布版 sha 在仓里不存在(发布目录来路不明?)\n' "$sha"; return 0; fi
+  # ③ 发布物 == 它**自称的那个 sha** 的已提交版(抓发布物被手改/半写)
+  #    ⛔ 拿 HEAD 比:HEAD 在任何开发分支上都是那条分支的版本 ⇒ 会把「分支有未发布改动」(正常)
+  #    与「发布版与仓库脱节」(真缺陷)判成同一件事(2026-08-29 实撞,本条即由那次改判而来)
+  if ! git -C "$repo" show "${sha}:contrib-statusline.py" 2>/dev/null | diff -q - "$a" >/dev/null 2>&1; then
+    printf 'verdict=drift sha=%s why=发布物与 %s 的已提交版不一致(被手改/半写?)\n' "$sha" "$sha"; return 0; fi
+  # ④ 该 sha 必须在 main 的历史里(⛔ 线上跑着某条开发分支的版本)
+  if ! git -C "$repo" merge-base --is-ancestor "$sha" main 2>/dev/null; then
+    printf 'verdict=drift sha=%s why=发布版 sha 不在 main 历史里(线上跑着开发分支的版本?)\n' "$sha"; return 0; fi
+  printf 'verdict=ok sha=%s why=\n' "$sha"
+  return 0
+}
+
+release_chain_tick(){  # 看门狗每 N 拍一次;恒返 0。只落盘 ⛔ 出声(出声半边随片② 接线,见下方挂点)
+  local v verdict why sha now prev since
+  v="$(release_chain_check 2>/dev/null || true)"
+  verdict="$(sed -E 's/.*(^| )verdict=([^ ]*).*/\2/' <<< "$v")"
+  sha="$(sed -E 's/.*(^| )sha=([^ ]*).*/\2/' <<< "$v")"
+  why="${v#*why=}"
+  now="$(date +%s)"
+  prev=""; [ -f "$RELEASE_STATE_FILE" ] && prev="$(sed -n 's/^verdict=//p' "$RELEASE_STATE_FILE" | head -1)"
+  since=""; [ -f "$RELEASE_STATE_FILE" ] && since="$(sed -n 's/^since=//p' "$RELEASE_STATE_FILE" | head -1)"
+  [[ "$since" =~ ^[0-9]+$ ]] && [ "$verdict" = "$prev" ] || since="$now"
+  mkdir -p "$(dirname "$RELEASE_STATE_FILE")" 2>/dev/null || true
+  { printf 'ts=%s\n' "$now"; printf 'verdict=%s\n' "${verdict:-unknown}"
+    printf 'since=%s\n' "$since"; printf 'sha=%s\n' "${sha:-—}"; printf 'why=%s\n' "$why"
+  } > "$RELEASE_STATE_FILE" 2>/dev/null || true
+  [ "$verdict" != "$prev" ] && echo "[$(date '+%F %T')] 发布链自检 ${prev:-—} → ${verdict}(sha ${sha:-—}${why:+ · $why})" >> "$WD_LOG" || true
+  # ── 🔴 片② 出声挂点(2.4b 只留挂点 ⛔ 写占位代码)────────────────────────────────
+  #   片② 落 board/桌面通知/转移+滞留那套骨架之后,在**这一行**接线:非 ok 时按状态转移出声、
+  #   并按滞留 N 拍复述。⛔ 现在就写一段"将来会出声"的代码——那段代码在片② 之前不会出声,
+  #   而「查过了没问题」与「查了但说不出口」在告警面上完全同形。
+  #   ⚠️ 当刻的可见面是 doctor §9c 与所有窗的状态栏(已足够被人看见),⛔ 无声。
+  : # RELEASE_CHAIN_EMIT_HOOK(片②接线点;绊线钉「挂点在 ∧ 当刻不出声」)
   return 0
 }
 usage_total_now(){  # → stdout=仪表盘 current.total(机器总 token,含所有窗口);读不到空
@@ -8489,6 +8604,12 @@ wd_loop() {
     #    子 shell 隔离(#44 纪律):哨兵任何失败都不得带死保命循环。
     qtick=$((qtick+1))
     if [ $(( qtick % ${WD_QUOTA_EVERY:-5} )) -eq 0 ]; then ( quota_sentinel_tick ) >/dev/null 2>&1 || true; fi
+    # —— 0.65 发布链自检(2.4b):每 WD_RELEASE_CHECK_EVERY 拍一次 ⛔ 每拍 —— 发布链只在 release
+    #    那一刻变,不是分钟级会漂的量;每拍跑等于白烧 git 调用。与上面额度哨兵同族形状。
+    #    #44 纪律:子 shell 隔离,任何失败都不得带死保命循环。
+    if [ $(( qtick % ${WD_RELEASE_CHECK_EVERY:-10} )) -eq 0 ]; then
+      ( release_chain_tick ) >/dev/null 2>&1 || echo "[$(date '+%F %T')] ⚠️ release_chain_tick 异常(循环存活,下拍重试)" >> "$WD_LOG"
+    fi
     # —— 0.7 上下文水位巡检:**已停用**(2026-08-22 当天上线当天撤)——————————————
     # 🔴 撤因:整套机制建立在一个**错误前提**上——「上下文满了必须换人」。那是 claude 席位的
     #   模型,而本流水线的 lane-a / lane-b(以及 08-22 10:05~16:43 间的 dispatch)是 **codex**,codex 自带翻页:

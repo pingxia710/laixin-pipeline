@@ -5709,14 +5709,88 @@ check_rival_dispatch() {
   return 1
 }
 
+dispatch_drain_table_items(){  # 当前「进行中」表的片名；1=空表，2=结构不可判，⛔ 把读不到当成空
+  [ -r "$TABLE" ] || return 2
+  awk '
+    /^## / { if (active && header) exit; active=($0 ~ /^## .*进行中/); next }
+    active && /^\| *片 *\| *轨道 *\| *分支 \/ worktree *\| *状态 *\| *发车契约 *\|/ { header=1; next }
+    active && header && /^\| *---/ { next }
+    active && header && /^\|/ {
+      n=split($0,c,/ \| /); if (n < 5) next
+      name=c[1]; sub(/^\|[ ]*/,"",name); gsub(/[*~\[\]]/,"",name); sub(/[（(].*$/, "", name)
+      sub(/^ */, "", name); sub(/ *$/, "", name)
+      if (name != "" && name != "片") print name
+    }
+    END { if (!header) exit 2 }
+  ' "$TABLE" 2>/dev/null
+}
+
+dispatch_drain_snapshot_path(){  # <dispatch-drain-*> → 本次交接的不可变在手快照
+  printf '%s/dispatch-drain/%s.snapshot\n' "$EV_DIR" "$1"
+}
+
+dispatch_drain_snapshot_write(){  # <dispatch-drain-*> → stdout=快照路径；任何一面不可判即拒交接
+  local drain="$1" state_dir path tmp table_tmp v_tmp m_tmp tool_tmp lower upper item rc
+  state_dir="$EV_DIR/dispatch-drain"
+  path="$(dispatch_drain_snapshot_path "$drain")"
+  mkdir -p "$state_dir" 2>/dev/null || { echo "排空窗在手快照目录不可写:$state_dir" >&2; return 1; }
+  tmp="$state_dir/.${drain}.snapshot.$$"
+  table_tmp="$state_dir/.${drain}.table.$$"
+  v_tmp="$state_dir/.${drain}.vlist.$$"
+  m_tmp="$state_dir/.${drain}.mlist.$$"
+  tool_tmp="$state_dir/.${drain}.toollist.$$"
+  : > "$tmp.lanes"
+  if ! dispatch_drain_table_items > "$table_tmp"; then
+    echo "排空窗在手快照拒绝:执行总表「进行中」节结构不可判(必须有标准 片/轨道/分支 / worktree/状态/发车契约 表头)" >&2
+    rm -f "$table_tmp"
+    return 1
+  fi
+  for upper in A B C; do
+    lower="$(printf '%s' "$upper" | tr 'ABC' 'abc')"
+    if lane_busy "$lower"; then
+      item="$(ev_lane_assigned "$upper")"; rc=$?
+      if [ "$rc" -ne 0 ] || [ -z "$item" ]; then
+        echo "排空窗在手快照拒绝:lane-${lower} 正在占用但执行总表无法给出该轨片名" >&2
+        rm -f "$table_tmp"
+        return 1
+      fi
+      if ! grep -F -x -- "$item" "$table_tmp" >/dev/null 2>&1; then
+        echo "排空窗在手快照拒绝:lane-${lower} 在手「${item}」未出现在执行总表「进行中」节" >&2
+        rm -f "$table_tmp"
+        return 1
+      fi
+    else
+      item='-'
+    fi
+    printf '%s\t%s\n' "$upper" "$item" >> "$tmp.lanes"
+  done
+  cmd_vlist > "$v_tmp" 2>&1 || { echo "排空窗在手快照拒绝:验收窗清单不可读" >&2; rm -f "$tmp.lanes" "$table_tmp" "$v_tmp"; return 1; }
+  cmd_mlist > "$m_tmp" 2>&1 || { echo "排空窗在手快照拒绝:机动窗清单不可读" >&2; rm -f "$tmp.lanes" "$table_tmp" "$v_tmp" "$m_tmp"; return 1; }
+  tool_running > "$tool_tmp" 2>&1 || { echo "排空窗在手快照拒绝:工具窗清单不可读" >&2; rm -f "$tmp.lanes" "$table_tmp" "$v_tmp" "$m_tmp" "$tool_tmp"; return 1; }
+  {
+    printf 'version\t1\n'
+    printf 'created_at\t%s\n' "$(date '+%F %T %Z')"
+    while IFS=$'\t' read -r upper item; do printf 'lane\t%s\t%s\n' "$upper" "$item"; done < "$tmp.lanes"
+    while IFS= read -r item; do [ -n "$item" ] && printf 'table\t%s\n' "$item"; done < "$table_tmp"
+    awk '$1 ~ /^verify-/ { print "verify\t" $1 }' "$v_tmp"
+    awk '$1 ~ /^m-/ { print "m\t" $1 }' "$m_tmp"
+    awk '$1 ~ /^tool-/ { print "tool\t" $1 }' "$tool_tmp"
+  } > "$tmp" || { rm -f "$tmp" "$tmp.lanes" "$table_tmp" "$v_tmp" "$m_tmp" "$tool_tmp"; return 1; }
+  mv "$tmp" "$path" || { rm -f "$tmp" "$tmp.lanes" "$table_tmp" "$v_tmp" "$m_tmp" "$tool_tmp"; return 1; }
+  rm -f "$tmp.lanes" "$table_tmp" "$v_tmp" "$m_tmp" "$tool_tmp"
+  printf '%s\n' "$path"
+}
+
 cmd_dispatch_handover() {  # [目录]：旧窗改排空名并保留，继任接管 dispatch 与全部新活
-  local dir="${1:-$HOME}" drain existing rc=0 out=""
+  local dir="${1:-$HOME}" drain existing snapshot rc=0 out=""
   dispatch_alive || die "起交接需要当前 dispatch 在班；当前不在，直接 laixin-lane dispatch 起继任"
   existing="$(dispatch_drain_window)"
   [ -z "$existing" ] || die "已有排空窗 ${existing}；交接期只允许前任+继任两窗。先让它盯完并运行 dispatch-drain-down --complete"
   drain="dispatch-drain-$(date '+%Y%m%d-%H%M%S')"
+  snapshot="$(dispatch_drain_snapshot_write "$drain")" \
+    || die "起交接拒绝:在手快照未形成；未改窗口、未起继任(先修上方快照判据)"
   ev_deliver "消息" "【派工交接启动】本窗即将改名 ${drain} 并进入排空态；继任 dispatch 同步起窗。
-只盯完起交接此刻已在手的活，⛔ 接新活/做新安排；先把在手清单写进交接包并逐项标『本窗盯完』。交付/回执会以【交接期旁路】抄送；非本窗在手件忽略。新活派工权归继任，send 收尾旧活不会夺权。在手全部闭环且交班后优化轮完成后运行：laixin-lane dispatch-drain-down --complete。跨通道时以知识库/事件为准，⛔ 等 SendMessage。继任入口=${CLAUDE_LAUNCHER}。"
+只盯完起交接此刻已机器快照的在手项(${snapshot})，⛔ 接新活/做新安排；交付/回执会以【交接期旁路】抄送；非本窗在手件忽略。新活派工权归继任，send 收尾旧活不会夺权。全部快照项闭环后，写一句交班后优化轮完成依据，再运行：LAIXIN_DRAIN_MANUAL_REASON='<当轮依据>' laixin-lane dispatch-drain-down --complete。跨通道时以知识库/事件为准，⛔ 等 SendMessage。继任入口=${CLAUDE_LAUNCHER}。"
   tmux rename-window -t "=$SESSION:$DISPATCH_WIN" "$drain" \
     || die "旧 dispatch 改名 $drain 失败；零窗口变更，未起继任"
   out="$(cmd_dispatch --fresh --dir "$dir" 2>&1)" || rc=$?
@@ -5724,10 +5798,11 @@ cmd_dispatch_handover() {  # [目录]：旧窗改排空名并保留，继任接�
     win_exists "$DISPATCH_WIN" && tmux kill-window -t "=$SESSION:$DISPATCH_WIN" 2>/dev/null || true
     if win_exists "$drain"; then tmux rename-window -t "=$SESSION:$drain" "$DISPATCH_WIN" 2>/dev/null || true; fi
     lock_renew "$DISPATCH_WIN"
+    rm -f "$snapshot"
     board "$(caller_src)" "⛔ 派工交接起继任失败(rc=$rc)，已回滚旧窗为 dispatch；未进入双窗态"
     die "派工交接起继任失败，旧窗已恢复为 dispatch：$(tail -1 <<< "$out")"
   fi
-  board "$(caller_src)" "派工交接双窗已起：继任=$DISPATCH_WIN(新活/新安排)；前任=$drain(只排空起交接时在手，完成后自收)"
+  board "$(caller_src)" "派工交接双窗已起：继任=$DISPATCH_WIN(新活/新安排)；前任=$drain(只排空起交接时快照项，完成后自收；快照=$snapshot)"
   printf '%s\n' "$out"
   echo "✅ 交接期已进入双窗态：$DISPATCH_WIN 接新活；$drain 盯完旧活后 dispatch-drain-down --complete"
   return 0
@@ -5853,14 +5928,60 @@ cmd_dispatch() {
   return 0
 }
 
-cmd_dispatch_drain_down() {  # 只能由排空窗自己在“在手全完+优化轮完成”后调用
-  local me; me="$(whoami_window)"
+cmd_dispatch_drain_down() {  # 只能由排空窗在快照项已核尽、人工确认优化轮后调用
+  local me snapshot table_now kind key value current rc total=0 unresolved_n=0 unresolved="" manual
+  me="$(whoami_window)"
   [ "${1:-}" = "--complete" ] && [ $# -eq 1 ] \
     || die "用法:laixin-lane dispatch-drain-down --complete（仅在在手全盯完 + 交班后优化轮完成后）"
   case "$me" in dispatch-drain-*) ;; *) die "本命令只允许 dispatch-drain-* 排空窗自收；当前=$me" ;; esac
   dispatch_alive || die "继任 dispatch 不在班，拒绝关闭最后一个派工上下文；先等看门狗恢复并核 whoholds"
-  board "$(caller_src)" "派工排空窗 $me 收工：已确认在手全盯完 + 交班后优化轮完成；继任 dispatch 继续接新活"
-  tmux kill-window -t "$TMUX_PANE"
+  snapshot="$(dispatch_drain_snapshot_path "$me")"
+  [ -r "$snapshot" ] || die "拒绝退窗:起交接当刻的在手快照不存在:${snapshot}；不能把退窗时现状冒充交接时在手"
+  table_now="${snapshot}.now.$$"
+  if ! dispatch_drain_table_items > "$table_now"; then
+    rm -f "$table_now"
+    die "拒绝退窗:当前执行总表「进行中」节结构不可判，不能把读不到当成零在手"
+  fi
+  while IFS=$'\t' read -r kind key value; do
+    case "$kind" in
+      version) [ "$key" = "1" ] || { rm -f "$table_now"; die "拒绝退窗:在手快照版本不可判($key)"; } ;;
+      created_at) : ;;
+      lane)
+        [ "$value" = "-" ] && continue
+        current="$(ev_lane_assigned "$key")"; rc=$?
+        if lane_busy "$(printf '%s' "$key" | tr 'ABC' 'abc')" && [ "$rc" -eq 0 ] && [ "$current" = "$value" ]; then
+          unresolved="${unresolved}\n- 轨 ${key} 的「${value}」仍在跑"
+        fi
+        ;;
+      table)
+        total=$((total+1))
+        if grep -F -x -- "$key" "$table_now" >/dev/null 2>&1; then
+          unresolved="${unresolved}\n- 「${key}」仍在执行总表「进行中」节"
+          unresolved_n=$((unresolved_n+1))
+        fi
+        ;;
+      verify|m|tool)
+        total=$((total+1))
+        if win_exists "$key"; then
+          unresolved="${unresolved}\n- ${key} 仍在跑(${kind} 窗)"
+          unresolved_n=$((unresolved_n+1))
+        fi
+        ;;
+      *) rm -f "$table_now"; die "拒绝退窗:在手快照记录类型不可判($kind)" ;;
+    esac
+  done < "$snapshot"
+  rm -f "$table_now"
+  if [ "$unresolved_n" -gt 0 ]; then
+    die "拒绝退窗:起交接时在手项尚未终态(${unresolved_n}/${total})：${unresolved}\n先逐项处理；本窗只盯快照项，继任继续接新活"
+  fi
+  manual="${LAIXIN_DRAIN_MANUAL_REASON:-}"
+  case "$manual" in
+    ''|*$'\n'*|*$'\r'*|*'|'*) die "拒绝退窗:交班后优化轮属机器不可判项，人工确认缺依据；须以 LAIXIN_DRAIN_MANUAL_REASON 写一条当轮依据(不可为空/换行/竖线)" ;;
+  esac
+  tmux kill-window -t "$TMUX_PANE" || die "排空窗 $me 回收失败；快照仍保留:$snapshot"
+  board "$(caller_src)" "派工排空窗 $me 收工：已核($((total-unresolved_n))/${total} 项)；人工确认:交班后优化轮完成(依据:${manual})；继任 dispatch 继续接新活"
+  rm -f "$snapshot"
+  echo "✅ 排空窗 $me 可退：已核($((total-unresolved_n))/${total} 项)；交班后优化轮为人工确认，依据已写入看板"
 }
 
 # ── 交班形态判据(2026-08-22 实撞后立)──────────────────────────────────────────────

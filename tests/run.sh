@@ -4166,6 +4166,7 @@ t "dispatch 交接:成功路径先通知前任、改排空名，再起继任；�
   T="$(mktemp -d)"; sed -n "/^cmd_dispatch_handover()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
   DISPATCH_WIN=dispatch; SESSION=x; CLAUDE_LAUNCHER=claude; HOME="$T"; TRACE="$T/trace"
   dispatch_alive(){ return 0; }; dispatch_drain_window(){ return 0; }; ev_deliver(){ echo "event:$*" >> "$TRACE"; }
+  dispatch_drain_snapshot_write(){ echo "$T/snapshot"; }
   tmux(){ echo "tmux:$*" >> "$TRACE"; return 0; }; cmd_dispatch(){ echo "dispatch:$*" >> "$TRACE"; echo "继任已起"; }
   board(){ echo "board:$*" >> "$TRACE"; }; caller_src(){ echo test; }; die(){ echo "$*" >&2; exit 1; }
   out="$(cmd_dispatch_handover /tmp/work)" || exit 1
@@ -4176,11 +4177,77 @@ t "dispatch 交接:继任起窗失败必须杀半窗、恢复旧 dispatch 与派
   T="$(mktemp -d)"; sed -n "/^cmd_dispatch_handover()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
   DISPATCH_WIN=dispatch; SESSION=x; CLAUDE_LAUNCHER=claude; HOME="$T"; TRACE="$T/trace"
   dispatch_alive(){ return 0; }; dispatch_drain_window(){ return 0; }; ev_deliver(){ :; }
+  dispatch_drain_snapshot_write(){ echo "$T/snapshot"; }
   tmux(){ echo "tmux:$*" >> "$TRACE"; return 0; }; cmd_dispatch(){ return 9; }; win_exists(){ return 0; }
   lock_renew(){ echo "lock:$*" >> "$TRACE"; }; board(){ echo "board:$*" >> "$TRACE"; }; caller_src(){ echo test; }; die(){ echo "$*" >&2; exit 1; }
   ( cmd_dispatch_handover /tmp/work ) >/dev/null 2>&1; rc=$?
   [ "$rc" -ne 0 ] && grep -q "kill-window.*:dispatch" "$TRACE" && grep -q "rename-window.*dispatch-drain-.* dispatch" "$TRACE" && grep -q "lock:dispatch" "$TRACE"
   ok=$?; rm -rf "$T"; exit $ok' _ "$LANE"
+t "排空窗交接:快照先于改窗；快照失败时零 tmux 副作用" bash -c '
+  T="$(mktemp -d)"; sed -n "/^cmd_dispatch_handover()/,/^}/p" "$1" > "$T/f.sh"; source "$T/f.sh"
+  DISPATCH_WIN=dispatch; SESSION=x; CLAUDE_LAUNCHER=claude; TRACE="$T/trace"
+  dispatch_alive(){ return 0; }; dispatch_drain_window(){ return 0; }; dispatch_drain_snapshot_write(){ return 1; }
+  tmux(){ echo "tmux:$*" >> "$TRACE"; return 0; }; die(){ echo "$*" >&2; exit 1; }
+  out="$(cmd_dispatch_handover /tmp/work 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && grep -q "在手快照未形成" <<< "$out" && [ ! -e "$TRACE" ]
+  ok=$?; rm -rf "$T"; exit "$ok"' _ "$LANE"
+t "排空窗交接:五面在手快照；总表结构不可判时拒起交接" bash -c '
+  T="$(mktemp -d)"
+  sed -n "/^dispatch_drain_table_items()/,/^}/p" "$1" > "$T/f.sh"
+  sed -n "/^dispatch_drain_snapshot_path()/,/^}/p" "$1" >> "$T/f.sh"
+  sed -n "/^dispatch_drain_snapshot_write()/,/^}/p" "$1" >> "$T/f.sh"
+  source "$T/f.sh"; TABLE="$T/table"; EV_DIR="$T/events"
+  cat > "$TABLE" <<EOF
+## 进行中
+| 片 | 轨道 | 分支 / worktree | 状态 | 发车契约 |
+|---|---|---|---|---|
+| **旧片甲** | A | x | 开发中 | p |
+EOF
+  lane_busy(){ [ "$1" = a ]; }; ev_lane_assigned(){ [ "$1" = A ] && echo 旧片甲; }
+  cmd_vlist(){ echo "verify-旧验收 [node]"; }; cmd_mlist(){ echo "m-旧机动 [node]"; }; tool_running(){ echo tool-旧工具; }
+  p="$(dispatch_drain_snapshot_write dispatch-drain-test)" || exit 1
+  grep -q "lane.*A.*旧片甲" "$p" && grep -q "lane.*B.*-" "$p" && grep -q "table.*旧片甲" "$p" && grep -q "verify.*verify-旧验收" "$p" && grep -q "m.*m-旧机动" "$p" && grep -q "tool.*tool-旧工具" "$p" || exit 2
+  printf "## 进行中\\n只剩叙述,没有标准表\\n" > "$TABLE"
+  if dispatch_drain_snapshot_write dispatch-drain-bad >/dev/null 2>&1; then rm -rf "$T"; exit 3; fi
+  rm -rf "$T"' _ "$LANE"
+t "排空窗退窗:未终态项点名拒绝；全终态加人工依据才分档收窗" bash -c '
+  T="$(mktemp -d)"
+  sed -n "/^dispatch_drain_table_items()/,/^}/p" "$1" > "$T/f.sh"
+  sed -n "/^dispatch_drain_snapshot_path()/,/^}/p" "$1" >> "$T/f.sh"
+  sed -n "/^dispatch_drain_snapshot_write()/,/^}/p" "$1" >> "$T/f.sh"
+  sed -n "/^cmd_dispatch_drain_down()/,/^}/p" "$1" >> "$T/f.sh"
+  source "$T/f.sh"; TABLE="$T/table"; EV_DIR="$T/events"; TRACE="$T/trace"; TMUX_PANE="%test"
+  cat > "$TABLE" <<EOF
+## 进行中
+| 片 | 轨道 | 分支 / worktree | 状态 | 发车契约 |
+|---|---|---|---|---|
+| **旧片甲** | A | x | 开发中 | p |
+EOF
+  lane_busy(){ [ "$1" = a ]; }; ev_lane_assigned(){ [ "$1" = A ] && echo 旧片甲; }
+  cmd_vlist(){ echo "verify-旧验收 [node]"; }; cmd_mlist(){ echo "m-旧机动 [node]"; }; tool_running(){ echo tool-旧工具; }
+  p="$(dispatch_drain_snapshot_write dispatch-drain-test)" || exit 1
+  whoami_window(){ echo dispatch-drain-test; }; dispatch_alive(){ return 0; }; caller_src(){ echo test; }
+  win_exists(){ [ "$1" = verify-旧验收 ]; }; tmux(){ echo "tmux:$*" >> "$TRACE"; return 0; }; board(){ echo "board:$*" >> "$TRACE"; }; die(){ echo "$*" >&2; exit 1; }
+  out="$(cmd_dispatch_drain_down --complete 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] || ! grep -q 旧片甲 <<< "$out" || ! grep -q verify-旧验收 <<< "$out" || [ ! -e "$p" ]; then rm -rf "$T"; exit 2; fi
+  cat > "$TABLE" <<EOF
+## 进行中
+| 片 | 轨道 | 分支 / worktree | 状态 | 发车契约 |
+|---|---|---|---|---|
+EOF
+  lane_busy(){ return 1; }; win_exists(){ return 1; }
+  out="$(cmd_dispatch_drain_down --complete 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] || ! grep -q 人工确认 <<< "$out"; then rm -rf "$T"; exit 3; fi
+  LAIXIN_DRAIN_MANUAL_REASON="本轮优化复核已落交接包" cmd_dispatch_drain_down --complete >/dev/null || { rm -rf "$T"; exit 4; }
+  grep -q "已核(4/4 项)" "$TRACE" && grep -q "人工确认:交班后优化轮完成(依据:本轮优化复核已落交接包)" "$TRACE" && grep -q kill-window "$TRACE" && [ ! -e "$p" ]
+  rc=$?; rm -rf "$T"; exit "$rc"' _ "$LANE"
+t "排空窗退窗:既有参数、身份、继任三闸仍拒绝" bash -c '
+  T="$(mktemp -d)"; sed -n "/^cmd_dispatch_drain_down()/,/^}/p" "$1" > "$T/f.sh"; source "$T/f.sh"
+  die(){ echo "$*" >&2; exit 1; }; whoami_window(){ echo dispatch-drain-test; }; dispatch_alive(){ return 0; }
+  out="$(cmd_dispatch_drain_down --wrong 2>&1)"; [ $? -ne 0 ] && grep -q 用法 <<< "$out" || exit 1
+  whoami_window(){ echo external; }; out="$(cmd_dispatch_drain_down --complete 2>&1)"; [ $? -ne 0 ] && grep -q 只允许 <<< "$out" || exit 2
+  whoami_window(){ echo dispatch-drain-test; }; dispatch_alive(){ return 1; }; out="$(cmd_dispatch_drain_down --complete 2>&1)"; [ $? -ne 0 ] && grep -q 继任 <<< "$out"
+  rc=$?; rm -rf "$T"; exit "$rc"' _ "$LANE"
 t "排空窗 send:继任在班且持权时可收尾旧活，但不夺锁；继任不在则拒绝" bash -c '
   T="$(mktemp -d)"; sed -n "/^lock_touch_send()/,/^}$/p" "$1" > "$T/f.sh"; source "$T/f.sh"
   DISPATCH_WIN=dispatch; BAD="$T/bad"; whoami_window(){ echo dispatch-drain-1; }; lock_holder(){ echo dispatch; }; lock_write(){ touch "$BAD"; }; die(){ return 7; }

@@ -28,37 +28,54 @@ REAL_LOCK_BEFORE="$(cat "$HOME/.laixin-dispatch.lock" 2>/dev/null || true)"
 #   ⚠️ 原写「被拒即等」在博弈上是错的(无队列原子试取下退避者系统性输),2026-08-29 创始人递读数后改。
 # 锁路径可被 LAIXIN_TESTS_LOCK 覆盖:本文件的自测绊线要在临时锁上跑,⛔ 碰真锁。
 TESTS_LOCK="${LAIXIN_TESTS_LOCK:-$HOME/.laixin-tests.lock}"
-tests_lock_acquire(){ # <锁目录> → 0=取到;1=占用。stdout 写明谁/为什么。⛔ 阻塞等待 ⛔ 静默
-  local lock="$1" pid started
-  # mkdir 是原子的:两个实例同刻只可能一个成功(⛔ 用 [ -e ] 再 mkdir,那中间有窗口)
-  if mkdir "$lock" 2>/dev/null; then
-    printf '%s\n' "$$" > "$lock/pid"; date '+%H:%M:%S' > "$lock/started"; return 0
+TESTS_LOCK_MSG=''
+tests_lock_acquire(){ # <锁目录> → 0=取到;1=占用。消息写 TESTS_LOCK_MSG。⛔ 阻塞等待 ⛔ 静默
+  local lock="$1" pidfile="$1/pid" pid started lock_rc
+  # 锁文件由 lockf 原子持有,目录只作容器:旧版留下的目录/pid 可直接接管,无 pid 也不会永久占用。
+  if ! mkdir -p "$lock" 2>/dev/null; then
+    TESTS_LOCK_MSG="未判:无法准备锁目录 $lock,按占用处理"
+    return 1
   fi
-  pid="$(cat "$lock/pid" 2>/dev/null || true)"
-  # ④ 读不出持有者 ⇒ **按占用处理**并写「未判」⛔ 当空闲——空闲是放行方向,正是本件要堵的那一侧
+  if ! exec 9>> "$pidfile"; then
+    TESTS_LOCK_MSG="未判:无法打开锁文件 $pidfile,按占用处理"
+    return 1
+  fi
+  if /usr/bin/lockf -s -t 0 9; then
+    if ! printf '%s\n' "$$" > "$pidfile"; then
+      exec 9>&-
+      TESTS_LOCK_MSG="未判:已取得内核锁但无法写 pid,已释放"
+      return 1
+    fi
+    if [ "$(cat "$pidfile" 2>/dev/null || true)" != "$$" ] || ! kill -0 "$$" 2>/dev/null; then
+      exec 9>&-
+      TESTS_LOCK_MSG="未判:内核锁已取到但 pid 自证失败,已释放"
+      return 1
+    fi
+    date '+%H:%M:%S' > "$lock/started" 2>/dev/null || true
+    return 0
+  else
+    lock_rc=$?
+  fi
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  exec 9>&-
   case "$pid" in
-    '')        printf '未判:锁 %s 在但 pid 读不到,按占用处理,人工核\n' "$lock"; return 1 ;;
-    *[!0-9]*)  printf '未判:锁 %s 的 pid 非法(%s),按占用处理,人工核\n' "$lock" "$pid"; return 1 ;;
+    '')        TESTS_LOCK_MSG="未判:内核锁未取到(rc=$lock_rc),持有者正在初始化,按占用处理"; return 1 ;;
+    *[!0-9]*)  TESTS_LOCK_MSG="未判:内核锁未取到(rc=$lock_rc),pid 非法($pid),按占用处理"; return 1 ;;
   esac
   if kill -0 "$pid" 2>/dev/null; then
     started="$(cat "$lock/started" 2>/dev/null || true)"
-    printf '另一实例 pid %s 自 %s 在跑\n' "$pid" "${started:-未知}"; return 1
+    TESTS_LOCK_MSG="另一实例 pid $pid 自 ${started:-未知} 在跑"
+  else
+    TESTS_LOCK_MSG="未判:内核锁未取到(rc=$lock_rc),pid $pid 已死,按占用处理"
   fi
-  # 陈旧锁:持有者已不在(崩溃/被 kill/断电)⇒ 回收再取;回收后被抢先仍按占用 ⛔ 硬闯
-  rm -rf "$lock" 2>/dev/null || true
-  if mkdir "$lock" 2>/dev/null; then
-    printf '%s\n' "$$" > "$lock/pid"; date '+%H:%M:%S' > "$lock/started"
-    printf '已回收陈旧锁(原 pid %s 已不在)\n' "$pid"; return 0
-  fi
-  printf '陈旧锁回收后被他人抢先,按占用处理\n'; return 1
+  return 1
 }
-tests_lock_release(){ # <锁目录> —— 只放**自己持有**的那一把(⛔ 删别人的:回收只在 acquire 里按 pid 判)
-  local lock="$1"
-  [ -d "$lock" ] || return 0
-  [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ] || return 0
-  rm -rf "$lock" 2>/dev/null || true
+tests_lock_release(){ # <锁目录> —— pid 文件须常驻;删除会让新文件绕过仍活着的内核锁。
+  local pidfile="$1/pid"
+  [ "$(cat "$pidfile" 2>/dev/null || true)" = "$$" ] || return 0
+  exec 9>&- || true
 }
-if TESTS_LOCK_MSG="$(tests_lock_acquire "$TESTS_LOCK")"; then
+if tests_lock_acquire "$TESTS_LOCK"; then
   [ -z "$TESTS_LOCK_MSG" ] || echo "并发闸:$TESTS_LOCK_MSG"
   trap 'tests_lock_release "$TESTS_LOCK"' EXIT
 else
@@ -6215,39 +6232,61 @@ for fn in tests_lock_acquire tests_lock_release; do
   sed -n "/^${fn}()/,/^}/p" "$LKSELF" >> "$LKF"
 done
 
-t "并发闸:首取成功,锁里写下自己的 pid 与起时" env LKF="$LKF" LK="$LK" bash -c '
+t "并发闸:首取成功,锁里写下自己的存活 pid 与起时" env LKF="$LKF" LK="$LK" bash -c '
   source "$LKF"; L="$LK/a"
-  tests_lock_acquire "$L" >/dev/null || exit 1
-  [ -d "$L" ] && [ "$(cat "$L/pid")" = "$$" ] && [ -s "$L/started" ]'
+  tests_lock_acquire "$L" || exit 1
+  [ -d "$L" ] && [ "$(cat "$L/pid")" = "$$" ] && kill -0 "$(cat "$L/pid")" 2>/dev/null && [ -s "$L/started" ]'
 
 tfail "并发闸:持有者活着 ⇒ 第二实例被拒,并报是谁从几点在跑" "另一实例 pid" env LKF="$LKF" LK="$LK" bash -c '
-  source "$LKF"; L="$LK/b"; mkdir -p "$L"
-  printf "%s\n" "$$" > "$L/pid"; printf "09:41:07\n" > "$L/started"
-  out="$(tests_lock_acquire "$L")"; rc=$?; printf "%s\n" "$out"; exit $rc'
+  source "$LKF"; L="$LK/b"; ready="$LK/holder-ready"
+  env LKF="$LKF" L="$L" READY="$ready" bash -c "source \"\$LKF\"; tests_lock_acquire \"\$L\" || exit 1; printf \"%s\\n\" \"\$\$\" > \"\$READY\"; /bin/sleep 1" & holder=$!
+  while [ ! -s "$ready" ]; do /bin/sleep 0.01; done
+  tests_lock_acquire "$L"; rc=$?; printf "%s\n" "$TESTS_LOCK_MSG"
+  wait "$holder"; exit $rc'
 
-tfail "并发闸:锁在但 pid 读不到 ⇒ 写「未判」并按占用 ⛔ 当空闲" "未判" env LKF="$LKF" LK="$LK" bash -c '
+t "并发闸:锁目录无 pid ⇒ 自动取到,不留永久占用" env LKF="$LKF" LK="$LK" bash -c '
   source "$LKF"; L="$LK/c"; mkdir -p "$L"
-  out="$(tests_lock_acquire "$L")"; rc=$?; printf "%s\n" "$out"; exit $rc'
+  tests_lock_acquire "$L" || exit 1
+  [ "$(cat "$L/pid")" = "$$" ] && kill -0 "$(cat "$L/pid")" 2>/dev/null'
 
-t "并发闸:陈旧锁(持有者已不在)被回收后重取到" env LKF="$LKF" LK="$LK" bash -c '
+t "并发闸:陈旧 pid(持有者已不在)直接重取到" env LKF="$LKF" LK="$LK" bash -c '
   source "$LKF"; L="$LK/d"; mkdir -p "$L"
   ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null
   printf "%s\n" "$dead" > "$L/pid"; printf "09:00:00\n" > "$L/started"
-  out="$(tests_lock_acquire "$L")" || exit 1
-  grep -q "已回收陈旧锁" <<< "$out" && [ "$(cat "$L/pid")" = "$$" ]'
+  tests_lock_acquire "$L" || exit 1
+  [ "$(cat "$L/pid")" = "$$" ] && kill -0 "$(cat "$L/pid")" 2>/dev/null'
 
-t "并发闸:release 只放自己那把,别人的锁不误删" env LKF="$LKF" LK="$LK" bash -c '
-  source "$LKF"; L="$LK/e"; mkdir -p "$L"; printf "1\n" > "$L/pid"
-  tests_lock_release "$L"; [ -d "$L" ] || exit 1
-  L2="$LK/f"; tests_lock_acquire "$L2" >/dev/null || exit 1
-  tests_lock_release "$L2"; [ ! -d "$L2" ]'
+t "并发闸:release 只放自己那把,新实例随即能取到" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/e"; tests_lock_acquire "$L" || exit 1
+  tests_lock_release "$L"
+  env LKF="$LKF" L="$L" bash -c "source \"\$LKF\"; tests_lock_acquire \"\$L\" || exit 1; [ \"\$(cat \"\$L/pid\")\" = \"\$\$\" ] && kill -0 \"\$(cat \"\$L/pid\")\" 2>/dev/null"
+'
 
-t "并发闸 对照:朴素判据(无 pid 即空闲)在同一状态放行、本闸拒——绊线能分成败" env LKF="$LKF" LK="$LK" bash -c '
+t "并发闸:release 传别的锁不会放掉自己的锁" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/e-own"; other="$LK/e-other"; tests_lock_acquire "$L" || exit 1
+  mkdir -p "$other"; printf "1\n" > "$other/pid"; tests_lock_release "$other"
+  env LKF="$LKF" L="$L" bash -c "source \"\$LKF\"; tests_lock_acquire \"\$L\""; rc=$?
+  tests_lock_release "$L"; [ "$rc" -ne 0 ]'
+
+t "并发闸:陈旧 pid 下两实例并发,只容一人持锁" env LKF="$LKF" LK="$LK" bash -c '
+  source "$LKF"; L="$LK/f"; mkdir -p "$L"
+  ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null; printf "%s\n" "$dead" > "$L/pid"
+  racer(){
+    env LKF="$LKF" L="$L" bash -c "source \"\$LKF\"; tests_lock_acquire \"\$L\"; rc=\$?; if [ \"\$rc\" -eq 0 ]; then printf \"owner=%s\\n\" \"\$\$\"; /bin/sleep 0.2; fi; exit \"\$rc\""
+  }
+  racer > "$LK/racer-a" 2>&1 & a_job=$!; racer > "$LK/racer-b" 2>&1 & b_job=$!
+  wait "$a_job"; a_rc=$?; wait "$b_job"; b_rc=$?
+  [ "$a_rc" -eq 0 ] || [ "$b_rc" -eq 0 ] || exit 1
+  [ "$a_rc" -ne 0 ] || [ "$b_rc" -ne 0 ] || exit 1
+  owner="$(sed -n "s/^owner=//p" "$LK/racer-a" "$LK/racer-b")"
+  [ -n "$owner" ] && [ "$(cat "$L/pid")" = "$owner" ]'
+
+t "并发闸 对照:无 pid 看似空闲时,本闸实际取到并写下自己" env LKF="$LKF" LK="$LK" bash -c '
   source "$LKF"
   naive(){ [ -d "$1" ] || return 0; [ -n "$(cat "$1/pid" 2>/dev/null)" ] || return 0; return 1; }
   L="$LK/g"; mkdir -p "$L"
   naive "$L" || exit 1
-  ! tests_lock_acquire "$L" >/dev/null 2>&1'
+  tests_lock_acquire "$L" && [ "$(cat "$L/pid")" = "$$" ]'
 
 t "并发闸 真跑:本次自测此刻确实握着真锁(pid=自己)" env TL="$TESTS_LOCK" SELFPID="$$" bash -c '
   [ -d "$TL" ] && [ "$(cat "$TL/pid" 2>/dev/null)" = "$SELFPID" ]'

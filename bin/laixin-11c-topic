@@ -1,0 +1,564 @@
+#!/usr/bin/env python3
+"""11C 议题编排器：R1 盲读 -> 冻结 -> R2 对稿。"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+
+
+STATE_ROOT = Path(
+    os.environ.get("LAIXIN_11C_TOPIC_ROOT", "~/.laixin-11c/topics")
+).expanduser()
+OUTPUT_ROOT = Path(
+    os.environ.get(
+        "LAIXIN_11C_TOPIC_OUTPUT_ROOT",
+        "~/Obsidian/项目入口/laixin开发流水线/知识库/raw",
+    )
+).expanduser()
+CODEX_BIN = os.environ.get("LAIXIN_11C_CODEX_BIN", "codex")
+CLAUDE_BIN = os.environ.get("LAIXIN_11C_CLAUDE_BIN", "claude")
+STATE_FILE = "state.json"
+VALID_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+class TopicError(RuntimeError):
+    pass
+
+
+def now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def save_state(run_dir: Path, state: dict) -> None:
+    atomic_write(
+        run_dir / STATE_FILE,
+        (json.dumps(state, ensure_ascii=False, indent=2) + "\n").encode(),
+    )
+
+
+def load_state(topic_id: str) -> tuple[Path, dict]:
+    validate_topic_id(topic_id)
+    run_dir = STATE_ROOT / topic_id
+    try:
+        state = json.loads((run_dir / STATE_FILE).read_text())
+    except FileNotFoundError as exc:
+        raise TopicError(f"议题不存在：{topic_id}") from exc
+    except json.JSONDecodeError as exc:
+        raise TopicError(f"状态档损坏：{run_dir / STATE_FILE}") from exc
+    if state.get("version") != 1 or state.get("topic_id") != topic_id:
+        raise TopicError(f"状态档身份不符：{run_dir / STATE_FILE}")
+    return run_dir, state
+
+
+def validate_topic_id(topic_id: str) -> None:
+    if not VALID_ID.fullmatch(topic_id):
+        raise TopicError("议题 ID 只接受 1-80 位英数、点、下划线或短横线")
+
+
+def existing_absolute(value: str, label: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise TopicError(f"{label} 必须用绝对路径：{value}")
+    path = path.resolve()
+    if not path.is_file():
+        raise TopicError(f"{label} 不存在或不是文件：{path}")
+    return path
+
+
+def output_absolute(value: str, label: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise TopicError(f"{label} 必须用绝对路径：{value}")
+    path = path.resolve()
+    root = OUTPUT_ROOT.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise TopicError(f"{label} 必须落在 {root} 内：{path}") from exc
+    if not path.parent.is_dir():
+        raise TopicError(f"{label} 的目录不存在：{path.parent}")
+    if path.exists():
+        raise TopicError(f"{label} 已存在，拒绝覆盖：{path}")
+    return path
+
+
+def section(title: str, path: Path) -> str:
+    return f"\n\n## {title}\n\n来源：`{path}`\n\n{path.read_text()}"
+
+
+def parse_excerpt(value: str) -> tuple[Path, int, int]:
+    try:
+        raw_path, raw_start, raw_end = value.rsplit(":", 2)
+        start, end = int(raw_start), int(raw_end)
+    except (ValueError, TypeError) as exc:
+        raise TopicError("--excerpt 格式必须是 <绝对路径>:<起始行>:<结束行>") from exc
+    path = existing_absolute(raw_path, "R1 允许摘录")
+    lines = path.read_text().splitlines()
+    if start < 1 or end < start or end > len(lines):
+        raise TopicError(f"R1 摘录行号越界：{path}:{start}:{end}（共 {len(lines)} 行）")
+    return path, start, end
+
+
+def excerpt_section(index: int, spec: tuple[Path, int, int]) -> str:
+    path, start, end = spec
+    lines = path.read_text().splitlines()
+    body = "\n".join(lines[start - 1 : end]) + "\n"
+    return f"\n\n## 允许摘录 {index}\n\n来源：`{path}:{start}-{end}`\n\n{body}"
+
+
+def create_run(args: argparse.Namespace) -> tuple[Path, dict]:
+    validate_topic_id(args.topic_id)
+    r0 = existing_absolute(args.r0, "R0")
+    r1_pack = existing_absolute(args.r1_pack, "R1 派题包")
+    materials = [existing_absolute(item, "R1 允许材料") for item in args.material]
+    excerpts = [parse_excerpt(item) for item in args.excerpt]
+    r1_out = output_absolute(args.r1_out, "R1 输出")
+    r2_out = output_absolute(args.r2_out, "R2 输出")
+    if r0 == r1_pack or r0 in materials or any(item[0] == r0 for item in excerpts):
+        raise TopicError("R1 输入中出现了 R0，盲读拒绝启动")
+    if len(set(materials)) != len(materials):
+        raise TopicError("R1 允许材料有重复路径")
+    if r1_out == r2_out:
+        raise TopicError("R1 与 R2 输出路径必须不同")
+
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE_ROOT, 0o700)
+    run_dir = STATE_ROOT / args.topic_id
+    try:
+        run_dir.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise TopicError(f"议题已存在，使用 resume：{args.topic_id}") from exc
+
+    r1_bundle = section("R1 派题包", r1_pack)
+    for index, material in enumerate(materials, start=1):
+        r1_bundle += section(f"允许材料 {index}", material)
+    for index, excerpt in enumerate(excerpts, start=1):
+        r1_bundle += excerpt_section(index, excerpt)
+    atomic_write(run_dir / "r1-input.md", r1_bundle.lstrip().encode())
+    atomic_write(run_dir / "r0-input.md", r0.read_bytes())
+
+    state = {
+        "version": 1,
+        "topic_id": args.topic_id,
+        "phase": "prepared",
+        "engine": args.engine,
+        "created_at": now(),
+        "updated_at": now(),
+        "attempts": {"r1": 0, "r2": 0},
+        "sources": {
+            "r0": str(r0),
+            "r0_sha256": sha256(r0),
+            "r1_pack": str(r1_pack),
+            "r1_pack_sha256": sha256(r1_pack),
+            "materials": [str(item) for item in materials],
+            "material_sha256": [sha256(item) for item in materials],
+            "excerpts": [
+                {
+                    "path": str(path),
+                    "start": start,
+                    "end": end,
+                    "source_sha256": sha256(path),
+                }
+                for path, start, end in excerpts
+            ],
+        },
+        "outputs": {"r1": str(r1_out), "r2": str(r2_out)},
+    }
+    save_state(run_dir, state)
+    return run_dir, state
+
+
+class TopicLock:
+    def __init__(self, run_dir: Path):
+        self.path = run_dir / "lock"
+
+    def __enter__(self) -> "TopicLock":
+        try:
+            self.path.mkdir()
+        except FileExistsError:
+            pid_path = self.path / "pid"
+            try:
+                pid = int(pid_path.read_text().strip())
+                os.kill(pid, 0)
+            except (FileNotFoundError, ValueError, ProcessLookupError):
+                stale = self.path.with_name(f"lock.stale.{int(datetime.now().timestamp())}")
+                os.replace(self.path, stale)
+                self.path.mkdir()
+            except PermissionError as exc:
+                raise TopicError(f"无法判断议题锁持有者：{self.path}") from exc
+            else:
+                raise TopicError(f"议题正在运行（pid {pid}）：{self.path.parent.name}")
+        atomic_write(self.path / "pid", f"{os.getpid()}\n".encode())
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        try:
+            if int((self.path / "pid").read_text().strip()) != os.getpid():
+                return
+            (self.path / "pid").unlink()
+            self.path.rmdir()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+
+
+def r1_prompt(run_dir: Path) -> bytes:
+    body = (run_dir / "r1-input.md").read_text()
+    return f"""你是一次性的独立交叉分析方。现在进行 R1 真盲读。
+
+硬边界：
+- 只依据本消息内的派题包与允许材料作答；不得调用任何工具，不得读取路径、目录、记忆、网络或其他文件。
+- 你没有看到 R0，也不要猜测 R0；不得修改知识库、代码、窗口或执行方案。
+- 严格完成派题包要求，直接输出一份完整 Markdown 回复；不要声称已写文件。
+- 若材料不足，明确写“未判”，不要补造事实。
+
+<R1_ALLOWED_INPUT>
+{body}
+</R1_ALLOWED_INPUT>
+""".encode()
+
+
+def r2_prompt(run_dir: Path) -> bytes:
+    allowed = (run_dir / "r1-input.md").read_text()
+    r0 = (run_dir / "r0-input.md").read_text()
+    r1 = (run_dir / "r1-result.md").read_text()
+    return f"""你仍是同一职责的独立交叉分析方。现在进行 R2 对稿。
+
+硬边界：
+- 只依据本消息内容作答；不得调用任何工具，不得读取路径、目录、记忆、网络或其他文件。
+- 对照 R0 与你已冻结的 R1，逐项写：一致、分歧、事实校正、R0 遗漏的新问题、需要创始人保留裁决的事项。
+- 区分“R1 自己发现”与“R0 带入后才看到”，不得把后者倒填成盲读命中。
+- 不替方案窗口做最终合成，不修改知识库、代码、窗口，不执行方案。
+- 直接输出一份完整 Markdown 回复；不要声称已写文件。材料不足处写“未判”。
+
+<ORIGINAL_R1_ALLOWED_INPUT>
+{allowed}
+</ORIGINAL_R1_ALLOWED_INPUT>
+
+<R0>
+{r0}
+</R0>
+
+<FROZEN_R1>
+{r1}
+</FROZEN_R1>
+""".encode()
+
+
+def codex_events_are_tool_free(path: Path) -> tuple[bool, str]:
+    allowed = {"agent_message", "reasoning", "error"}
+    completed = False
+    try:
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            event = json.loads(line)
+            if event.get("type") == "turn.completed":
+                completed = True
+            if str(event.get("type", "")).startswith("item."):
+                item_type = event.get("item", {}).get("type")
+                if item_type not in allowed:
+                    return False, f"第 {line_number} 行出现工具/未知 item：{item_type}"
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"事件流不可判：{exc}"
+    if not completed:
+        return False, "事件流没有 turn.completed"
+    return True, "零工具调用"
+
+
+def extract_claude_result(stream: Path, result: Path) -> None:
+    payload = None
+    try:
+        for line in reversed(stream.read_text().splitlines()):
+            try:
+                candidate = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and isinstance(candidate.get("result"), str):
+                payload = candidate
+                break
+    except OSError as exc:
+        raise TopicError(f"Claude 输出流不可读：{exc}") from exc
+    if payload is None:
+        raise TopicError(f"Claude 输出没有可解析的 result：{stream}")
+    if payload.get("is_error"):
+        raise TopicError(f"Claude 返回错误：{payload['result']}")
+    atomic_write(result, (payload["result"].rstrip() + "\n").encode())
+
+
+def run_engine(run_dir: Path, state: dict, stage: str, prompt: bytes) -> Path:
+    state["attempts"][stage] += 1
+    attempt = state["attempts"][stage]
+    stem = f"{stage}-attempt-{attempt:02d}"
+    prompt_path = run_dir / f"{stem}.prompt.md"
+    result_path = run_dir / f"{stem}.result.md"
+    stderr_path = run_dir / f"{stem}.stderr.log"
+    event_path = run_dir / f"{stem}.events.jsonl"
+    atomic_write(prompt_path, prompt)
+    state["phase"] = f"{stage}_running"
+    state["updated_at"] = now()
+    state.pop("last_error", None)
+    save_state(run_dir, state)
+
+    work_dir = run_dir / "work"
+    work_dir.mkdir(exist_ok=True)
+    env = os.environ.copy()
+    env.pop("CLAUDE_ALLOW_BYPASS", None)
+    try:
+        with prompt_path.open("rb") as stdin, stderr_path.open("wb") as stderr:
+            if state["engine"] == "codex":
+                command = [
+                    CODEX_BIN,
+                    "exec",
+                    "--json",
+                    "--ephemeral",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--skip-git-repo-check",
+                    "-s",
+                    "read-only",
+                    "-m",
+                    "gpt-5.6-sol",
+                    "-c",
+                    'model_reasoning_effort="xhigh"',
+                    "-c",
+                    'service_tier="default"',
+                    "-c",
+                    'approval_policy="never"',
+                    "-C",
+                    str(work_dir),
+                    "-o",
+                    str(result_path),
+                    "-",
+                ]
+                with event_path.open("wb") as events:
+                    completed = subprocess.run(
+                        command, stdin=stdin, stdout=events, stderr=stderr, env=env
+                    )
+            else:
+                command = [
+                    CLAUDE_BIN,
+                    "-p",
+                    "--model",
+                    "claude-opus-5",
+                    "--output-format",
+                    "json",
+                    "--no-session-persistence",
+                    "--disable-slash-commands",
+                    "--tools",
+                    "",
+                ]
+                with event_path.open("wb") as stream:
+                    completed = subprocess.run(
+                        command,
+                        stdin=stdin,
+                        stdout=stream,
+                        stderr=stderr,
+                        cwd=work_dir,
+                        env=env,
+                    )
+    except OSError as exc:
+        raise TopicError(f"{state['engine']} 启动失败：{exc}") from exc
+
+    if completed.returncode != 0:
+        raise TopicError(
+            f"{stage.upper()} 引擎退出码 {completed.returncode}；日志：{stderr_path}"
+        )
+    if state["engine"] == "claude":
+        extract_claude_result(event_path, result_path)
+    if not result_path.is_file() or result_path.stat().st_size == 0:
+        raise TopicError(f"{stage.upper()} 没有产生回复：{result_path}")
+    if state["engine"] == "codex":
+        valid, reason = codex_events_are_tool_free(event_path)
+        if not valid:
+            raise TopicError(f"{stage.upper()} 违反零工具边界，整卷作废：{reason}")
+    return result_path
+
+
+def publish(source: Path, destination: Path) -> None:
+    expected = sha256(source)
+    if destination.exists():
+        if destination.is_file() and sha256(destination) == expected:
+            return
+        raise TopicError(f"输出已被占用且内容不同，拒绝覆盖：{destination}")
+    fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as target, source.open("rb") as origin:
+            shutil.copyfileobj(origin, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temporary, 0o600)
+        os.link(temporary, destination)
+    except FileExistsError:
+        if not destination.is_file() or sha256(destination) != expected:
+            raise TopicError(f"输出并发占用且内容不同：{destination}")
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def verify_frozen_r1(run_dir: Path, state: dict) -> None:
+    result = run_dir / "r1-result.md"
+    expected = state.get("r1_sha256")
+    output = Path(state["outputs"]["r1"])
+    if not expected or not result.is_file() or sha256(result) != expected:
+        raise TopicError("R1 内卷已变化，拒绝进入 R2")
+    if not output.is_file() or sha256(output) != expected:
+        raise TopicError("已发布 R1 已变化或丢失，拒绝进入 R2")
+
+
+def verify_complete(run_dir: Path, state: dict) -> None:
+    verify_frozen_r1(run_dir, state)
+    result = run_dir / "r2-result.md"
+    expected = state.get("r2_sha256")
+    output = Path(state["outputs"]["r2"])
+    if not expected or not result.is_file() or sha256(result) != expected:
+        raise TopicError("R2 内卷已变化")
+    if not output.is_file() or sha256(output) != expected:
+        raise TopicError("已发布 R2 已变化或丢失")
+
+
+def advance(run_dir: Path, state: dict) -> None:
+    try:
+        if state["phase"] == "complete":
+            verify_complete(run_dir, state)
+            return
+        if state["phase"] in {"prepared", "r1_running", "r1_failed"}:
+            result = run_engine(run_dir, state, "r1", r1_prompt(run_dir))
+            atomic_write(run_dir / "r1-result.md", result.read_bytes())
+            state["r1_sha256"] = sha256(run_dir / "r1-result.md")
+            state["phase"] = "r1_ready"
+            state["updated_at"] = now()
+            save_state(run_dir, state)
+        if state["phase"] == "r1_ready":
+            publish(run_dir / "r1-result.md", Path(state["outputs"]["r1"]))
+            state["phase"] = "r1_done"
+            state["updated_at"] = now()
+            save_state(run_dir, state)
+        if state["phase"] in {"r1_done", "r2_running", "r2_failed"}:
+            verify_frozen_r1(run_dir, state)
+            result = run_engine(run_dir, state, "r2", r2_prompt(run_dir))
+            atomic_write(run_dir / "r2-result.md", result.read_bytes())
+            state["r2_sha256"] = sha256(run_dir / "r2-result.md")
+            state["phase"] = "r2_ready"
+            state["updated_at"] = now()
+            save_state(run_dir, state)
+        if state["phase"] == "r2_ready":
+            verify_frozen_r1(run_dir, state)
+            publish(run_dir / "r2-result.md", Path(state["outputs"]["r2"]))
+            state["phase"] = "complete"
+            state["updated_at"] = now()
+            state["completed_at"] = now()
+            save_state(run_dir, state)
+    except TopicError as exc:
+        phase = state.get("phase", "unknown")
+        if phase.endswith("_running"):
+            state["phase"] = phase.replace("_running", "_failed")
+        state["last_error"] = str(exc)
+        state["updated_at"] = now()
+        save_state(run_dir, state)
+        raise
+
+
+def print_status(run_dir: Path, state: dict) -> bool:
+    print(f"议题：{state['topic_id']}")
+    print(f"阶段：{state['phase']}")
+    print(f"引擎：{state['engine']}")
+    print(f"状态：{run_dir / STATE_FILE}")
+    print(f"R1：{state['outputs']['r1']}")
+    print(f"R2：{state['outputs']['r2']}")
+    if state.get("last_error"):
+        print(f"错误：{state['last_error']}")
+    if state["phase"] == "complete":
+        try:
+            verify_complete(run_dir, state)
+        except TopicError as exc:
+            print(f"完整性：失败（{exc}）")
+            return False
+        print("完整性：R1/R2 均与冻结卷一致")
+        print("下一步：方案窗口读取 R0、R1、R2，单主合成；工具不代裁。")
+    return True
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(
+        prog="laixin-11c-topic",
+        description="旧 11C 资产改造后的三方议题编排器（串行 R1/R2）",
+    )
+    commands = root.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run", help="新建议题并跑完 R1/R2")
+    run.add_argument("topic_id")
+    run.add_argument("--r0", required=True)
+    run.add_argument("--r1-pack", required=True)
+    run.add_argument("--material", action="append", default=[])
+    run.add_argument(
+        "--excerpt",
+        action="append",
+        default=[],
+        help="只给指定行，格式 <绝对路径>:<起始行>:<结束行>；路径可含冒号",
+    )
+    run.add_argument("--r1-out", required=True)
+    run.add_argument("--r2-out", required=True)
+    run.add_argument("--engine", choices=("codex", "claude"), default="codex")
+    resume = commands.add_parser("resume", help="从失败阶段继续，不覆盖已发布卷")
+    resume.add_argument("topic_id")
+    status = commands.add_parser("status", help="查看阶段、输出与失败原因")
+    status.add_argument("topic_id")
+    return root
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        if args.command == "run":
+            run_dir, state = create_run(args)
+            with TopicLock(run_dir):
+                advance(run_dir, state)
+        elif args.command == "resume":
+            run_dir, state = load_state(args.topic_id)
+            with TopicLock(run_dir):
+                advance(run_dir, state)
+                _, state = load_state(args.topic_id)
+        else:
+            run_dir, state = load_state(args.topic_id)
+        return 0 if print_status(run_dir, state) else 2
+    except TopicError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("❌ 已中断；可用 resume 继续", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

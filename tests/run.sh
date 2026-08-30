@@ -5,6 +5,7 @@ set -uo pipefail
 LANE="$(cd "$(dirname "$0")/.." && pwd)/bin/laixin-lane"
 MIGRATE="$(cd "$(dirname "$0")/.." && pwd)/bin/migrate-11b-windows-from-11c"
 APF="$(cd "$(dirname "$0")/.." && pwd)/bin/accept-preflight"   # M1 影子版(#九之九);零测试是它转正前的缺口
+TOPIC_TEST="$(cd "$(dirname "$0")" && pwd)/test-laixin-11c-topic.sh"
 PASS=0; FAIL=0
 # 🔴 套件判据必须只依赖被测对象,⛔ 依赖调用者所在窗口/环境(2026-08-22 实撞:dispatch 窗口里跑本套件,shell 带着
 #   LAIXIN_WINDOW / TMUX_PANE ⇒ 来源推断类 3 条 + 1 条误红,而干净 shell 全绿——「同一套测试两处两种结果」)。
@@ -98,6 +99,7 @@ tfail(){ # tfail <名字> <期望错误子串> <命令...> —— 命令须失�
 
 echo "== 1. 语法与用法 =="
 t "bash -n 语法" bash -n "$LANE"
+t "11C 议题编排器:盲读隔离/冻结/恢复/原子收卷" bash "$TOPIC_TEST"
 t "tmux 会话目标精确匹配(前缀误命中为阳性对照；迁移只干跑)" bash -c '
   set -e
   root="$(mktemp -d)"; sock="tmux-exact-$$"; tmux_bin="$(command -v tmux)"

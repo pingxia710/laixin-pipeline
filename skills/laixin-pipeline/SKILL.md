@@ -12,7 +12,7 @@ description: 来信平台 11B 开发流水线操作卡。派工、开发轨、�
 
 | 角色 | 负责 | 禁止 |
 |---|---|---|
-| 方案窗口 | 设计、裁定、11C 主持 | fresh/send/verify/merge |
+| 方案窗口 | 设计、裁定、议题 R0 与单主合成 | fresh/send/verify/merge |
 | 派工窗口 dispatch | Gate2、发车、验收编排、ff-only 合并、台账 | 自验、代拍设计 |
 | A/B/C 开发轨 | 按 prompt 实现、自证、交付报告 | 合并、push、改射程 |
 | 一次性验收窗 | 独立复现、全量、回执 | 合并、动 lane |
@@ -124,7 +124,7 @@ prompt 宪法头、测试矩阵、交付契约正文见：
 | 请方案窗口裁定 | SendMessage | laixin-lane relay-msg --to 方案窗口 "<短指针>" |
 | 工程打回转开发轨 | 由派工窗口 SendMessage 协调后 send | laixin-lane relay-msg --to <目标> "<短指针>" 后由派工窗口 send |
 | 向创始人报产品取舍 | SendMessage | laixin-lane relay-msg --to 创始人窗口 "<短指针>" |
-| 询问 11C 机务 | SendMessage | laixin-lane relay-msg --to dispatch-11c "<短指针>" |
+| 运行议题 R1/R2 | `laixin-11c-topic run/resume` | 同左；工具完成后回方案窗口合成 |
 | 交班给继任 | SendMessage 一条接班令 | laixin-lane relay-msg --to <继任> "<接班令>" |
 
 默认消息形态：动作 + 权威路径#内容锚 + commit。不复制正文，不发 ACK-only“收到/已阅”。只有仍会变化的关键 prompt/指令/回执才附 mtime、字节数与 commit。
@@ -161,7 +161,7 @@ prompt 宪法头、测试矩阵、交付契约正文见：
 
 上报分引擎仍是同一条：Claude 用 SendMessage；无协作工具席位用 laixin-lane relay-msg --to 方案窗口 "<路径#锚>"。事实落盘后不再另发一条确认消息。
 
-## 9. M 件、11B/11C 工具件与中继件
+## 9. M 件、11B 工具件、议题编排器与中继件
 
 命令、各件射程与终态、print 传输口径 → 同目录 `附录-M件与工具件.md`(**只在做该类件时读**)。
 
@@ -193,6 +193,6 @@ prompt 宪法头、测试矩阵、交付契约正文见：
 - 验收：Skill laixin-acceptance
 - prompt：Skill laixin-kickoff
 - 版本与分支：Skill laixin-version-flow
-- 方案窗口/11C 主持：Skill laixin-plan-window
+- 方案窗口/议题编排：Skill laixin-plan-window
 
 遇到条文冲突，停在当前片，报“冲突的两个权威路径 + 内容锚 + 当前事实”，不自行挑一份。

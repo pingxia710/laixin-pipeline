@@ -47,31 +47,31 @@ This repo is the accumulated answer to those.
 | Path | What it does |
 |---|---|
 | `bin/laixin-lane` | 4k-line orchestrator: lane up/down/fresh, send, peek, per-slice verify windows, dispatch + relay windows, watchdog, context-budget gate |
-| `bin/laixin-11c-trust` | Pre-writes Codex workspace trust so a fresh window doesn't stall on a dialog |
+| `bin/laixin-11c-topic` | Runs one isolated R1 blind review, freezes it, then runs R2 against R0 + frozen R1; supports resume without overwriting published notes |
 | `bin/doccheck.py`, `bin/copy_audit.py`, `bin/opt_status.py` | Machine-checkable gates (docs, copy, optimization status) — rules become assertions, not prose |
 | `contrib-statusline.py` | Context-budget statusline with hard/warn handover gates |
 | `skills/laixin-kickoff` | Pre-flight card: stale branch base, reinventing existing mechanisms, ambiguous terminology, fake doors with no backend |
 | `skills/laixin-acceptance` | Independent acceptance: **accepts no self-report, only reproducible evidence** |
 | `skills/laixin-deploy` | Production release card built on one principle: *a failed deploy and a successful one look identical* — every step needs a criterion that tells them apart |
 | `skills/laixin-pipeline` | The operating manual for the whole topology |
-| `bin/laixin-11c-seat` | Seats a model at the roundtable: launches Fable / K3 / Codex-terra / Codex-luna in its own tmux window, auto-answers the startup dialogs, and refuses to report "seated" until the engine's own banner is on screen |
+| `bin/laixin-11c-seat`, `bin/laixin-11c-trust`, `bin/laixin-11c-dispatch` | Legacy 11C roundtable launchers retained for history and compatibility; no longer the active discussion path |
 | `tests/run.sh` | Tripwire tests — fixtures constructed so that reverting a fix turns them red |
 
-## The two rooms: 11B and 11C
+## The operating layer: 11B and the repurposed 11C tooling
 
-Two standing bodies sit on top of the pipeline. They are not code — they are **operating procedures**. 11B's are included here in full; 11C's session records stay in the project's private knowledge base.
+11B owns the pipeline. The old 11C name now labels a small topic-discussion conveyor; its historical roundtable records remain in the project's private knowledge base.
 
 ### 11B — the tool shop (`AGENTS.md`, `11b/`)
 
 Owns this repository. Three tiers of commit rights, an explicit ban on `git add -A` (multiple windows share one worktree), and a rule that every bug fix ships with a tripwire test. `11b/` holds its shift-handover snapshots and briefings — what a window hands to its successor so the work survives a context reset.
 
-### 11C — the multi-model roundtable (`bin/laixin-11c-*`)
+### 11C — the serial topic orchestrator (`bin/laixin-11c-topic`)
 
-When a decision is too consequential for one model, it goes to a **double-blind roundtable**: several different engines (Fable, Kimi K3, two Codex reasoning tiers) are seated in separate windows, each reads the full material and writes an independent proposal **under a codename, with no sight of the others**, before anything is opened. The chair sees only codenames.
+The former multi-seat, codename-based roundtable was retired on 2026-08-30. Its launch and isolation lessons were reused for a smaller three-party flow: a human supplies intent, the plan window writes R0 and owns the final synthesis, and one fresh cross-review process writes R1 blind before seeing R0 and then writes an R2 comparison.
 
-What ships in this repo is the seating tooling — `bin/laixin-11c-seat` (seats each engine in its own tmux window, answers the startup dialogs, refuses to report "seated" until the prompt is really there) and `bin/laixin-11c-trust` (pre-writes workspace trust so a fresh Codex window doesn't stall). The charter, the templates every session must fill, the real session records (including the arguments that did **not** win) and the roundtable's own failure ledger live in the project's private knowledge base and are not published here.
+`bin/laixin-11c-topic` is deliberately only a control plane. It assembles an explicit R1 allowlist, invokes the native Codex or Claude CLI without write tools, rejects Codex runs that make any tool call, freezes the R1 hash, and publishes R1/R2 atomically. It never synthesizes the final plan or starts implementation. The legacy seat, trust and dispatch scripts remain in the repository as archived implementation evidence, not active entry points.
 
-The interesting part of that ledger is the failure log. A roundtable of models converges on whatever the first speaker said unless you actively prevent it — most of the ledger is about building that prevention, and finding out where it leaked.
+The retained lesson is input independence: a claimed blind review is not blind if R0, prior conversation, or another reply is present in the input surface. The current tool records the exact staged prompt and refuses to treat an unverified run as complete.
 
 > The included material is written in Chinese. That's where the substance is; translating it would cost the precision that makes it useful.
 
